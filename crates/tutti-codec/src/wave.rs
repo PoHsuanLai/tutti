@@ -10,7 +10,7 @@ use crate::{Format, Spec};
 #[cfg(encode)]
 use std::path::Path;
 #[cfg(encode)]
-use tutti_types::Interleaved;
+use tutti_buffers::Interleaved;
 use tutti_types::Samples;
 use tutti_types::{ChannelLayout, ChannelTopology, SampleRate};
 
@@ -240,7 +240,7 @@ impl Wave {
 
     /// Returns every sample frame by frame: channel 0 to the last of frame 0,
     /// then frame 1, and so on, the order of an
-    /// [interleaved](tutti_types::Interleaved) block.
+    /// [interleaved](tutti_buffers::Interleaved) block.
     ///
     /// An iterator and not a `Vec`: a wave is already held whole, and the
     /// caller that wants flat samples (an encoder, a meter) reads them in
@@ -300,7 +300,7 @@ impl Wave {
             if flat.is_empty() {
                 break;
             }
-            encoder.write(Interleaved::new(&flat, layout))?;
+            encoder.write(Interleaved::new(&flat, layout)?)?;
         }
         encoder.finish().map(drop)
     }

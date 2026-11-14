@@ -1,4 +1,4 @@
-//! A hosted plugin's diagnostics and buses (design 029 step 4): the counts and
+//! A hosted plugin's diagnostics and buses: the counts and
 //! figures a host shows, whichever hosting runs the plugin, and the graph's bus
 //! handles for wiring it.
 //!
@@ -7,10 +7,11 @@
 //! the reference plugin in process (a count that is the same figure in both
 //! hostings: lost MIDI).
 
+use tutti_buffers::InterleavedMut;
 use tutti_plugin::catalog::PluginRef;
 use tutti_plugin_types::MainThread;
 use tutti_session::{PluginLoadRequest, Root, Session};
-use tutti_types::{ChannelLayout, InterleavedMut, MaxBlock, SampleRate, Samples};
+use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 512;
@@ -21,13 +22,15 @@ fn main_thread() -> MainThread {
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(BLOCK)))
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(BLOCK)))
+        .build()
         .expect("an offline session builds")
 }
 
 fn render_block(s: &Session) {
     let mut out = vec![0.0f32; BLOCK * 2];
-    s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO).unwrap());
 }
 
 #[cfg(feature = "clap")]
@@ -181,10 +184,11 @@ mod clap {
 #[cfg(feature = "vst2")]
 mod vst2 {
     use super::*;
-    use tutti_fixtures::midi::note_on;
+
+    use tutti_fixtures::midi;
     use tutti_graph::EventCapacity;
     use tutti_session::Losses;
-    use tutti_ump::{MidiChannel, MidiGroup};
+    use tutti_ump::MidiChannel;
 
     /// **Lost MIDI is counted as the MIDI inlets count theirs.** A block with 300
     /// notes holds 256 (`MIDI_STACK_CAPACITY`): the 44 past it are `lost` and
@@ -221,16 +225,8 @@ mod vst2 {
             "the VST2 probe reports no tail"
         );
 
-        let notes = |n: usize| {
-            (0..n).map(|i| {
-                note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    (i % 128) as u8,
-                    0xFFFF,
-                )
-            })
-        };
+        let notes =
+            |n: usize| (0..n).map(|i| midi::note_on(MidiChannel::FIRST, (i % 128) as u8, 0xFFFF));
         writer.push_all(notes(300).map(|n| (tutti_session::Stamp::NextBlock, n)));
         render_block(&s);
         assert_eq!(

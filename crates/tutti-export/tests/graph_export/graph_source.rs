@@ -441,7 +441,7 @@ fn a_surround_mix_folds_to_every_width() {
         let n = width.count() as usize;
         // The ITU quad fold, written out: `Lo = FL + M3DB·BL`, `Ro = FR + M3DB·BR`,
         // and the mono file is `(Lo + Ro)·M3DB`.
-        let m = tutti_types::M3DB;
+        let m = tutti_buffers::M3DB;
         let mut folded = vec![Vec::with_capacity(FRAMES); n];
         let [fl, fr, bl, br] = [0, 1, 2, 3].map(|c| &quad[c]);
         for (((&fl, &fr), &bl), &br) in fl.iter().zip(fr).zip(bl).zip(br) {

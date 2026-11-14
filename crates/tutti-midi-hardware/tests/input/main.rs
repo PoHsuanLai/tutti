@@ -9,5 +9,15 @@ static A: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 mod alsa_loopback;
 mod ci_wire;
 mod hardware_poll_no_alloc;
-#[cfg(all(target_os = "linux", feature = "sequencer-tests"))]
+#[cfg(any(
+    all(target_os = "linux", feature = "sequencer-tests"),
+    target_os = "macos"
+))]
 mod listener;
+#[cfg(all(target_os = "linux", feature = "sequencer-tests"))]
+mod virtual_endpoint;
+#[cfg(any(
+    all(target_os = "linux", feature = "sequencer-tests"),
+    target_os = "macos"
+))]
+mod virtual_loopback;

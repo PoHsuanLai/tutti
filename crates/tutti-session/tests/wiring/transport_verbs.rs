@@ -1,26 +1,22 @@
 //! The session's transport verbs: `set_tempo`, `locate`, `play`, `stop` and
 //! the one timed form, `schedule`.
 
+use tutti_buffers::InterleavedMut;
 use tutti_session::{ScheduleError, Session};
 use tutti_transport::{FadeOut, MotionEvent, Timeline};
-use tutti_types::{
-    At, Beat, Bpm, ChannelLayout, Frame, InterleavedMut, LoopRange, MaxBlock, SampleRate, Samples,
-};
+use tutti_types::{At, Beat, Bpm, ChannelLayout, Frame, LoopRange, MaxBlock, SampleRate, Samples};
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_000)),
-        )
+        .max_block(MaxBlock::of(Samples(1_000)))
+        .build()
         .expect("builds")
 }
 
 fn render(s: &Session, frames: usize) {
     let mut block = vec![0.0f32; 1_000 * 2];
     for _ in 0..frames / 1_000 {
-        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
     }
 }
 

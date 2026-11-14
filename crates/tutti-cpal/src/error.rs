@@ -89,7 +89,7 @@ pub enum Error {
     ///
     /// Returned by `MicIn::open` (feature `capture`).
     #[error("cannot select those inputs: {0}")]
-    Inputs(#[from] tutti_types::FoldError),
+    Inputs(#[from] tutti_buffers::FoldError),
 
     /// [`AudioEngine::start`](crate::AudioEngine::start) or
     /// [`start_with`](crate::AudioEngine::start_with) was called while a

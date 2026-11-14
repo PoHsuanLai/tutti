@@ -36,7 +36,7 @@ pub enum BridgeError {
 
     /// The plugin's format cannot be hosted out of process: a VST2 plugin's
     /// `AEffect` fuses its editor and its audio instance, so the instance
-    /// that renders cannot run apart from its window (design 021 §4). It is
+    /// that renders cannot run apart from its window. It is
     /// refused before any `plugin-server` is started; a VST2 plugin runs in
     /// the host's own process.
     #[error(
@@ -62,15 +62,6 @@ pub enum BridgeError {
         path: PathBuf,
         /// The format's name, as a user knows it.
         format: &'static str,
-    },
-
-    /// The plugin returned a format-defined failure code.
-    #[error("Plugin error at {stage}: code {code:#x}")]
-    FormatCode {
-        /// How far the load got before the plugin refused.
-        stage: LoadStage,
-        /// The format's own result code, rendered in hex.
-        code: i32,
     },
 
     /// A plugin bundle exists but holds no binary this architecture can load.
@@ -102,13 +93,6 @@ pub enum BridgeError {
          TUTTI_PLUGIN_PROBE=/path/to/plugin-probe"
     )]
     ProbeNotFound,
-
-    /// No catalog entry matches the requested name.
-    #[error("No plugin named {name:?} in catalog")]
-    PluginNotFound {
-        /// The name that was looked up.
-        name: String,
-    },
 
     /// The catalog records this plugin as having brought a scan down.
     ///

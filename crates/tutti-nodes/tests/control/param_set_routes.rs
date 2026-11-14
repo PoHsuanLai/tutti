@@ -353,7 +353,7 @@ fn convolver_addresses_nothing() {
     // Room size is baked into the IR, the gain has no address and the mix is
     // the graph's (`NodeMix::ADDR`, not a node's param).
     // A minimal unit IR is fine — only the param surface is probed.
-    let node = tutti_nodes::ConvolverNode::shared_ir(2u16, &[1.0], 64);
+    let node = tutti_nodes::ConvolverNode::shared_ir(2u16, &[1.0], 64).unwrap();
     assert!(!addresses(&node, UnitParam::Wet));
     assert!(!addresses(&node, UnitParam::RoomSize));
     assert!(!addresses(&node, UnitParam::Cutoff));

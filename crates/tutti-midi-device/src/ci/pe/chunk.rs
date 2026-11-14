@@ -2,7 +2,7 @@
 //! numbers that label them, the chunk itself, and the split of one message into
 //! chunks that fit a device's Receivable Maximum SysEx Message Size.
 
-use super::header::{MESSAGE_OVERHEAD, PE_MAX_HEADER_LEN, PeHeader, PeHeaderTooLong};
+use super::header::{MESSAGE_OVERHEAD, PE_MAX_HEADER_LEN, PeHeader, PeHeaderTooLong, PeStatus};
 use super::limits::NotInRange;
 use crate::MaxSysexSize;
 
@@ -71,6 +71,8 @@ macro_rules! ranged {
         }
     };
 }
+
+pub(super) use ranged;
 
 ranged! {
     /// A Request ID: 0 to 127 (M2-103 §5.3). It ties the chunks of a message
@@ -270,6 +272,31 @@ impl PeChunk {
             header,
             data,
         })
+    }
+
+    /// The fields of a Notify message for `request_id` (M2-101 Table 39): Header
+    /// Data of the one property `status`, one chunk of one, no Property Data.
+    /// [`PeCiMessage::Notify`](super::PeCiMessage::Notify) carries it.
+    #[must_use]
+    pub fn notify(request_id: PeRequestId, status: PeStatus) -> Self {
+        Self {
+            request_id,
+            total: ChunkTotal::Known(ChunkNo::FIRST),
+            position: ChunkPosition::Number(ChunkNo::FIRST),
+            header: format!("{{\"status\":{}}}", status.code()).into_bytes(),
+            data: Vec::new(),
+        }
+    }
+
+    /// The status this chunk's Header Data gives, as a Notify message carries it,
+    /// or `None` when the Header Data is not a header with a status the spec
+    /// lists.
+    #[must_use]
+    pub fn notified(&self) -> Option<PeStatus> {
+        match PeHeader::parse(&self.header) {
+            Ok(PeHeader::Reply(reply)) => Some(reply.status),
+            _ => None,
+        }
     }
 
     /// The Request ID.

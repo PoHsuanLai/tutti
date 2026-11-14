@@ -30,6 +30,7 @@ use tutti_plugin::RenderMode;
 use tutti_plugin::catalog::{PluginRef, PluginState};
 use tutti_plugin_types::PluginFailure;
 // Only the Linux-only server-death tests name these.
+use tutti_buffers::InterleavedMut;
 #[cfg(target_os = "linux")]
 use tutti_plugin_types::{BridgeError, TerminationReason};
 use tutti_session::BufferMaster;
@@ -38,7 +39,7 @@ use tutti_session::{
     PluginLoadRequest, Range, Session, SessionEvent,
 };
 use tutti_session::{RecoveryFailure, ReloadCause};
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 512;
@@ -76,7 +77,9 @@ fn session_built(
     // in the next `Collect`, in a deterministic order. A test that wants another
     // spawner says so in `build`.
     build(Session::builder().spawn_with(|job| job.run()))
-        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(BLOCK)))
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(BLOCK)))
+        .build()
         .expect("an offline session builds")
 }
 
@@ -281,7 +284,7 @@ fn a_plugin_dead_for_the_window_is_removed_and_reported_once() {
     let deadline = Instant::now() + Duration::from_secs(10);
     while matches!(s.plugin(node).unwrap().health(), PluginHealth::Running) {
         assert!(Instant::now() < deadline, "the probe never died");
-        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO).unwrap());
         std::thread::sleep(Duration::from_millis(5));
     }
 
@@ -456,7 +459,7 @@ const APPLY_GAIN: (&str, &str) = ("TUTTI_CLAP_PROBE_APPLY_GAIN", "1");
 /// Renders one block and returns whether any sample was non-zero.
 fn renders_sound(s: &mut Session) -> bool {
     let mut out = vec![0.0f32; BLOCK * 2];
-    s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO).unwrap());
     out.iter().any(|&x| x != 0.0)
 }
 
@@ -1027,7 +1030,7 @@ fn a_killed_server_reads_died_then_reloading() {
     let deadline = Instant::now() + Duration::from_secs(10);
     while matches!(s.plugin(node).unwrap().health(), PluginHealth::Running) {
         assert!(Instant::now() < deadline, "the probe never died");
-        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO).unwrap());
         std::thread::sleep(Duration::from_millis(5));
     }
     let PluginHealth::Died { cause } = s.plugin(node).unwrap().health() else {
@@ -1085,10 +1088,17 @@ fn process_ended(pid: u32) -> bool {
 
 /// A policy that suspects a hang after 16 blocks and 100 ms of the clock the
 /// test drives (20 ms a step).
-fn quick_hang_policy() -> tutti_session::RecoveryPolicy {
+fn quick_hang_policy() -> tutti_session::HangPolicy {
+    tutti_session::HangPolicy {
+        blocks: 16,
+        window: Duration::from_millis(100),
+        ..Default::default()
+    }
+}
+
+/// A reload one millisecond after a death.
+fn quick_reload_policy() -> tutti_session::RecoveryPolicy {
     tutti_session::RecoveryPolicy {
-        hang_blocks: 16,
-        hang_window: Duration::from_millis(100),
         backoff: Duration::from_millis(1),
         ..Default::default()
     }
@@ -1117,7 +1127,8 @@ fn a_plugin_that_stops_answering_is_ended_and_replaced() {
             ("TUTTI_CLAP_PROBE_BLOCK_FROM", "20"),
         ],
         |b| {
-            b.plugin_recovery(Some(quick_hang_policy()))
+            b.plugin_hang(quick_hang_policy())
+                .plugin_recovery(Some(quick_reload_policy()))
                 .spawn_with(move |job| {
                     if seen.load(Ordering::SeqCst) {
                         let pid = pid_cell.load(Ordering::SeqCst);
@@ -1193,6 +1204,63 @@ fn a_plugin_that_stops_answering_is_ended_and_replaced() {
     }
 }
 
+/// **With recovery off, a plugin that stops answering is declared hung and
+/// removed.** The same probe as above parks in `process()` for good; no policy
+/// reloads it, yet the hang is detected: the session ends its server, the death
+/// reads "stopped answering", and `PluginChange::Died` names it and removes the
+/// node, as for any dead plugin with recovery off.
+#[test]
+fn a_plugin_that_stops_answering_is_declared_hung_with_recovery_off() {
+    let once = once_file("recovery-off-hang.once");
+    let mut s = session_built(
+        &[
+            PASSTHROUGH,
+            ("TUTTI_CLAP_PROBE_ONCE_FILE", &once),
+            ("TUTTI_CLAP_PROBE_BLOCK_FROM", "20"),
+        ],
+        |b| b.plugin_hang(quick_hang_policy()).plugin_recovery(None),
+    );
+    let (node, _) = wired_probe(&mut s);
+
+    let mut drive = Drive::new();
+    drive.until(&mut s, "died", |e| {
+        matches!(
+            e,
+            SessionEvent::Plugin(PluginEvent {
+                change: PluginChange::Died { .. },
+                ..
+            })
+        )
+    });
+    let Some(SessionEvent::Plugin(PluginEvent {
+        node: died,
+        change: PluginChange::Died { cause },
+        ..
+    })) = drive.events.iter().find(|e| {
+        matches!(
+            e,
+            SessionEvent::Plugin(PluginEvent {
+                change: PluginChange::Died { .. },
+                ..
+            })
+        )
+    })
+    else {
+        unreachable!()
+    };
+    assert_eq!(*died, node);
+    assert!(
+        matches!(
+            cause,
+            PluginFailure::Terminated {
+                reason: tutti_plugin_types::TerminationReason::Hung { .. }
+            }
+        ),
+        "{cause:?}"
+    );
+    assert!(!s.graph_ref().contains(node), "the hung plugin is removed");
+}
+
 /// **A slow plugin that still answers is not declared hung.** Every block
 /// takes the probe 80 ms, far over the bridge's budget for a 512-frame block:
 /// blocks are abandoned all the time, and every one's reply comes back late.
@@ -1203,7 +1271,10 @@ fn a_plugin_that_stops_answering_is_ended_and_replaced() {
 fn a_slow_plugin_that_still_answers_is_not_declared_hung() {
     let mut s = session_built(
         &[PASSTHROUGH, ("TUTTI_CLAP_PROBE_STALL_US", "80000")],
-        |b| b.plugin_recovery(Some(quick_hang_policy())),
+        |b| {
+            b.plugin_hang(quick_hang_policy())
+                .plugin_recovery(Some(quick_reload_policy()))
+        },
     );
     let (node, _) = wired_probe(&mut s);
     let mut drive = Drive::new();

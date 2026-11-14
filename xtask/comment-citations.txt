@@ -253,7 +253,6 @@
 1 crates/tutti-transport/src/offline.rs
 1 crates/tutti-transport/src/settings.rs
 2 crates/tutti-transport/src/walk.rs
-1 crates/tutti-types/src/fold/tests.rs
 1 crates/tutti-types/src/io.rs
 2 crates/tutti-types/src/value/unit_param.rs
 1 crates/tutti-types/src/value/units/amounts.rs

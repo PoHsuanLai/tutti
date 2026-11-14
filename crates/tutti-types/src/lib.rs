@@ -1,12 +1,12 @@
 #![doc = include_str!("../README.md")]
-//! Typed quantities and shapes shared by every engine crate: unit newtypes,
-//! channel layouts, and the `Source`/`Sink` I/O traits.
+//! Typed quantities and shapes shared by every engine crate: unit newtypes and
+//! channel layouts.
 //!
 //! ## What this is
 //!
 //! The common definitions every other Tutti crate shares rather than duplicating.
-//! Use it directly when you need only the vocabulary (a crate that implements
-//! `Source`, or one that only needs `Beat`); otherwise reach it through the
+//! Use it directly when you need only the vocabulary (a crate that only needs
+//! `Beat`); otherwise reach it through the
 //! `tutti` umbrella, which re-exports it as `tutti::types`. What is in it:
 //!
 //! - **`value`** — what a parameter *is* and how it is carried: the `Unit` marker
@@ -17,29 +17,15 @@
 //!   subsystem shares instead of a bare integer. `ChannelTopology` + `Speaker`
 //!   answer the *different* question of which speaker each channel feeds; distinct
 //!   questions, so distinct types.
-//! - **Buffers** — `Interleaved` / `InterleavedMut`, a flat buffer that carries its
-//!   own frame width, so a frame index and a sample index stop being the same type.
-//!   `Fold::between(&src, &dst)` turns one `ChannelTopology` into another by
-//!   speaker (ITU-R BS.775 / Dolby coefficients, a pure permutation for the same
-//!   speakers in another order, unassigned channels one to one) and refuses a channel
-//!   it cannot place; the matrix is not normalised. `Fold::widths` / `Fold::to_width`
-//!   are the entry points for an edge that knows only a width (a device, an export
-//!   file, the graph root): the engine's order where the width has one, channels by
-//!   index (`Fold::by_index`, widening only; a narrowing is `FoldError::Unplaced`,
-//!   and `Fold::select` truncates on purpose) where it has none. The width-only folds (`fold_frame`, `fold_frame_to_mono`,
-//!   `fold_frame_to_stereo`, `fold_buffer_to_mono`, `fold_planar_to_mono`) are gone.
-//! - **`io`** — `Source`, `Sink` and `Pull`: the edge vocabulary, a stream on a clock
-//!   other than the graph's (mic, file, tap, file encoder). A `Pull` says whether an
-//!   empty read is late, finished or broken.
 //! - **`meter`** — musical meter: `TimeSignature`, the `MeterMap` timeline of
 //!   changes, and the `Meter` trait that turns a `Beat` into a bar and beat. Pure
 //!   musical math, so it layers *over* a transport rather than living inside one.
 //!
 //! **The root is the API.** The common names are re-exported there, so
-//! `tutti_types::Bpm` and `tutti_types::Source` resolve directly — import from the
-//! root. Three of the eight modules are
-//! public (`value`, `io`, `meter`), because each holds items the root does not
-//! re-export; the others (`channels`, `downmix`, `fold`, `interleaved`, `topology`)
+//! `tutti_types::Bpm` and `tutti_types::Samples` resolve directly — import from the
+//! root. Two of the modules are
+//! public (`value`, `meter`), because each holds items the root does not
+//! re-export; the others (`bus`, `channels`, `topology`)
 //! are private and fully re-exported. The graph as a value (`Topology`), the
 //! latency pass and the tail fold are `tutti-graph`'s.
 //!
@@ -50,11 +36,8 @@
 //! dependencies are `atomic_float` and `libm`, plus `serde`
 //! behind its feature) and `#![forbid(unsafe_code)]`. The lock-free and `unsafe`
 //! runtime primitives, the graph runtime, the engine, the device and the file
-//! codecs are other crates'. Two consequences make the split load-bearing:
+//! codecs are other crates'. One consequence makes the split load-bearing:
 //!
-//! - The `Source`/`Sink` traits are homed here so *any* subsystem can implement
-//!   them without an absurd dependency edge. A crate implementing `Source` must
-//!   not have to depend on the device layer to name the trait.
 //! - Unit newtypes are **mandatory** across the engine, so their home has to be
 //!   reachable from everywhere. A crate that only needs `Beat` gets `Beat` and
 //!   nothing else.
@@ -139,16 +122,16 @@
 #[macro_use]
 pub mod value;
 
+// `ranged!` is `#[macro_export]`ed: it is the one way any crate writes a
+// range-checked type, used as `tutti_types::ranged!`.
+mod ranged;
+
 // Private: everything public in these is re-exported at the root below, so the
 // module path would be a second name for a type that already has one.
 mod bus;
 mod channels;
-mod fold;
-mod interleaved;
 mod topology;
 
-// Public: `io` holds items the root does not re-export.
-pub mod io;
 pub mod meter;
 
 // The cell a `Param` shares (`Param::as_atomic`), named here so a crate that
@@ -184,19 +167,6 @@ pub use channels::{ChannelCountOutOfRange, ChannelLayout};
 // Channel topology — which speaker each channel feeds. Distinct from the count
 // above, and additive to it: a width-only caller keeps using `ChannelLayout`.
 pub use topology::{ChannelTopology, Speaker};
-
-// How one topology becomes another: the one fold, built on the control side.
-// `M3DB` is the −3 dB centre/surround coefficient its ITU-R BS.775 / Dolby
-// matrices apply, and it comes along because a caller checking a fold's output
-// has to name the same constant.
-pub use fold::{Fold, FoldEnd, FoldError, M3DB};
-
-// A flat buffer that carries its own frame width, so a frame index and a sample
-// index stop being the same type.
-pub use interleaved::{Interleaved, InterleavedMut, StereoPlanes};
-
-// I/O edge.
-pub use io::{FiniteSource, Pull, Sink, SinkFailed, Source, Stop};
 
 // Musical meter.
 pub use meter::{

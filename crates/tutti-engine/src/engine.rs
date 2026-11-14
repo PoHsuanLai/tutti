@@ -88,6 +88,7 @@ use tutti_graph::{
 use crate::block_clock::{BlockClock, BlockClockReader, Pose};
 use crate::output::{DEFAULT_DEVICE_WIDTHS, OutputControl, OutputFolds};
 use std::time::Instant;
+use tutti_buffers::{FoldError, InterleavedMut};
 use tutti_metering::{LoadMeter, LoadRecorder};
 use tutti_rt::{AudioThreadCell, Reader, RtScope};
 #[cfg(doc)]
@@ -97,7 +98,7 @@ use tutti_transport::{
     TransportAudio, TransportCommand,
 };
 use tutti_types::{At, Frame};
-use tutti_types::{ChannelLayout, FoldError, InterleavedMut, SampleRate, Samples, Seconds};
+use tutti_types::{ChannelLayout, SampleRate, Samples, Seconds};
 
 /// The block capacity an engine sizes its fold scratch for unless given
 /// another ([`Engine::with_capacity`]): tutti-cpal's largest callback
@@ -377,7 +378,7 @@ impl Engine {
     /// wider than that (or at all, to say so); it is a no-op for a width
     /// already supported. The device is taken to be the engine's order for its
     /// width where it has one, and the root the same: see
-    /// [`Fold::widths`](tutti_types::Fold::widths). A buffer of a width not
+    /// [`Fold::widths`](tutti_buffers::Fold::widths). A buffer of a width not
     /// supported is not rendered into: the call is silent and counted in
     /// [`LoadReading::silenced`](tutti_metering::LoadReading::silenced), in
     /// every build.
@@ -483,7 +484,7 @@ impl Engine {
     /// rendered at its **own** output width (at most [`MAX_ROOT_CHANNELS`],
     /// which the editor's limits enforce) into scratch, then each frame is
     /// folded to the *output's* width — the device / target width — by
-    /// [`Fold::widths`](tutti_types::Fold::widths), built in
+    /// [`Fold::widths`](tutti_buffers::Fold::widths), built in
     /// [`support_output`](Self::support_output): a surround root plays folded to a
     /// stereo device by the ITU/Dolby matrix, or straight through to a
     /// matching-width one; a mono root feeds the centre of a surround device
@@ -507,7 +508,7 @@ impl Engine {
         // on Windows.
         let start = Instant::now();
         let out_ch = output.stride();
-        let frames = output.len();
+        let frames = output.len().get();
         let output = output.samples_mut();
         // A free in a block is a debug panic: the hand-over of the heard tap
         // sends what it replaces back to the control side.
@@ -591,7 +592,7 @@ impl Engine {
         // Timed for the load meter (`load_meter`): see `process_segment`.
         let start = Instant::now();
         let out_ch = output.stride();
-        let frames = output.len();
+        let frames = output.len().get();
         let output = output.samples_mut();
         // A free in a block is a debug panic: the hand-over of the heard tap
         // sends what it replaces back to the control side.
@@ -1175,11 +1176,10 @@ impl GraphRender {
             Some(fold) => {
                 fold.planar_to_interleaved(
                     |c| &outs[c][..len],
-                    InterleavedMut::new(
-                        block,
-                        ChannelLayout::try_from(out_ch)
-                            .expect("a fold exists only for a held device width"),
-                    ),
+                    ChannelLayout::try_from(out_ch)
+                        .ok()
+                        .and_then(|layout| InterleavedMut::new(block, layout).ok())
+                        .expect("a fold exists only for a held device width, and the block is whole frames of it"),
                 );
                 true
             }
@@ -1284,13 +1284,15 @@ mod tests {
         let mut seg = vec![1.0f32; 64 * 2];
         {
             let _control = engine.graph.borrow_mut();
-            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-            engine.process_segment(&mut InterleavedMut::new(&mut seg, ChannelLayout::STEREO));
+            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
+            engine.process_segment(
+                &mut InterleavedMut::new(&mut seg, ChannelLayout::STEREO).unwrap(),
+            );
         }
         assert!(buf.iter().all(|&x| x == 0.0), "a refused block is silent");
         assert!(seg.iter().all(|&x| x == 0.0), "a refused segment is silent");
         assert!(!transport.is_rolling(), "the queued Play waits");
-        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         assert!(transport.is_rolling(), "the next block applies it");
     }
 
@@ -1315,8 +1317,10 @@ mod tests {
         let mut seg = vec![1.0f32; 32 * 2];
         {
             let _control = engine.graph.borrow_mut();
-            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-            engine.process_segment(&mut InterleavedMut::new(&mut seg, ChannelLayout::STEREO));
+            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
+            engine.process_segment(
+                &mut InterleavedMut::new(&mut seg, ChannelLayout::STEREO).unwrap(),
+            );
         }
         let mut got = vec![f32::NAN; 96 * 2];
         assert_eq!(tap.pop_into(&mut got), Samples(96));
@@ -1337,14 +1341,14 @@ mod tests {
                 Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512))));
             let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
             let _ = transport.motion().try_send(MotionEvent::Play);
-            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
             assert!(transport.is_rolling());
         }
         let (mut ed, exec) =
             Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512))));
         let engine = Engine::new(&transport, &mut ed, exec).expect("the first engine is gone");
         let _ = transport.motion().try_send(MotionEvent::stop_unfaded());
-        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         assert!(!transport.is_rolling(), "the machine knew it was rolling");
     }
 
@@ -1397,7 +1401,7 @@ mod tests {
                     .expect("room");
             }
             let mut buf = vec![0.0f32; 64 * 2];
-            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
             transport.is_rolling()
         };
         assert!(!run(true), "play then stop ends stopped");
@@ -1429,10 +1433,10 @@ mod tests {
             .try_send(MotionEvent::play_from(Beat(8.0)))
             .expect("room");
         let mut buf = vec![0.0f32; 64 * 2];
-        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         let first = transport.beat().get();
         assert!((first - (8.0 + 64.0 / 24_000.0)).abs() < 1e-9, "{first}");
-        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         let second = transport.beat().get();
         assert!((second - (8.0 + 128.0 / 24_000.0)).abs() < 1e-9, "{second}");
 
@@ -1451,7 +1455,7 @@ mod tests {
             .try_send(MotionEvent::play_from(Beat(3.99)))
             .expect("room");
         let mut buf = vec![0.0f32; 1024 * 2];
-        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         let wrapped = transport.beat().get();
         let expected = 3.99 + 1024.0 / 24_000.0 - 4.0;
         assert!((wrapped - expected).abs() < 1e-9, "{wrapped} vs {expected}");
@@ -1525,12 +1529,14 @@ mod tests {
         let mut buf = vec![0.0f32; 64 * 2];
         {
             let _control = engine.graph.borrow_mut();
-            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-            engine.process_segment(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+            engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
+            engine.process_segment(
+                &mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap(),
+            );
         }
         let r = engine.load_meter().expect("not taken").peek();
         assert_eq!((r.silenced, r.blocks), (2, 0));
-        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         let r = engine.load_meter().expect("not taken").peek();
         assert_eq!((r.silenced, r.blocks), (2, 1));
         engine.load_meter().expect("not taken").reset();
@@ -1635,7 +1641,7 @@ mod tests {
         assert!(folds.get(2, MAX_ROOT_CHANNELS + 1).is_none());
         assert!(folds.get(0, 2).is_none() && folds.get(2, 0).is_none());
 
-        let m = tutti_types::M3DB;
+        let m = tutti_buffers::M3DB;
         let run = |root: usize, device: usize, frame: &[f32]| {
             let mut out = vec![9.0f32; device];
             folds.get(device, root).unwrap().frame(frame, &mut out);
@@ -1662,7 +1668,7 @@ mod tests {
         let wide = ChannelLayout::from(20u16);
         engine.support_output(wide).expect("a width");
         let mut out = vec![-9.0f32; 20 * 8];
-        engine.process_segment(&mut InterleavedMut::new(&mut out, wide));
+        engine.process_segment(&mut InterleavedMut::new(&mut out, wide).unwrap());
         // Ramp(2) writes 21, 22: the front pair, the rest zero-filled.
         for frame in out.as_chunks::<20>().0 {
             assert_eq!(&frame[..2], &[21.0, 22.0]);
@@ -1670,14 +1676,13 @@ mod tests {
         }
         assert_eq!(
             engine.support_output(ChannelLayout::EMPTY),
-            Err(FoldError::Empty(tutti_types::FoldEnd::Destination))
+            Err(FoldError::Empty(tutti_buffers::FoldEnd::Destination))
         );
         // Not added: silent, and counted, in every build.
         let mut out = vec![-9.0f32; 40 * 8];
-        engine.process_segment(&mut InterleavedMut::new(
-            &mut out,
-            ChannelLayout::from(40u16),
-        ));
+        engine.process_segment(
+            &mut InterleavedMut::new(&mut out, ChannelLayout::from(40u16)).unwrap(),
+        );
         assert!(out.iter().all(|&s| s == 0.0));
         assert_eq!(engine.load_meter().expect("not taken").peek().silenced, 1);
     }
@@ -1695,12 +1700,12 @@ mod tests {
         rewire(&mut ed, 5);
         let three = ChannelLayout::from(3u16);
         let mut out = vec![-9.0f32; 3 * 8];
-        engine.process_segment(&mut InterleavedMut::new(&mut out, three));
+        engine.process_segment(&mut InterleavedMut::new(&mut out, three).unwrap());
         assert!(out.iter().all(|&s| s == 0.0), "{out:?}");
         assert_eq!(engine.load_meter().expect("not taken").peek().silenced, 1);
         let seven = ChannelLayout::from(7u16);
         let mut out = vec![-9.0f32; 7 * 8];
-        engine.process_segment(&mut InterleavedMut::new(&mut out, seven));
+        engine.process_segment(&mut InterleavedMut::new(&mut out, seven).unwrap());
         // Ramp(5) writes 51..=55; the rest of the 7-wide device is silent.
         assert_eq!(&out[..7], &[51.0, 52.0, 53.0, 54.0, 55.0, 0.0, 0.0]);
         assert_eq!(engine.load_meter().expect("not taken").peek().silenced, 1);
@@ -1712,7 +1717,7 @@ mod tests {
     fn first_frame(engine: &Engine, device: usize) -> Vec<f32> {
         let layout = ChannelLayout::try_from(device).expect("a test width is small");
         let mut out = vec![-9.0f32; device * 8];
-        engine.process_segment(&mut InterleavedMut::new(&mut out, layout));
+        engine.process_segment(&mut InterleavedMut::new(&mut out, layout).unwrap());
         out[..device].to_vec()
     }
 
@@ -1756,7 +1761,7 @@ mod tests {
         let engine = Engine::new(&transport, &mut ed, exec).expect("empty graph");
         rewire(&mut ed, 6);
         let _ = first_frame(&engine, 2);
-        let m = tutti_types::M3DB;
+        let m = tutti_buffers::M3DB;
         let folded = [61.0 + m * 63.0 + m * 65.0, 62.0 + m * 63.0 + m * 66.0];
         assert_eq!(first_frame(&engine, 2), folded);
         let control = engine.output_control();

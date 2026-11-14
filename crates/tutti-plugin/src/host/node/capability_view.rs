@@ -104,7 +104,7 @@ impl PluginClient {
     /// declared no sequencer context. Wire a `HarmonyNode`
     /// (tutti-midi-runtime) to its event input; the node reads what arrives
     /// only when this holds.
-    pub fn takes_harmony(&self) -> bool {
+    pub(crate) fn takes_harmony(&self) -> bool {
         !declined(self, Features::SEQUENCER_CONTEXT)
     }
 

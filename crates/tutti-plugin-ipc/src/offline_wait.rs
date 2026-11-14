@@ -77,7 +77,7 @@ impl OfflineWait {
 
     /// Whether the wait should not wait at all any more: a block already
     /// missed its budget, or the server is dead.
-    pub fn stopped_waiting(&self) -> bool {
+    pub(crate) fn stopped_waiting(&self) -> bool {
         self.gave_up() || lock(&self.died).is_some()
     }
 
@@ -87,7 +87,7 @@ impl OfflineWait {
     }
 
     /// Latch a missed budget.
-    pub fn give_up(&self) {
+    pub(crate) fn give_up(&self) {
         self.gave_up.store(true, Ordering::Release);
     }
 
@@ -97,7 +97,7 @@ impl OfflineWait {
     }
 
     /// Latch a crash the bridge reported, unless a death is latched already.
-    pub fn latch_crash(&self, cause: Option<PluginFailure>) {
+    pub(crate) fn latch_crash(&self, cause: Option<PluginFailure>) {
         let mut died = lock(&self.died);
         if died.is_none() {
             *died = Some(cause.unwrap_or(PluginFailure::Unreported));
@@ -111,7 +111,7 @@ impl OfflineWait {
 
     /// Latch a rate refusal: the fork renders silence, at once, for the rest
     /// of the render.
-    pub fn latch_refusal(&self, refusal: (SampleRate, String)) {
+    pub(crate) fn latch_refusal(&self, refusal: (SampleRate, String)) {
         let mut slot = lock(&self.refusal);
         if slot.is_none() {
             *slot = Some(refusal);

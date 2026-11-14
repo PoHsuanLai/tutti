@@ -41,8 +41,10 @@
 //! let engine = Engine::new(&transport, &mut editor, executor).expect("within the limits");
 //!
 //! // One interleaved stereo block, rendered on "the audio thread".
+//! // The view checks once that the buffer is whole stereo frames.
 //! let mut out = vec![0.0f32; 256 * 2];
-//! engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+//! let mut block = InterleavedMut::new(&mut out, ChannelLayout::STEREO).expect("whole frames");
+//! engine.process(&mut block);
 //! assert!(out.iter().any(|&s| s != 0.0));
 //! ```
 //!
@@ -51,7 +53,7 @@
 //!
 //! To play through a sound card, turn on `device` and let the session (the
 //! `session` feature, on by default) open it and build the graph at the rate it
-//! reports: `SessionBuilder::build_device` hands back a `LiveSession`, the
+//! reports: `SessionBuilder::<OnDevice>::build` hands back a `LiveSession`, the
 //! `Session` and its `Device` (dropping it stops the stream), and `examples/headless_engine.rs` plays a tone in under twenty
 //! lines. To write a file
 //! instead, turn on `export` (it brings the `codec` module with it) and bounce the
@@ -203,8 +205,13 @@ pub mod tempo {
 pub use tutti_metering as metering;
 
 /// The shared vocabulary (`tutti-types`): unit newtypes, channel layouts,
-/// buffer views, the I/O edge traits.
+/// the I/O edge traits.
 pub use tutti_types as types;
+
+/// Audio in memory (`tutti-buffers`): the sample formats, the mono,
+/// interleaved and planar views over them, the conversions between formats and
+/// layouts, and the channel `Fold`.
+pub use tutti_buffers as buffers;
 
 /// Real-time-safe shared-memory primitives for the audio thread (`tutti-rt`):
 /// the publish cell (`ArcLend`), the capped `RtVec`, the sequence lock and the
@@ -335,14 +342,14 @@ pub mod midi {
     #[cfg(feature = "session")]
     pub use tutti_session::{
         AddedInstrument, AnyNode, FollowTempo, InstrumentHandle, Midi, MidiEvent, MidiLoad,
-        MidiRouteRule, SessionInstrument, TakePlacement,
+        MidiRouteRule, TakePlacement,
     };
 
     #[cfg(feature = "midi-hardware")]
     pub use tutti_midi_hardware::{
         ChannelCount, ChannelProfile, CiChange, CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery,
-        Learned, ListedProfile, Match, PeerProfiles, ProfileError, ProfileSwitch, ProfilesChange,
-        SavedDevice, Whole, WholeProfile,
+        Learned, ListedProfile, Match, PeerId, PeerProfiles, ProfileError, ProfileSwitch,
+        ProfilesChange, SavedDevice, Whole, WholeProfile,
     };
     #[cfg(all(feature = "session", feature = "midi-hardware"))]
     pub use tutti_session::Resolution;
@@ -403,12 +410,14 @@ pub use tutti_transport::{
 };
 
 // Units, channels, buffers, the edge traits and the musical meter.
+pub use tutti_buffers::{
+    FiniteSource, Interleaved, InterleavedMut, Pull, Sink, SinkFailed, Source, StereoPlanes, Stop,
+};
 pub use tutti_types::{
     Amplitude, At, BarNumber, Beat, BeatDuration, Bpm, Cents, CentsSpan, ChannelLayout,
-    ChannelTopology, Db, Depth, FiniteSource, Frame, Hz, Interleaved, InterleavedMut, Latency,
-    LoopRange, LoopRangeError, MaxBlock, Meter, MeterMap, Moment, Note, NoteValue, Param,
-    ParamAddr, PhaseIncrement, PitchClass, Pull, Q, SamplePosition, SampleRate, Samples, Seconds,
-    Semitones, Sink, SinkFailed, Source, Speaker, StereoPlanes, Stop, Tail, TimeSignature,
+    ChannelTopology, Db, Depth, Frame, Hz, Latency, LoopRange, LoopRangeError, MaxBlock, Meter,
+    MeterMap, Moment, Note, NoteValue, Param, ParamAddr, PhaseIncrement, PitchClass, Q,
+    SamplePosition, SampleRate, Samples, Seconds, Semitones, Speaker, Tail, TimeSignature,
     UnitAddr, UnitParam, Velocity,
 };
 pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};

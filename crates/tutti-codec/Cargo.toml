@@ -41,6 +41,7 @@ serde = ["dep:serde"]
 thiserror.workspace = true
 # An unfinished file that cannot be removed is logged.
 tracing = "0.1"
+tutti-buffers = { version = "0.0.1", path = "../tutti-buffers" }
 tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
 serde = { version = "1", optional = true, default-features = false, features = ["derive"] }
 # No default features: the encoder drives flacenc's frame encoder on its own

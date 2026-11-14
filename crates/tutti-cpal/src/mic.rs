@@ -40,20 +40,21 @@
 //! [`MicConfig::inputs`] defaults to the first two (a mono device's one input on
 //! both sides) and takes any list of them, so "inputs 3 and 4 of 16" is
 //! `Some(vec![2, 3])`. The selection is
-//! [`Fold::select`](tutti_types::Fold::select), applied in the capture callback.
+//! [`Fold::select`](tutti_buffers::Fold::select), applied in the capture callback.
 
 use std::sync::Arc;
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 
+use tutti_buffers::Fold;
+use tutti_buffers::{InterleavedMut, Pull, Source};
 use tutti_codec::{FileOut, Format, Spec};
 use tutti_graph::TapId;
 use tutti_graph::{InletRing, TapReader, TapWriter};
 use tutti_rt::Drained;
 use tutti_types::SampleRate;
 use tutti_types::Samples;
-use tutti_types::{ChannelLayout, ChannelTopology, Fold};
-use tutti_types::{Pull, Source};
+use tutti_types::{ChannelLayout, ChannelTopology};
 
 use crate::driver_seam::device_rate;
 use crate::error::{Error, Result};
@@ -414,13 +415,15 @@ impl MicIn {
 }
 
 impl Source for MicIn {
+    type Sample = f32;
+
     /// One channel a selected input (two for [`MicIn::open`]), whatever the
     /// device's own width is.
     fn layout(&self) -> ChannelLayout {
         self.tap.layout()
     }
 
-    /// Pops up to `out.len() / width` FRAMES the callback has pushed.
+    /// Pops up to `out.len()` FRAMES the callback has pushed.
     ///
     /// A live capture device: an empty ring means the callback has not pushed
     /// since the last pull, so [`Starved`](Pull::Starved), never
@@ -432,10 +435,13 @@ impl Source for MicIn {
     /// backend error may be transient and does not fail the source) **and** the
     /// ring is empty. The fault flag is read before the ring, so frames the
     /// callback pushed before the fault are never hidden behind it.
-    fn pull(&mut self, out: &mut [f32]) -> Pull {
+    fn pull(&mut self, mut out: InterleavedMut<'_, f32>) -> Pull {
+        if out.layout() != self.tap.layout() {
+            return Pull::Failed;
+        }
         let tap = &mut self.tap;
         match self.faults.drain(|| {
-            let n = tap.pop_into(out);
+            let n = tap.pop_into(out.samples_mut());
             (!n.is_zero()).then_some(n)
         }) {
             Drained::Item(n) => Pull::Frames(n),

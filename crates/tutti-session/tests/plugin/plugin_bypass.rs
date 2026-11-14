@@ -23,10 +23,11 @@ use std::time::{Duration, Instant};
 use tutti_types::MaxBlock;
 
 use support::{clap_probe, plugin_server};
+use tutti_buffers::InterleavedMut;
 use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
 use tutti_plugin::catalog::PluginRef;
 use tutti_session::{InPort, NodeMode, OutPort, PluginLoadRequest, Root, Session};
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 1_024;
@@ -85,7 +86,9 @@ struct Rig {
 fn rig(mode: NodeMode) -> Rig {
     set_server();
     let mut s = Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(BLOCK)))
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(BLOCK)))
+        .build()
         .expect("an offline session builds");
     let plugin = s
         .add_plugin_blocking(
@@ -114,7 +117,7 @@ impl Rig {
         let mut block = vec![f32::NAN; BLOCK * 2];
         for _ in 0..blocks {
             self.s
-                .render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+                .render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
             out.extend(block.iter().step_by(2));
         }
         out

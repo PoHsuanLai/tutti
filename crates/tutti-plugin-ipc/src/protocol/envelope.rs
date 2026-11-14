@@ -112,11 +112,6 @@ pub enum HostMessage {
     },
     /// Ask for every parameter the plugin declares.
     GetParameterList,
-    /// Ask for one parameter's declaration (name, range, flags, group).
-    GetParameterInfo {
-        /// Which parameter — opaque handle or positional index, per format.
-        param_id: ParamId,
-    },
     /// Re-rate the plugin. Deactivates and reactivates it server-side, and is
     /// answered by [`BridgeMessage::SampleRateSet`]: the host must learn
     /// whether the plugin runs at the rate before it renders another block.
@@ -254,7 +249,7 @@ pub enum HostMessage {
         plain: f64,
     },
     /// Open the plugin's editor on the served instance itself, in this server
-    /// process (doc 029 section 6.5), answered by
+    /// process, answered by
     /// [`BridgeMessage::EditorOpened`].
     ///
     /// `parent` is the host window's platform number
@@ -318,8 +313,6 @@ pub enum BridgeMessage {
         #[serde(default)]
         state_error: Option<String>,
     },
-    /// The plugin instance was destroyed; the subprocess remains alive.
-    PluginUnloaded,
     /// Acknowledges a processed block. Audio output goes into the block's slot
     /// in the shared `AudioSlab`'s output ring, published there before this
     /// message is sent; the measured latency and any MIDI the plugin emitted
@@ -341,7 +334,7 @@ pub enum BridgeMessage {
         #[serde(default, with = "super::wire::midi")]
         midi_out: MidiEventVec,
         /// What the plugin said of itself at the end of the block (CLAP's
-        /// process status, doc 023 section 5.3). `Sleep` is sent only when the
+        /// process status). `Sleep` is sent only when the
         /// block's output was silent, so the host may park on it.
         #[serde(default)]
         status: BlockStatus,
@@ -356,11 +349,6 @@ pub enum BridgeMessage {
     ParameterList {
         /// The declarations, empty if the plugin exposes no parameters.
         parameters: Vec<ParameterInfo>,
-    },
-    /// One parameter's declaration, or `None` if the address is unknown.
-    ParameterInfoResponse {
-        /// The declaration, if the plugin recognized the address.
-        info: Option<ParameterInfo>,
     },
     /// One slice of the plugin's serialized state, answering
     /// [`HostMessage::SaveState`], in order.

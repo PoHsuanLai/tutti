@@ -118,7 +118,7 @@ impl Speaker {
     ///
     /// Worth a predicate rather than an `==` at each call site because the LFE
     /// is the one position with different *handling* rather than a different
-    /// place: it is excluded from a consumer downmix (see [`Fold`](crate::Fold)), and
+    /// place: it is excluded from a consumer downmix (see `tutti_buffers::Fold`), and
     /// it is not a VBAP-panned speaker.
     #[must_use]
     pub const fn is_lfe(self) -> bool {
@@ -136,7 +136,7 @@ impl Speaker {
     /// and back for side (`None` for any other speaker).
     ///
     /// The two spellings of one set of feeds (see [`ChannelTopology::quad`]):
-    /// a [`Fold`](crate::Fold) and an encoder's channel order both let a bed
+    /// a `tutti_buffers::Fold` and an encoder's channel order both let a bed
     /// use either.
     #[must_use]
     pub const fn counterpart(self) -> Option<Self> {
@@ -179,7 +179,7 @@ impl Speaker {
 /// or twelve tracks. Only an edge knows, so an edge states a topology:
 /// [`smpte`](Self::smpte) when the width really is the engine's own order,
 /// [`quad`](Self::quad) for four speaker feeds, [`unassigned`](Self::unassigned)
-/// for channels that feed no speaker. [`Fold::between`](crate::Fold::between)
+/// for channels that feed no speaker. `tutti_buffers::Fold::between`
 /// is the one place two topologies meet.
 ///
 /// # Examples
@@ -272,10 +272,10 @@ impl ChannelTopology {
     /// width with no defined one.
     ///
     /// This is the SMPTE / WAV `WAVEFORMATEXTENSIBLE` order that
-    /// [`Fold`](crate::Fold) folds by and that the spatial panner maps to:
+    /// `tutti_buffers::Fold` folds by and that the spatial panner maps to:
     /// `FC` for mono, `FL FR` for stereo, `FL FR C LFE SL SR [BL BR]` for 5.1
     /// and 7.1, and 7.1.4 at 12: the 7.1 bed then `TFL TFR TBL TBR`. These are
-    /// the widths [`Fold`](crate::Fold) has an order for.
+    /// the widths `tutti_buffers::Fold` has an order for.
     ///
     /// `None` for a width the engine has no order for — including **4**, which
     /// is genuinely ambiguous: quad `FL FR BL BR` and ambisonic B-format
@@ -357,7 +357,7 @@ impl ChannelTopology {
     /// front pair and back pair). VST3's `k40Music` and AU's `Quadraphonic`
     /// call the same pair `Ls Rs` and decode to `FL FR SL SR`; the engine's own
     /// 5.1 uses side too. The two spellings are one set of feeds, not two:
-    /// [`Fold::between`](crate::Fold::between) moves a side or back pair whose
+    /// `tutti_buffers::Fold::between` moves a side or back pair whose
     /// counterpart the source lacks to the destination's at gain 1.0, a bit-exact
     /// relabelling either way (pinned in `fold/tests.rs`), so no decode is
     /// rewritten to agree and a consumer need not normalise.

@@ -1,10 +1,11 @@
 use super::*;
-use tutti_fixtures::midi::{self, wide_velocity};
+use tutti_fixtures::midi;
 use tutti_graph::EventInletNode;
 use tutti_graph::EventKind;
 use tutti_graph::contract::Direct;
+use tutti_midi_protocol::widen_velocity;
 use tutti_types::{Frame, SampleRate};
-use tutti_ump::{MidiGroup, NoteVelocity, Ump};
+use tutti_ump::{MidiGroup, NoteVelocity, U7, Ump};
 
 fn rig() -> (Direct<EventInletNode>, MidiKeys) {
     let (node, writer) = EventInletNode::pair(LIVE_INLET_CAPACITY);
@@ -33,7 +34,7 @@ fn the_key_helpers_match_explicit_events() {
         Stamp::NextBlock,
         MidiChannel::FIRST,
         NoteNumber::of(60),
-        NoteVelocity::new(wide_velocity(100)),
+        NoteVelocity::new(widen_velocity(U7::of(100)).get()),
     )
     .unwrap();
     keys.note_off(Stamp::NextBlock, MidiChannel::FIRST, NoteNumber::of(60))
@@ -42,8 +43,8 @@ fn the_key_helpers_match_explicit_events() {
     assert_eq!(
         sent(&d),
         [
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, wide_velocity(100)),
-            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            midi::note_on(MidiChannel::FIRST, 60, widen_velocity(U7::of(100)).get()),
+            midi::note_off(MidiChannel::FIRST, 60, 0),
         ]
     );
 }
@@ -61,10 +62,7 @@ fn a_note_on_at_velocity_zero_stays_a_note_on() {
     )
     .unwrap();
     d.block();
-    assert_eq!(
-        sent(&d),
-        [midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)]
-    );
+    assert_eq!(sent(&d), [midi::note_on(MidiChannel::FIRST, 60, 0)]);
 }
 
 /// A full ring refuses a helper's event with `Full` (the writer's own rule,
@@ -109,8 +107,8 @@ fn the_helpers_send_on_the_keys_group() {
     assert_eq!(
         sent(&d),
         [
-            midi::note_on(group, MidiChannel::FIRST, 60, 5),
-            midi::note_off(group, MidiChannel::FIRST, 60, 0),
+            midi::note_on(tutti_ump::Address::new(group, MidiChannel::FIRST), 60, 5),
+            midi::note_off(tutti_ump::Address::new(group, MidiChannel::FIRST), 60, 0),
         ]
     );
 }

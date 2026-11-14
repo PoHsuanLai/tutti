@@ -1,10 +1,10 @@
 use super::*;
 use std::num::NonZeroUsize;
 use tutti_graph::{Offset, UmpAt};
-use tutti_ump::MidiGroup;
 
 use tutti_fixtures::midi;
-use tutti_ump::MidiChannel;
+use tutti_midi_protocol::widen_velocity;
+use tutti_ump::{MidiChannel, U7};
 
 /// A note-on with a 7-bit velocity, widened (M2-115), at the block's first
 /// frame: what a host's outbound events are.
@@ -12,10 +12,9 @@ fn note_on(note: u8, vel_u7: u8) -> UmpAt {
     (
         Offset::ZERO,
         midi::note_on(
-            MidiGroup::FIRST,
             MidiChannel::FIRST,
             note,
-            tutti_fixtures::midi::wide_velocity(vel_u7),
+            widen_velocity(U7::of(vel_u7)).get(),
         ),
     )
 }
@@ -26,10 +25,7 @@ fn raw(e: UmpAt) -> (u32, Ump) {
 }
 
 fn note_off(note: u8) -> UmpAt {
-    (
-        Offset::ZERO,
-        midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0),
-    )
+    (Offset::ZERO, midi::note_off(MidiChannel::FIRST, note, 0))
 }
 
 #[test]

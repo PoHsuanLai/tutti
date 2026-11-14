@@ -22,6 +22,7 @@ testing = []
 [dependencies]
 # The editor's sizes, which name their unit (`dpi::Size`).
 dpi.workspace = true
+thiserror.workspace = true
 clap-sys = "0.5"
 libloading.workspace = true
 bitflags = "2"

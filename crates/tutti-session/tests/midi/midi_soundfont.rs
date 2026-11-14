@@ -20,15 +20,17 @@ use tutti_session::Root;
 use tutti_types::MaxBlock;
 
 use crate::common::{note, play};
-use tutti_fixtures::midi::note_on;
+
+use tutti_buffers::InterleavedMut;
+use tutti_fixtures::midi;
 use tutti_graph::{EventCapacity, NodeKey};
 use tutti_midi_runtime::MidiIngestNode;
 use tutti_session::Stamp;
 use tutti_session::{EventInPort, MidiRouteRule, Session};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
-use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_types::{Beat, BeatDuration, ChannelLayout, SampleRate, Samples};
+use tutti_ump::MidiChannel;
 
 const RATE: SampleRate = SampleRate::SR_48K;
 
@@ -52,7 +54,9 @@ fn soundfont() -> Arc<SoundFont> {
 fn rig() -> (Session, NodeKey) {
     let unit = SoundFontUnit::new(soundfont(), Settings::new()).expect("builds the unit");
     let mut s = Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(128)))
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(128)))
+        .build()
         .expect("builds");
     let (synth, _) = s.graph().add(unit);
     // The dry pair; the unit's other outputs are sends.
@@ -68,7 +72,7 @@ fn render(s: &Session, frames: usize) -> Vec<f32> {
     let mut out = Vec::with_capacity(frames * 2);
     let mut buf = vec![0.0f32; 128 * 2];
     for _ in 0..frames.div_ceil(128) {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         out.extend_from_slice(&buf);
     }
     out.truncate(frames * 2);
@@ -166,7 +170,7 @@ fn preview_still_sounds_under_an_installed_clip() {
     let _ = s.update();
     live.push(
         Stamp::NextBlock,
-        note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0xFFFF),
+        midi::note_on(MidiChannel::FIRST, 67, 0xFFFF),
     )
     .unwrap();
 
@@ -198,7 +202,7 @@ fn routed_level(channel: MidiChannel) -> f32 {
     device
         .push(
             Stamp::NextBlock,
-            note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, u16::MAX),
+            midi::note_on(MidiChannel::of(1), 60, u16::MAX),
         )
         .expect("room");
     rms(&render(&s, 12_000))

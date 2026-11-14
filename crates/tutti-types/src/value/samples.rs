@@ -22,8 +22,8 @@
 // agree.
 unit! {
     /// A count of audio frames: reported latency, compensation delay, ring length,
-    /// and every count crossing the [`Source`](crate::io::Source) /
-    /// [`Sink`](crate::io::Sink) edge.
+    /// and every count crossing the `Source` /
+    /// `Sink` edge.
     ///
     /// "Samples" in the *sample-frame* sense — one tick of the clock, however many
     /// channels wide — which is how the plugin formats and `Seconds::to_samples`
@@ -109,7 +109,7 @@ impl Samples {
     ///
     /// Returns a bare `usize` on purpose: the result indexes a `&[f32]`, and a
     /// slice has no other unit. It is the *only* place on the
-    /// [`Source`](crate::io::Source) / [`Sink`](crate::io::Sink) edge
+    /// `Source` / `Sink` edge
     /// where a count leaves this type, so a stride mistake has one site to live
     /// in rather than one per caller.
     ///
@@ -126,8 +126,7 @@ impl Samples {
     /// samples holds at `layout`'s width: `len / channels`, the inverse of
     /// [`interleaved_len`](Self::interleaved_len).
     ///
-    /// A trailing partial frame is **not** counted, matching
-    /// [`Interleaved::len`](crate::Interleaved::len): a short frame is not a
+    /// A trailing partial frame is **not** counted: a short frame is not a
     /// frame, and writing one desynchronises the interleave for everything
     /// after it.
     ///

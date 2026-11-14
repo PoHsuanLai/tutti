@@ -270,7 +270,7 @@ pub struct DependentParam {
 /// to pick one of a finite set of tapers to draw. An `Unknown` arm here would be
 /// a value no UI could act on — so an unrecognized bit pattern maps to
 /// [`Self::Linear`], which is the safe default the flags mean by their absence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum DisplayCurve {
     /// No display flag set: a plain linear control.
     #[default]

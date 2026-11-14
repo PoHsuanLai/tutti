@@ -16,13 +16,13 @@ use core_foundation::base::TCFType;
 use core_foundation::string::CFString;
 use coremidi_sys::{
     MIDIDestinationCreateWithProtocol, MIDIEndpointDispose, MIDIEndpointRef, MIDIEventList,
-    MIDIEventPacket, MIDIEventPacketNext, MIDIReceiveBlock, MIDITimeStamp, kMIDIProtocol_2_0,
+    MIDIEventPacket, MIDIEventPacketNext, MIDIReceiveBlock, MIDITimeStamp,
 };
 use std::ffi::c_void;
 use std::fmt;
 use std::sync::Mutex;
 
-use crate::source::{Error, shared_raw_client};
+use crate::source::{Error, Protocol, shared_raw_client};
 
 /// The receive block CoreMIDI calls with each event list: the list, and the
 /// connection's reference constant, which this block never reads. The list is
@@ -44,6 +44,13 @@ pub struct UmpDestination {
     _block: ReceiveBlock,
 }
 
+// SAFETY: the endpoint is an opaque `u32` handle into CoreMIDI, whose objects are
+// internally synchronised, and `MIDIEndpointDispose` may run on any thread. The
+// block is never called from Rust: it is only retained by CoreMIDI and released
+// by the drop, both atomic on a block's reference count, and the closure it
+// owns is `Send` (`new` requires it) and is called under a mutex.
+unsafe impl Send for UmpDestination {}
+
 impl fmt::Debug for UmpDestination {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("UmpDestination")
@@ -53,13 +60,13 @@ impl fmt::Debug for UmpDestination {
 }
 
 impl UmpDestination {
-    /// Publishes a MIDI 2.0 virtual destination named `name`; `on_packet` gets
-    /// each packet sent to it.
+    /// Publishes a virtual destination named `name` carrying `protocol`;
+    /// `on_packet` gets each packet sent to it.
     ///
     /// # Errors
     ///
     /// [`Error`] when the client or the endpoint cannot be created.
-    pub fn new<F>(name: &str, on_packet: F) -> Result<Self, Error>
+    pub fn new<F>(name: &str, protocol: Protocol, on_packet: F) -> Result<Self, Error>
     where
         F: FnMut(MIDITimeStamp, &[u32]) + Send + 'static,
     {
@@ -89,7 +96,7 @@ impl UmpDestination {
             MIDIDestinationCreateWithProtocol(
                 client,
                 name.as_concrete_TypeRef(),
-                kMIDIProtocol_2_0 as _,
+                protocol.id(),
                 &mut endpoint,
                 RcBlock::as_ptr(&block).cast::<c_void>() as MIDIReceiveBlock,
             )

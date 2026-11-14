@@ -32,10 +32,10 @@ pub struct WireMidi {
 impl WireMidi {
     /// A packet at a checked block `offset`.
     #[must_use]
-    pub fn at(offset: Offset, ump: Ump) -> WireMidi {
+    pub fn at(offset: Offset, ump: impl Into<Ump>) -> WireMidi {
         WireMidi {
             offset: offset.get(),
-            ump,
+            ump: ump.into(),
         }
     }
 }

@@ -166,7 +166,6 @@ impl Client {
     /// # Errors
     ///
     /// The code of the call that failed.
-    #[cfg(feature = "testing")]
     pub fn publish_ump_endpoint(&self, endpoint: &UmpEndpoint) -> crate::Result<()> {
         use crate::error::check;
         use std::ffi::CString;
@@ -177,7 +176,14 @@ impl Client {
             .as_deref()
             .and_then(|n| CString::new(n).ok())
             .unwrap_or_default();
-        let count = u32::try_from(endpoint.blocks.len()).unwrap_or(32);
+        // The count is the highest block number plus one: the sequencer refuses a
+        // block numbered at or past it.
+        let count = endpoint
+            .blocks
+            .iter()
+            .map(|block| block.id + 1)
+            .max()
+            .unwrap_or(0);
         // SAFETY: `info` is a live record; `cname` outlives the call that copies it.
         unsafe {
             sys::snd_ump_endpoint_info_set_protocol_caps(p, endpoint.protocol_caps);
@@ -204,6 +210,9 @@ impl Client {
                 sys::snd_ump_block_info_set_first_group(p, block.first_group);
                 sys::snd_ump_block_info_set_num_groups(p, block.num_groups);
                 sys::snd_ump_block_info_set_ui_hint(p, block.ui_hint);
+                sys::snd_ump_block_info_set_flags(p, block.flags);
+                sys::snd_ump_block_info_set_midi_ci_version(p, block.midi_ci_version);
+                sys::snd_ump_block_info_set_sysex8_streams(p, block.sysex8_streams);
                 sys::snd_ump_block_info_set_name(p, cname.as_ptr());
             }
             let id = i32::try_from(block.id).unwrap_or(0);

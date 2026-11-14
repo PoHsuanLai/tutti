@@ -81,7 +81,7 @@
 //!   error callback cannot return anywhere else.
 //! - [`ManualStreamDriver`] — runs the same lifecycle with no device, the caller
 //!   rendering each callback; for tests.
-//! - `MicIn` (feature `capture`) — a microphone as a `tutti_types::Source`,
+//! - `MicIn` (feature `capture`) — a microphone as a `tutti_buffers::Source`,
 //!   optionally with a live-monitor graph node. It delivers the inputs it was
 //!   opened with, as unassigned channels: the first two by default, any
 //!   list (`MicConfig::inputs` of `[2, 3]` is inputs 3 and 4 of 16).

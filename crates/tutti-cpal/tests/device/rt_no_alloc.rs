@@ -22,6 +22,7 @@
 //! width. `renders_something_to_gate` asserts that, so the gates cannot pass
 //! by rendering nothing.
 
+use tutti_buffers::InterleavedMut;
 use tutti_cpal::{AudioCallbackState, MAX_FRAMES, OutputBlock, process_audio};
 use tutti_engine::Engine;
 use tutti_graph::{Edge, InPort, OutPort, Source};
@@ -30,9 +31,9 @@ use tutti_graph::{MeterId, MeterSpec, NodeKey, TapAlign, TapId};
 use tutti_nodes::testing::Osc;
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
+use tutti_types::ChannelLayout;
 use tutti_types::MaxBlock;
 use tutti_types::{Bpm, Hz, Q, SampleRate, Samples};
-use tutti_types::{ChannelLayout, InterleavedMut};
 const SAMPLE_RATE: f64 = 48_000.0;
 
 /// Build an engine + transport pair whose graph actually renders, rolling.
@@ -117,7 +118,10 @@ fn rolling_state_with(
 /// Render `frames` once, outside any gate, to prime whatever the first call
 /// sizes.
 fn warm_up(state: &AudioCallbackState, buf: &mut [f32]) {
-    process_audio(state, &mut InterleavedMut::new(buf, ChannelLayout::STEREO));
+    process_audio(
+        state,
+        &mut InterleavedMut::new(buf, ChannelLayout::STEREO).unwrap(),
+    );
 }
 
 /// The fixture renders audible output.
@@ -164,7 +168,8 @@ fn process_audio_across_block_sizes_is_allocation_free() {
             for frames in SIZES {
                 process_audio(
                     &state,
-                    &mut InterleavedMut::new(&mut out[..frames * 2], ChannelLayout::STEREO),
+                    &mut InterleavedMut::new(&mut out[..frames * 2], ChannelLayout::STEREO)
+                        .unwrap(),
                 );
             }
         }

@@ -63,7 +63,7 @@ fn play(s: &mut Session, windows: usize) {
     let (mut sum, mut n) = (0.0f64, 0usize);
     let mut line = String::new();
     while n < windows * window {
-        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
+        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO).unwrap());
         report(s.update());
         for &x in &out {
             sum += f64::from(x) * f64::from(x);
@@ -79,11 +79,10 @@ fn play(s: &mut Session, windows: usize) {
 
 fn main() -> Result<(), Error> {
     let mut s = Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::MONO,
-            MaxBlock::of(Samples(BLOCK)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .outputs(ChannelLayout::MONO)
+        .max_block(MaxBlock::of(Samples(BLOCK)))
+        .build()
         .expect("builds");
     let (saw, _) = s.graph().add(ForkByClone(Osc::saw(Hz(110.0))));
     let (filter, _) = s.graph().add(SvfFilterNode::<f64>::new(

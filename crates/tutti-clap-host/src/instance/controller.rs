@@ -84,7 +84,7 @@ impl ClapController {
 
     /// The loaded plugin, for the surface the [`Control`] impl
     /// and this type's own methods do not cover. The Controller does not
-    /// `Deref` to it (doc 016 section 2.2): a call that must also tell the
+    /// `Deref` to it: a call that must also tell the
     /// Processor is a method here, not one reached through the loaded type.
     ///
     /// # Panics

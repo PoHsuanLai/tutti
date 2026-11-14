@@ -13,11 +13,10 @@ use tutti_clap_host::{
     ClapEvent, ClapHost, EventList, HostState, InputEventList, InputStream, NoteExpressionType,
     OutputEventList, OutputStream, ParameterChanges, ParameterQueue,
 };
-use tutti_fixtures::midi as fx;
 use tutti_graph::Offset;
 use tutti_midi_protocol::{channel_voice, midi1};
 use tutti_types::Samples;
-use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, Voice2};
+use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, NoteNumber, Voice2};
 
 /// A block long enough for every offset these tests use.
 const BLOCK: usize = 1_000;
@@ -38,6 +37,10 @@ use crate::support;
 use support::main_thread;
 #[allow(unused_imports)]
 use support::raw::{HostRaw, InputListRaw, InputStreamRaw, OutputListRaw, OutputStreamRaw};
+use support::{midi_events, note_expressions, param_changes};
+use tutti_fixtures::midi;
+use tutti_midi_protocol::{widen_bend, widen_value};
+use tutti_ump::{U7, U14};
 
 // ── MIDI conversion via `(Offset, Ump)` and `WireMidi` ──
 //
@@ -49,10 +52,7 @@ use support::raw::{HostRaw, InputListRaw, InputStreamRaw, OutputListRaw, OutputS
 #[test]
 fn test_note_on_roundtrip() {
     // Build with MIDI-2 velocity (half of u16 max ≈ 0x8000).
-    let event = (
-        at(10),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, fx::MID_VELOCITY),
-    );
+    let event = (at(10), midi::note_on(MidiChannel::of(3), 60, 0x8000));
     let clap = first(&event).expect("NoteOn should convert");
     assert!(matches!(clap, ClapEvent::NoteOn(_)));
     let back = clap.to_midi().expect("round-trip should succeed");
@@ -66,10 +66,7 @@ fn test_note_on_roundtrip() {
 /// NoteOff maps to CLAP's typed `note` event (NoteOff variant).
 #[test]
 fn test_note_off_roundtrip() {
-    let event = (
-        at(20),
-        fx::note_off(MidiGroup::FIRST, MidiChannel::of(5), 72, 0x4000),
-    );
+    let event = (at(20), midi::note_off(MidiChannel::of(5), 72, 0x4000));
     let clap = first(&event).expect("NoteOff should convert");
     assert!(matches!(clap, ClapEvent::NoteOff(_)));
     let back = clap.to_midi().expect("round-trip should succeed");
@@ -85,11 +82,10 @@ fn test_note_off_roundtrip() {
 fn test_control_change_roundtrip() {
     let event = (
         at(5),
-        fx::cc(
-            MidiGroup::FIRST,
+        midi::cc(
             MidiChannel::of(2),
             CCNumber::BRIGHTNESS,
-            tutti_fixtures::midi::wide_value(100),
+            widen_value(U7::of(100)).get(),
         ),
     );
     let clap = first(&event).expect("CC should convert");
@@ -111,11 +107,7 @@ fn test_pitch_bend_roundtrip() {
     // MIDI-1 center = 8192 (0x2000).
     let event = (
         at(0),
-        fx::pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            tutti_fixtures::midi::wide_bend(8192),
-        ),
+        midi::pitch_bend(MidiChannel::FIRST, widen_bend(U14::of(8192)).get()),
     );
     let clap = first(&event).expect("PitchBend should convert");
     match clap {
@@ -132,10 +124,7 @@ fn test_pitch_bend_roundtrip() {
 /// ProgramChange is a 2-byte MIDI-1 event, passed through as generic `Midi`.
 #[test]
 fn test_program_change_roundtrip() {
-    let event = (
-        at(100),
-        fx::program_change(MidiGroup::FIRST, MidiChannel::of(9), 42, None),
-    );
+    let event = (at(100), midi::program_change(MidiChannel::of(9), 42, None));
     let clap = first(&event).expect("ProgramChange should convert");
     match clap {
         ClapEvent::Midi(e) => {
@@ -151,14 +140,8 @@ fn test_program_change_roundtrip() {
 #[test]
 fn test_input_event_list_add_midi_counts_correctly() {
     let mut list = InputEventList::new();
-    list.add_midi(&(
-        at(0),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
-    ));
-    list.add_midi(&(
-        at(100),
-        fx::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-    ));
+    list.add_midi(&(at(0), midi::note_on(MidiChannel::FIRST, 60, 0x8000)));
+    list.add_midi(&(at(100), midi::note_off(MidiChannel::FIRST, 60, 0)));
 
     let raw = list.as_raw();
     unsafe {
@@ -206,7 +189,7 @@ fn test_output_event_list_push_note_on() {
     }
 
     assert_eq!(list.len(), 1);
-    let midi_out = list.to_midi_events();
+    let midi_out = midi_events(&list);
     assert_eq!(midi_out.len(), 1);
     let event = &midi_out[0];
     assert!(matches!(
@@ -261,7 +244,7 @@ fn a_wildcard_note_off_resolves_by_note_id_not_by_masking() {
         assert!(push_fn(raw as *const _, &note.header as *const _));
     }
 
-    let midi_out = list.to_midi_events();
+    let midi_out = midi_events(&list);
     assert_eq!(midi_out.len(), 1, "the note-off must survive conversion");
     let event = &midi_out[0];
     assert!(event.ump.is_note_off());
@@ -316,7 +299,7 @@ fn a_wildcard_note_off_with_an_opaque_note_id_is_dropped() {
     }
 
     assert!(
-        list.to_midi_events().is_empty(),
+        midi_events(&list).is_empty(),
         "an unaddressable wildcard must be dropped, not bound to a phantom voice"
     );
 }
@@ -345,7 +328,7 @@ fn test_output_event_list_push_midi_cc() {
         assert!(push_fn(raw as *const _, &midi.header as *const _));
     }
 
-    let midi_out = list.to_midi_events();
+    let midi_out = midi_events(&list);
     assert_eq!(midi_out.len(), 1);
     let event = &midi_out[0];
     assert_eq!(event.offset, 33);
@@ -361,18 +344,9 @@ fn test_output_event_list_push_midi_cc() {
 #[test]
 fn test_input_event_list_sort_by_time() {
     let mut list = InputEventList::new();
-    list.add_midi(&(
-        at(200),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
-    ));
-    list.add_midi(&(
-        at(50),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x5000),
-    ));
-    list.add_midi(&(
-        at(100),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x7000),
-    ));
+    list.add_midi(&(at(200), midi::note_on(MidiChannel::FIRST, 60, 0x8000)));
+    list.add_midi(&(at(50), midi::note_on(MidiChannel::FIRST, 64, 0x5000)));
+    list.add_midi(&(at(100), midi::note_on(MidiChannel::FIRST, 67, 0x7000)));
     list.sort_by_time();
 
     let events = list.events();
@@ -408,7 +382,7 @@ fn test_output_event_list_push_param_value() {
         push_fn(raw as *const _, &param.header as *const _);
     }
 
-    let changes = list.to_param_changes();
+    let changes = param_changes(&list);
     assert_eq!(changes.queues.len(), 1);
     assert_eq!(changes.queues[0].param_id, 7u32.into());
     assert!((changes.queues[0].points[0].value.get() - 0.42).abs() < 0.001);
@@ -467,7 +441,7 @@ fn test_note_expression_roundtrip_through_output_list() {
         push_fn(raw as *const _, &expr.header as *const _);
     }
 
-    let expressions = list.to_note_expressions();
+    let expressions = note_expressions(&list);
     assert_eq!(expressions.len(), 1);
     assert_eq!(expressions[0].expression_type, NoteExpressionType::Tuning);
     assert_eq!(expressions[0].note_id, 5);
@@ -593,7 +567,7 @@ fn test_output_list_filters_midi_from_mixed_events() {
 
     assert_eq!(list.len(), 2);
     // to_param_changes should only return the param, not the note
-    assert_eq!(list.to_param_changes().queues.len(), 1);
+    assert_eq!(param_changes(&list).queues.len(), 1);
 }
 
 // ── Event types through the output list FFI ──
@@ -725,7 +699,7 @@ fn test_output_list_push_param_gesture_begin_end() {
     }
 
     // Gesture events should not appear as param changes
-    assert_eq!(list.to_param_changes().queues.len(), 0);
+    assert_eq!(param_changes(&list).queues.len(), 0);
 }
 
 // ── Transport constants ──
@@ -1414,26 +1388,6 @@ fn test_host_event_registry_claims_no_space() {
     assert_eq!(space_id, u16::MAX);
 }
 
-#[test]
-fn test_host_audio_ports_config_rescan() {
-    use clap_sys::ext::audio_ports_config::{
-        CLAP_EXT_AUDIO_PORTS_CONFIG, clap_host_audio_ports_config,
-    };
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let apc_ptr = unsafe { get_ext(raw, CLAP_EXT_AUDIO_PORTS_CONFIG.as_ptr()) };
-    let apc = unsafe { &*(apc_ptr as *const clap_host_audio_ports_config) };
-
-    assert!(!state.audio_ports.config_changed.load(Ordering::Acquire));
-    unsafe { apc.rescan.unwrap()(raw) };
-    assert!(state.audio_ports.config_changed.load(Ordering::Acquire));
-}
-
 // ── thread_pool ──
 
 /// `ext/thread-pool.h`: `true` means the host *did execute* all the tasks,
@@ -1516,42 +1470,6 @@ fn a_surround_position_round_trips_through_the_enum() {
     }
 }
 
-#[test]
-fn test_host_ambisonic_changed_callback() {
-    use clap_sys::ext::ambisonic::{CLAP_EXT_AMBISONIC, clap_host_ambisonic};
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let amb_ptr = unsafe { get_ext(raw, CLAP_EXT_AMBISONIC.as_ptr()) };
-    let amb = unsafe { &*(amb_ptr as *const clap_host_ambisonic) };
-
-    assert!(!state.audio_ports.ambisonic_changed.load(Ordering::Acquire));
-    unsafe { amb.changed.unwrap()(raw) };
-    assert!(state.audio_ports.ambisonic_changed.load(Ordering::Acquire));
-}
-
-#[test]
-fn test_host_surround_changed_callback() {
-    use clap_sys::ext::surround::{CLAP_EXT_SURROUND, clap_host_surround};
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let sur_ptr = unsafe { get_ext(raw, CLAP_EXT_SURROUND.as_ptr()) };
-    let sur = unsafe { &*(sur_ptr as *const clap_host_surround) };
-
-    assert!(!state.audio_ports.surround_changed.load(Ordering::Acquire));
-    unsafe { sur.changed.unwrap()(raw) };
-    assert!(state.audio_ports.surround_changed.load(Ordering::Acquire));
-}
-
 // ── POSIX FD support tests (unix only) ──
 
 #[cfg(unix)]
@@ -1625,46 +1543,6 @@ fn test_host_posix_fd_modify() {
         let fds = state.posix_fds.entries.lock().unwrap();
         assert_eq!(fds[0].flags, CLAP_POSIX_FD_READ | CLAP_POSIX_FD_WRITE);
     }
-}
-
-// ── Note name host extension tests ──
-
-#[test]
-fn test_host_note_name_changed_callback() {
-    use clap_sys::ext::note_name::{CLAP_EXT_NOTE_NAME, clap_host_note_name};
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let nn_ptr = unsafe { get_ext(raw, CLAP_EXT_NOTE_NAME.as_ptr()) };
-    let nn = unsafe { &*(nn_ptr as *const clap_host_note_name) };
-
-    assert!(!state.notes.names_changed.load(Ordering::Acquire));
-    unsafe { nn.changed.unwrap()(raw) };
-    assert!(state.notes.names_changed.load(Ordering::Acquire));
-}
-
-// ── Voice info host extension tests ──
-
-#[test]
-fn test_host_voice_info_changed_callback() {
-    use clap_sys::ext::voice_info::{CLAP_EXT_VOICE_INFO, clap_host_voice_info};
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let vi_ptr = unsafe { get_ext(raw, CLAP_EXT_VOICE_INFO.as_ptr()) };
-    let vi = unsafe { &*(vi_ptr as *const clap_host_voice_info) };
-
-    assert!(!state.notes.voice_info_changed.load(Ordering::Acquire));
-    unsafe { vi.changed.unwrap()(raw) };
-    assert!(state.notes.voice_info_changed.load(Ordering::Acquire));
 }
 
 // ── ParamMod event FFI ──

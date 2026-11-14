@@ -296,6 +296,11 @@ fn parameter_info(id: u32) -> sys::AudioUnitParameterInfo {
         *dst = src as std::os::raw::c_char;
     }
     info.flags = sys::kAudioUnitParameterFlag_IsReadable | sys::kAudioUnitParameterFlag_IsWritable;
+    if id != core::TONE {
+        // `level` and `aux` take a ramp; `tone`'s value is not linear in its
+        // plain units, so it takes none.
+        info.flags |= sys::kAudioUnitParameterFlag_CanRamp;
+    }
     let default = core::default_of(id).expect("a listed id");
     if id == core::TONE {
         info.unit = sys::kAudioUnitParameterUnit_Hertz;
@@ -904,21 +909,30 @@ unsafe extern "C" fn schedule_parameters(
             if e.scope != sys::kAudioUnitScope_Global || e.parameter >= core::PARAMS {
                 return ERR_INVALID_PARAMETER;
             }
-            // Immediate events only: a ramp is not the contract's, and the host
-            // never sends one.
-            if e.eventType != sys::kParameterEvent_Immediate {
-                continue;
-            }
-            // SAFETY: the event type says the immediate arm is the live one.
-            let at = unsafe { e.eventValues.immediate };
-            i.core.push(
-                &mut dsp,
-                Ev::Param {
-                    id: e.parameter,
-                    offset: at.bufferOffset,
-                    value: to_normalized(e.parameter, at.value),
-                },
-            );
+            let ev = match e.eventType {
+                sys::kParameterEvent_Immediate => {
+                    // SAFETY: the event type says the immediate arm is the live one.
+                    let at = unsafe { e.eventValues.immediate };
+                    Ev::Param {
+                        id: e.parameter,
+                        offset: at.bufferOffset,
+                        value: to_normalized(e.parameter, at.value),
+                    }
+                }
+                sys::kParameterEvent_Ramped => {
+                    // SAFETY: the event type says the ramp arm is the live one.
+                    let r = unsafe { e.eventValues.ramp };
+                    Ev::Ramp {
+                        id: e.parameter,
+                        offset: r.startBufferOffset,
+                        duration: r.durationInFrames,
+                        start: r.startValue,
+                        end: r.endValue,
+                    }
+                }
+                _ => continue,
+            };
+            i.core.push(&mut dsp, ev);
         }
         0
     })

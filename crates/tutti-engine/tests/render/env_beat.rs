@@ -26,6 +26,7 @@ use tutti_types::MaxBlock;
 use crate::support;
 
 use support::{Change, beat_of_frame, model_beats, step_map};
+use tutti_buffers::InterleavedMut;
 use tutti_engine::Engine;
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -38,8 +39,7 @@ use tutti_transport::{
     Transport, TransportCommand,
 };
 use tutti_types::{
-    Amplitude, At, Beat, Bpm, ChannelLayout, Frame, InterleavedMut, LoopRange, SampleRate, Samples,
-    Tail,
+    Amplitude, At, Beat, Bpm, ChannelLayout, Frame, LoopRange, SampleRate, Samples, Tail,
 };
 
 const SR: f64 = 48_000.0;
@@ -150,7 +150,7 @@ fn graph_engine(
 
 fn render(engine: &Engine, layout: ChannelLayout, n: usize) -> Vec<f32> {
     let mut buf = vec![0.0f32; n * layout.count() as usize];
-    engine.process(&mut InterleavedMut::new(&mut buf, layout));
+    engine.process(&mut InterleavedMut::new(&mut buf, layout).unwrap());
     buf
 }
 

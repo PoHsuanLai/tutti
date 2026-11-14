@@ -420,7 +420,7 @@ impl Player {
                 channel,
                 Voice2::ControlChange {
                     controller: CCNumber::RESET_ALL,
-                    value: ControlValue::new(0),
+                    value: ControlValue::MIN,
                 },
             );
         }

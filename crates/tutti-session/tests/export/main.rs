@@ -1,5 +1,8 @@
 //! Offline render through the session: bounce, cancel and the forks of every node kind.
 
+// `Session::new` is a full session: it bounces.
+#[cfg(feature = "export")]
+mod new_session;
 // Stems: a node's own output beside the master, aligned to it, in one pass.
 #[cfg(feature = "export")]
 mod bounce_stems;

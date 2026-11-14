@@ -73,12 +73,10 @@ pub(crate) enum MpeControl {
     Gain(Expression),
 }
 
-/// A voice's MPE state: whether it is applied at render time and the
-/// expression received so far. Which messages reach a voice (Detach, the bend's
+/// A voice's per-note expression received so far. Which messages reach a voice (Detach, the bend's
 /// sensitivity) is `tutti-voicing`'s decision; the values arrive resolved.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MpeVoiceState {
-    enabled: bool,
     /// Per-note pressure.
     pub pressure: Expression,
     /// Per-note slide, centred at [`SLIDE_CENTER`].
@@ -88,30 +86,11 @@ pub struct MpeVoiceState {
 }
 
 impl MpeVoiceState {
-    pub(crate) fn new(enabled: bool) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            enabled,
             pressure: Expression::MIN,
             slide: SLIDE_CENTER,
             gain: Expression::MAX,
-        }
-    }
-
-    /// Whether the expression is applied at render time.
-    #[cfg(test)]
-    pub(crate) fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    /// Turns the expression on or off. Turning it off also resets it: the
-    /// controllers store while disabled, and would otherwise snap into effect
-    /// when re-enabled.
-    pub(crate) fn set_enabled(&mut self, enabled: bool) {
-        if self.enabled != enabled {
-            self.enabled = enabled;
-            if !enabled {
-                self.reset();
-            }
         }
     }
 
@@ -126,27 +105,21 @@ impl MpeVoiceState {
 
     /// Returns the controllers to their defaults.
     pub(crate) fn reset(&mut self) {
-        *self = Self::new(self.enabled);
+        *self = Self::new();
     }
 
-    /// The slide in effect: `None` when disabled or at centre.
+    /// The slide in effect: `None` at centre.
     pub(crate) fn effective_slide(&self) -> Option<Expression> {
-        (self.enabled && (self.slide.get() - SLIDE_CENTER.get()).abs() > 0.001)
-            .then_some(self.slide)
+        ((self.slide.get() - SLIDE_CENTER.get()).abs() > 0.001).then_some(self.slide)
     }
 
     /// The gain factors in effect, `(pressure, note)`. The pressure is the
-    /// larger of the note's own (when per-note expression is on) and the
-    /// channel's, `channel_pressure`; the note's gain is unity when disabled.
+    /// larger of the note's own and the channel's, `channel_pressure`.
     pub(crate) fn gain_factors(&self, channel_pressure: f32) -> (f32, f32) {
-        if self.enabled {
-            (
-                1.0 + self.pressure.get().max(channel_pressure) * 0.5,
-                self.gain.get(),
-            )
-        } else {
-            (1.0 + channel_pressure * 0.5, 1.0)
-        }
+        (
+            1.0 + self.pressure.get().max(channel_pressure) * 0.5,
+            self.gain.get(),
+        )
     }
 }
 

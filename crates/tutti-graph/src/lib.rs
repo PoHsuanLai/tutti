@@ -293,7 +293,7 @@
 //!     Cx, Event, EventKind, ForkByClone, GraphBuilder, Io, Node, Offset, Prepare, Shape, Status,
 //! };
 //! use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
-//! use tutti_ump::{Message, MidiChannel, NoteNumber, U7, Ump};
+//! use tutti_ump::{Message, MidiChannel, NoteNumber, U7, Ump, Voice1};
 //!
 //! #[derive(Clone)]
 //! struct Pulse;
@@ -304,7 +304,7 @@
 //!     }
 //!     fn prepare(&mut self, _: &Prepare) {}
 //!     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
-//!         let on = Message::note_on(MidiChannel::of(0), NoteNumber::of(60), U7::of(100));
+//!         let on = Message::midi1(MidiChannel::of(0), Voice1::note_on(NoteNumber::of(60), U7::of(100)));
 //!         if let Some(at) = io.offset(3) {
 //!             let _ = io.event_out(0).push(Event::midi(at, Ump::from(on)));
 //!         }
@@ -626,8 +626,7 @@ pub use bus_edge::{BusError, BusFeed, BusFold, BusRef, BusSide, BusSource, Lower
 pub use gain::{EDGE_DECLICK, EdgeFade, EdgeGain};
 pub use graph::{
     Edge, EdgeId, EventTapId, EventTapSource, EventTapSpec, FeedbackFrom, InPort, Invalid, MeterId,
-    MeterSpec, NodeKey, NodeSpec, OutPort, ParamValue, Sink, Source, TapAlign, TapId, TapSpec,
-    Topology, Valid,
+    MeterSpec, NodeKey, NodeSpec, OutPort, Sink, Source, TapAlign, TapId, TapSpec, Topology, Valid,
 };
 pub use history::TransportHistory;
 pub use inlet::{InletNode, InletRing};

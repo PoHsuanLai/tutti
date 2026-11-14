@@ -10,6 +10,10 @@ members = [
     "crates/tutti-metering",
     "crates/tutti-tempo",
     "crates/tutti-curve",
+    # The sample formats (`Sample`, `Float`, `I24`) and the borrowed mono, interleaved
+    # and planar views over them, with the conversions between formats and layouts:
+    # layer 1, `tutti-types` alone (and `libm`).
+    "crates/tutti-buffers",
     "crates/tutti-cpal",
     "crates/tutti-types",
     "crates/tutti-codec",
@@ -18,6 +22,10 @@ members = [
     "crates/tutti-midi-protocol",
     "crates/tutti-voicing",
     "crates/tutti-midi-device",
+    # Network MIDI 2.0 over UDP: the wire format, the Client and Host session
+    # machines (no sockets), a `std::net` driver and mDNS discovery.
+    # Depends on `tutti-ump` and `tutti-midi-device` alone.
+    "crates/tutti-midi-network",
     "crates/tutti-graph",
     "crates/tutti-modulation",
     "crates/tutti-export",
@@ -95,6 +103,13 @@ rgb = { version = "0.8.53", default-features = false }
 criterion = "0.8"
 
 winnow = { version = "1", default-features = false, features = ["alloc", "binary"] }
+# SHA-256 for Network MIDI 2.0's invitation digests (`tutti-midi-network`'s auth module).
+sha2 = { version = "0.11.1", default-features = false }
+# The operating system's random bytes, for a Host's authentication nonce.
+getrandom = "0.4.3"
+# mDNS / DNS-SD service advertisement and browsing, `tutti-midi-network`'s discovery module alone.
+mdns-sd = "0.21.7"
+# NFC composition for text written into UMP messages (M2-104 section 1.8).
 unicode-normalization = { version = "0.1", default-features = false }
 coremidi = "0.9"
 coremidi-sys = "3.2"

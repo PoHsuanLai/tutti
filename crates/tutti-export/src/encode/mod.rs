@@ -23,11 +23,10 @@ use crate::output::FileTarget;
 use crate::render::{PlaneSource, REPLAY_BLOCK, RenderPlan, Replay};
 use crate::{Error, Written};
 use std::path::Path;
+use tutti_buffers::{Interleaved, InterleavedMut, Sink, SinkFailed};
 use tutti_codec::{Encoder, Finalized, Spec};
 use tutti_dsp::{DitherSink, StreamingResampler};
-use tutti_types::{
-    Amplitude, ChannelLayout, Interleaved, InterleavedMut, SampleRate, Samples, Sink, SinkFailed,
-};
+use tutti_types::{Amplitude, ChannelLayout, SampleRate, Samples};
 
 /// The rate the file is written at: the resample target, else the rate it is
 /// rendered at.
@@ -148,24 +147,31 @@ struct EncoderSink {
 }
 
 impl Sink for EncoderSink {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         self.layout
     }
 
-    fn write(&mut self, interleaved: &[f32]) -> std::result::Result<(), SinkFailed> {
+    fn write(&mut self, block: Interleaved<'_>) -> std::result::Result<(), SinkFailed> {
         if self.error.is_some() {
             return Err(SinkFailed);
         }
-        if self.counts_clipping {
-            self.clipped += clipped_in(interleaved);
+        if block.layout() != self.layout {
+            self.error = Some(Error::from(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "a block of another width than the encoder's",
+            )));
+            return Err(SinkFailed);
         }
-        self.encoder
-            .write(Interleaved::new(interleaved, self.layout))
-            .map_err(|e| {
-                self.error = Some(Error::from(e));
-                SinkFailed
-            })?;
-        self.frames += Samples::from_interleaved_len(interleaved.len(), self.layout);
+        if self.counts_clipping {
+            self.clipped += clipped_in(block.samples());
+        }
+        self.encoder.write(block).map_err(|e| {
+            self.error = Some(Error::from(e));
+            SinkFailed
+        })?;
+        self.frames += block.len();
         Ok(())
     }
 
@@ -283,11 +289,12 @@ impl Chain {
             self.staging.clear();
             self.staging
                 .extend(block.samples().iter().map(|s| s * gain.get()));
-            self.sink.write(&self.staging).map_err(|_| self.failure())
+            let staged = Interleaved::new(&self.staging, self.layout)?;
+            self.sink.write(staged).map_err(|_| self.failure())
         } else {
             // With no dither the adapter hands the gated block straight on,
             // uncopied.
-            self.sink.write(block.samples()).map_err(|_| self.failure())
+            self.sink.write(block).map_err(|_| self.failure())
         }
     }
 
@@ -334,13 +341,15 @@ fn emit_planes(
     let frames = Samples(out.first().map_or(0, Vec::len));
     staging.clear();
     staging.resize(frames.interleaved_len(layout), 0.0);
-    InterleavedMut::new(staging, layout).interleave_from(out, 0);
+    InterleavedMut::new(staging, layout)?.interleave_from(out, Samples::ZERO);
     if let Some(gain) = gain {
         for s in staging.iter_mut() {
             *s *= gain.get();
         }
     }
-    let r = sink.write(staging).map_err(|_| failure_of(sink));
+    let r = Interleaved::new(staging, layout)
+        .map_err(Error::from)
+        .and_then(|block| sink.write(block).map_err(|_| failure_of(sink)));
     for p in out.iter_mut() {
         p.clear();
     }
@@ -367,19 +376,17 @@ pub(crate) fn replay_through(
 ) -> Result<Outcome<Samples>> {
     let layout = chain.layout;
     let mut block = vec![0.0f32; block_frames.max(1) * usize::from(layout.count())];
+    let mut block = InterleavedMut::new(&mut block, layout)?;
     let mut at = done.get();
     loop {
         if control.is_cancelled() {
             return Ok(Outcome::Cancelled);
         }
-        let n = replay.fill(InterleavedMut::new(&mut block, layout))?;
+        let n = replay.fill(block.reborrow())?;
         if n == 0 {
             break;
         }
-        chain.block(Interleaved::new(
-            &block[..Samples(n).interleaved_len(layout)],
-            layout,
-        ))?;
+        chain.block(block.as_ref().window(Samples::ZERO..Samples(n)))?;
         at += n;
         control.advance(stage, Samples(at), total);
     }

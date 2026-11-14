@@ -56,11 +56,11 @@ use tutti_midi_runtime::{MidiOut, Outgoing, SendAt};
 use tutti_ump::{Protocol, split_stream};
 
 mod host_time;
-pub mod virtual_destination;
-pub mod virtual_source;
+mod virtual_destination;
+mod virtual_source;
 mod watch;
-pub use virtual_destination::UmpVirtualDestination;
-pub use virtual_source::UmpVirtualSource;
+pub(crate) use virtual_destination::UmpVirtualDestination;
+pub(crate) use virtual_source::UmpVirtualSource;
 
 /// The process-wide CoreMIDI client every backend and virtual destination
 /// shares.

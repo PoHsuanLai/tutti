@@ -6,6 +6,7 @@ use tutti_midi_protocol::{
     Recipient, SysexDeviceId, Universal, UniversalReader, read,
 };
 use tutti_types::Seconds;
+use tutti_ump::Voice1;
 use tutti_ump::{
     Address, DeviceIdentity, ManufacturerId, Message, MidiChannel, MidiGroup, NoteNumber,
     Sysex7Packets, SysexMessage, U7, Ump,
@@ -244,21 +245,19 @@ fn a_message_in_several_packets_is_heard_at_its_end() {
 /// Group is interspersed freely.
 #[test]
 fn a_message_of_the_group_ends_an_open_one_and_another_group_does_not() {
-    let note = Ump::from(Message::note_on(
+    let note = Ump::from(Message::midi1(
         Address {
             group: MidiGroup::of(0),
             channel: MidiChannel::of(0),
         },
-        NoteNumber::of(60),
-        U7::of(64),
+        Voice1::note_on(NoteNumber::of(60), U7::of(64)),
     ));
-    let other_group_note = Ump::from(Message::note_on(
+    let other_group_note = Ump::from(Message::midi1(
         Address {
             group: MidiGroup::of(1),
             channel: MidiChannel::of(0),
         },
-        NoteNumber::of(60),
-        U7::of(64),
+        Voice1::note_on(NoteNumber::of(60), U7::of(64)),
     ));
     let umps = packets(0, &REPLY);
     let mut r = reader(0);

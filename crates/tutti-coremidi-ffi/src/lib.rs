@@ -10,7 +10,7 @@
 //!
 //! | | |
 //! |---|---|
-//! | `UmpSource` | a native-UMP (MIDI 2.0 protocol) virtual source: it disposes its endpoint on drop, and sends a UMP message as an event list. The safe `coremidi` wrapper has the destination side and no source |
+//! | `UmpSource`, `Protocol` | a native-UMP virtual source in the MIDI 1.0 or MIDI 2.0 protocol: it disposes its endpoint on drop, and sends a UMP message as an event list. The safe `coremidi` wrapper has the destination side and no source |
 //! | `ump_endpoints` | the UMP Endpoints and Function Blocks CoreMIDI reports (macOS 15's `MIDIUMPEndpoint`, Objective-C classes bound through `objc2-core-midi`), as plain values; `None` before macOS 15, where the classes do not exist |
 //! | `Timebase`, `host_ticks` | the Mach host clock CoreMIDI timestamps its packets with, and the ratio from its ticks to nanoseconds |
 //!
@@ -32,5 +32,5 @@ mod ump_endpoints;
 
 pub use destination::UmpDestination;
 pub use host_clock::{Timebase, host_ticks};
-pub use source::{Error, UmpSource};
+pub use source::{Error, Protocol, UmpSource};
 pub use ump_endpoints::{UmpBlockInfo, UmpEndpointInfo, ump_endpoints};

@@ -28,7 +28,7 @@ pub(crate) mod wire;
 ///   and struct-update paths, not this wire.
 /// - **Version 24** appended `ParameterInfo::measures` (an `Option<ParamUnit>`, a
 ///   variant index) and `role` (an `Option<u16>`, a `UnitParam` discriminant)
-///   to every entry of a `ParameterList` and `ParameterInfoResponse`: two
+///   to every entry of a `ParameterList`: two
 ///   `0x00` bytes after `group` when both are `None`. No recorded golden holds
 ///   a `ParameterInfo`, so none needed re-recording.
 /// - An **enum variant** is a varint discriminant over declaration order, so a
@@ -70,16 +70,16 @@ pub(crate) mod wire;
 /// - **Version 32** adds `status` to `AudioProcessed`: what the plugin said of
 ///   itself at the end of the block (`BlockStatus`: CLAP's process status as
 ///   *continue*, *tail* or *sleep*), so the node can report no tail and park
-///   when the plugin sleeps (doc 023 step 2). It is a field of every block's
+///   when the plugin sleeps. It is a field of every block's
 ///   reply, so a version-31 server's replies read differently from the first
 ///   byte after the MIDI.
-/// - **Version 33** appends the editor messages (doc 029 section 6.5): the
+/// - **Version 33** appends the editor messages: the
 ///   host's `OpenEditor { parent, scale }`, `CloseEditor` and `SetEditorSize`,
 ///   and the server's `EditorOpened`, `EditorSized`, `EditorWantsSize` and
 ///   `EditorClosed`, so a served plugin's editor can live in the server. They
 ///   follow every earlier variant, which keep their numbers.
-/// - **Version 34** splits the audio phase into two connections (doc 029
-///   section 6.5). No message changed: the host connects a third time after the
+/// - **Version 34** splits the audio phase into two connections. No message changed: the host
+///   connects a third time after the
 ///   audio connection, the server sends `Ready` on it, and the audio connection
 ///   carries `ProcessAudio` and `Reset` alone (the server's render thread
 ///   serves it) while the control connection carries every other request and
@@ -101,7 +101,10 @@ pub(crate) mod wire;
 /// - **Version 38** writes an editor size as a `dpi::Size`, which says whether it
 ///   is in physical pixels or logical points: `SetEditorSize`, `EditorOpened`,
 ///   `EditorSized` and `EditorWantsSize` carried a pair of integers with no unit.
-pub const PROTOCOL_VERSION: u32 = 38;
+/// - **Version 39** removed three messages nothing sent (the server's
+///   instance-destroyed notice, the host's single-parameter declaration query
+///   and its reply); the variants after them renumber.
+pub const PROTOCOL_VERSION: u32 = 39;
 
 /// Largest control-socket frame body either end will allocate for, in bytes.
 ///
@@ -179,7 +182,7 @@ pub const STATE_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 ///
 /// [`BridgeError::ProtocolMismatch`](tutti_plugin_types::BridgeError::ProtocolMismatch)
 /// when the versions differ.
-pub fn check_protocol_version(got: u32) -> tutti_plugin_types::BridgeResult<()> {
+pub(crate) fn check_protocol_version(got: u32) -> tutti_plugin_types::BridgeResult<()> {
     if got == PROTOCOL_VERSION {
         Ok(())
     } else {
@@ -218,12 +221,14 @@ pub use tutti_plugin_types::{
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use tutti_fixtures::midi;
+    use tutti_midi_protocol::{widen_value, widen_velocity};
     use tutti_plugin_types::{
         ChordValue, Load, NoteExpressionIntValue, NoteExpressionTextValue, ScaleValue, WireMidi,
     };
     use tutti_types::SampleRate;
-    use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Ump, Voice2};
+    use tutti_ump::{CCNumber, Message, MidiChannel, U7, Ump, Voice2};
+
+    use tutti_fixtures::midi;
 
     /// Every preset frame survives the wire in both directions.
     ///
@@ -314,7 +319,7 @@ mod tests {
         /// and `CloseEditor` ahead of it). Pinned as a literal so a shift is
         /// a failure here rather than an agreement between two expressions that
         /// move together.
-        const V13_LAST_TAG: u32 = 14;
+        const V13_LAST_TAG: u32 = 13;
 
         // A tag under 128 is one varint byte; a larger one would need decoding.
         let tag = |bytes: &[u8]| {
@@ -537,7 +542,7 @@ mod tests {
         /// `GetCurrentPreset`'s tag — the last request variant v14 shipped (20 until v21
         /// removed the request ahead of it, 19 until v25 removed `OpenEditor` and
         /// `CloseEditor` ahead of it).
-        const V16_LAST_REQUEST_TAG: u32 = 17;
+        const V16_LAST_REQUEST_TAG: u32 = 16;
 
         // A tag under 128 is one varint byte; a larger one would need decoding.
         let tag = |bytes: &[u8]| {
@@ -616,20 +621,14 @@ mod tests {
         let midi_out: MidiEventVec = [
             at(
                 0,
-                midi::note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    60,
-                    tutti_fixtures::midi::wide_velocity(100),
-                ),
+                midi::note_on(MidiChannel::FIRST, 60, widen_velocity(U7::of(100)).get()),
             ),
             at(
                 64,
                 midi::cc(
-                    MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     CCNumber::VOLUME,
-                    tutti_fixtures::midi::wide_value(64),
+                    widen_value(U7::of(64)).get(),
                 ),
             ),
         ]
@@ -709,7 +708,7 @@ mod tests {
     fn audio_processed_midi_out_has_pinned_bytes() {
         #[rustfmt::skip]
         const BYTES: [u8; 26] = [
-            2, // variant
+            1, // variant
             42, // latency_us
             7, // seq
             2, // two events
@@ -745,29 +744,18 @@ mod tests {
         let midi_events: MidiEventVec = [
             at(
                 0,
-                midi::note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    60,
-                    tutti_fixtures::midi::wide_velocity(100),
-                ),
+                midi::note_on(MidiChannel::FIRST, 60, widen_velocity(U7::of(100)).get()),
             ),
             at(
                 128,
-                midi::note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    64,
-                    tutti_fixtures::midi::wide_velocity(100),
-                ),
+                midi::note_on(MidiChannel::FIRST, 64, widen_velocity(U7::of(100)).get()),
             ),
             at(
                 256,
                 midi::cc(
-                    MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     CCNumber::VOLUME,
-                    tutti_fixtures::midi::wide_value(64),
+                    widen_value(U7::of(64)).get(),
                 ),
             ),
         ]
@@ -899,8 +887,8 @@ mod tests {
         assert_eq!(back.expr_ints.changes[0].value, -42);
     }
 
-    /// **A parameter's typed unit and role cross the wire**, in a `ParameterList`
-    /// and a `ParameterInfoResponse`, and an untyped one stays untyped.
+    /// **A parameter's typed unit and role cross the wire**, in a `ParameterList`,
+    /// and an untyped one stays untyped.
     #[test]
     fn a_parameters_unit_and_role_cross_the_wire() {
         use tutti_plugin_types::ParamUnit;
@@ -926,13 +914,5 @@ mod tests {
             (parameters[1].measures(), parameters[1].role()),
             (None, None)
         );
-
-        let one = BridgeMessage::ParameterInfoResponse { info: Some(typed) };
-        let BridgeMessage::ParameterInfoResponse { info: Some(info) } =
-            postcard::from_bytes(&postcard::to_allocvec(&one).unwrap()).unwrap()
-        else {
-            panic!("a ParameterInfoResponse decodes as one");
-        };
-        assert_eq!(info.measures(), Some(ParamUnit::Pan));
     }
 }

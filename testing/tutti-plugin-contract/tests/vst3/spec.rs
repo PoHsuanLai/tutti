@@ -8,14 +8,16 @@
 //! The plugins' side of each is the spec in `tutti-shared-plugin`'s `core`
 //! module, "VST3 controllers and flushes".
 
-use tutti_fixtures::{main_thread, midi};
+use tutti_fixtures::main_thread;
+use tutti_fixtures::midi;
 use tutti_graph::{Offset, UmpAt};
+use tutti_midi_protocol::{widen_value, widen_velocity};
 use tutti_plugin_contract::spec::{Mode, Param};
 use tutti_plugin_contract::{
     Active, BLOCK, Format, Kind, RATE, Render, Vst3, Vst3Cpp, prepare, select, set_mode, transcript,
 };
 use tutti_plugin_types::{Control, Normalized, ProcessContext, Processor, SampleFormat, Samples};
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, MidiChannel, U7};
 use tutti_vst3_host::{Vst3Loaded, Vst3Processor};
 
 fn active<F: Format<L = Vst3Loaded>>() -> Active<Vst3Loaded> {
@@ -36,10 +38,9 @@ fn silent_block(a: &mut Active<Vst3Loaded>, midi: &[UmpAt]) {
 
 fn cc(channel: u8, controller: u8, value: u8) -> tutti_ump::Ump {
     midi::cc(
-        MidiGroup::FIRST,
         MidiChannel::of(channel),
         CCNumber::new(controller).unwrap(),
-        midi::wide_value(value),
+        widen_value(U7::of(value)).get(),
     )
 }
 
@@ -71,18 +72,9 @@ fn unmapped_channel_messages_are_not_sent_as_sysex_data<F: Format<L = Vst3Loaded
     let events = [
         at(1, cc(0, 7, 90)),
         at(2, cc(1, 74, 90)),
-        at(
-            3,
-            midi::pitch_bend(MidiGroup::FIRST, MidiChannel::of(0), 0x9000_0000),
-        ),
-        at(
-            4,
-            midi::program_change(MidiGroup::FIRST, MidiChannel::of(0), 5, None),
-        ),
-        at(
-            5,
-            midi::channel_pressure(MidiGroup::FIRST, MidiChannel::of(0), 0x4000_0000),
-        ),
+        at(3, midi::pitch_bend(MidiChannel::of(0), 0x9000_0000)),
+        at(4, midi::program_change(MidiChannel::of(0), 5, None)),
+        at(5, midi::channel_pressure(MidiChannel::of(0), 0x4000_0000)),
     ];
     silent_block(&mut a, &events);
     let t = transcript::<F, _>(a.controller_mut());
@@ -110,12 +102,7 @@ fn the_input_parameter_list_is_never_null<F: Format<L = Vst3Loaded>>() {
 fn output_parameter_changes_reach_the_controller<F: Format<L = Vst3Loaded>>() {
     let mut a = active::<F>();
     let key = 100;
-    let note = midi::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::of(15),
-        key,
-        midi::wide_velocity(90),
-    );
+    let note = midi::note_on(MidiChannel::of(15), key, widen_velocity(U7::of(90)).get());
     silent_block(&mut a, &[at(5, note)]);
     let main = main_thread();
     let before = a

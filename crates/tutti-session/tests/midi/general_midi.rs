@@ -15,7 +15,9 @@ const RATE: SampleRate = SampleRate::SR_48K;
 
 fn offline_session() -> Session {
     Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(128)))
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(128)))
+        .build()
         .expect("an offline session builds")
 }
 
@@ -166,9 +168,9 @@ fn every_stage_declares_its_own_tail() {
 /// The unit's own tail is pinned by `tutti-soundfont`'s `ring_out` suite.
 #[test]
 fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
+    use tutti_buffers::InterleavedMut;
     use tutti_fixtures::sf2::{Inst, Preset, bytes, generator};
     use tutti_session::Stamp;
-    use tutti_types::InterleavedMut;
     use tutti_ump::{
         Address, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7, Ump,
         Voice1,
@@ -242,7 +244,7 @@ fn a_note_through_the_setup_rings_out_within_the_summed_tails() {
     let mut heard = Vec::new();
     let block = |session: &mut Session, heard: &mut Vec<f32>| {
         let mut buf = vec![0.0f32; 128 * 2];
-        session.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        session.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         let _ = session.update();
         heard.extend(buf.chunks(2).map(|f| f[0].abs().max(f[1].abs())));
     };
@@ -301,9 +303,9 @@ fn short_release_setup() -> (Session, GeneralMidi) {
 }
 
 fn peak_of_block(session: &mut Session) -> f32 {
-    use tutti_types::InterleavedMut;
+    use tutti_buffers::InterleavedMut;
     let mut buf = vec![0.0f32; 128 * 2];
-    session.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+    session.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
     let _ = session.update();
     buf.iter().fold(0.0f32, |m, s| m.max(s.abs()))
 }

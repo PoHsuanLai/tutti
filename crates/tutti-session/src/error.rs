@@ -83,6 +83,23 @@ impl NoSuchNode {
     }
 }
 
+/// [`Graph::host_plugin`](crate::Graph::host_plugin) refused.
+#[cfg(feature = "plugin")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum HostPluginError {
+    /// The node is not in the graph.
+    #[error(transparent)]
+    NoSuchNode(#[from] NoSuchNode),
+    /// The node already hosts a plugin (added by
+    /// [`Session::add_plugin`](crate::Session::add_plugin),
+    /// [`Graph::insert_plugin`](crate::Graph::insert_plugin) or an earlier
+    /// `host_plugin`): a plugin record is freed on the main thread, so a
+    /// second one is never put over the first.
+    #[error("{0:?} already hosts a plugin")]
+    AlreadyHosted(tutti_graph::NodeKey),
+}
+
 impl From<tutti_transport::ScheduleFull> for Error {
     fn from(full: tutti_transport::ScheduleFull) -> Self {
         Self::Schedule(full.into())
@@ -181,6 +198,22 @@ pub enum ConnectError {
         from_width: usize,
         /// The root's width.
         root_width: usize,
+    },
+    /// A main bus narrower than the root has no placement on the root's
+    /// channels.
+    #[error("{from:?}'s main output has no place on the root: {cause}")]
+    RootFold {
+        /// The source node.
+        from: tutti_graph::NodeKey,
+        /// Why its topology does not fold onto the root's.
+        cause: tutti_buffers::FoldError,
+    },
+    /// A main bus narrower than the root folds onto it only with weights (a
+    /// centre into a root with none): a weighted fold is a bus edge.
+    #[error("{from:?}'s main output folds onto the root only with weights; that is a bus edge")]
+    RootWeighted {
+        /// The source node.
+        from: tutti_graph::NodeKey,
     },
     /// A bus edge was refused.
     #[error(transparent)]
@@ -391,9 +424,9 @@ pub enum Error {
     /// The graph root cannot be placed on the output: the device has no
     /// channels, or the root is wider than a device at least one of whose
     /// widths has no channel order (a 6-wide root on a 5-channel device would
-    /// lose a channel). Wraps `tutti_types::FoldError`.
+    /// lose a channel). Wraps `tutti_buffers::FoldError`.
     #[error("the graph root cannot be placed on the output: {0}")]
-    Output(#[from] tutti_types::FoldError),
+    Output(#[from] tutti_buffers::FoldError),
 
     /// An inlet refused its producer's ring ([`Graph::add_inlet`](crate::Graph::add_inlet)).
     #[error(transparent)]

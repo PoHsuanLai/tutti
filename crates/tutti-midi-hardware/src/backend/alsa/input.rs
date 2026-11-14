@@ -13,8 +13,8 @@ use crate::error::Result;
 use crate::guard::Guard;
 use crate::{InputProducerHandle, Pushed};
 use tutti_alsa_ffi::{
-    CAP_WRITE, Client, Poller, QueueClock, Read, TYPE_APPLICATION, TYPE_MIDI_GENERIC, UmpVersion,
-    Wait,
+    Blocking, CAP_WRITE, Client, Poller, QueueClock, Read, TYPE_APPLICATION, TYPE_MIDI_GENERIC,
+    UmpVersion, Wait,
 };
 use tutti_midi_device::EndpointId;
 use tutti_ump::split_stream;
@@ -133,7 +133,7 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
     // Non-blocking, so the pump reads until the queue is empty and then waits in
     // `poll`, which the stop descriptor can interrupt. One client per connection
     // — see `client::open`.
-    let seq = super::client::open("tutti-in", true, UmpVersion::Midi2)?;
+    let seq = super::client::open("tutti-in", Blocking::NonBlock, UmpVersion::Midi2)?;
     // What the source can speak decides what this client is delivered: a MIDI
     // 1.0 source arrives as MIDI 1.0 UMP (type 2) and the ingest node's
     // `Translator` widens it, so the kernel never converts it.
@@ -155,7 +155,22 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
     let clock = seq.stamp_port(port)?;
 
     seq.connect_from(port, src_client, src_port)?;
+    Ok(Box::new(start(seq, clock, producer)?))
+}
 
+/// Starts pumping what the client's ports receive into `producer`: the pump
+/// owns `seq` and ends, closing it, when the returned connection drops.
+///
+/// # Errors
+///
+/// [`Error::Alsa`](crate::Error::Alsa) if the client's descriptors cannot be
+/// polled, and [`Error::MidiDevice`](crate::Error::MidiDevice) if the stop pair
+/// or the pump thread cannot be made.
+pub(super) fn start(
+    seq: Client,
+    clock: QueueClock,
+    producer: InputProducerHandle,
+) -> Result<AlsaInput> {
     let (stop_tx, stop_rx) = UnixStream::pair()
         .map_err(|e| crate::error::Error::device_from("MIDI pump stop pair", e))?;
     let polls = Poller::new(&seq, stop_rx.as_raw_fd())?;
@@ -173,12 +188,12 @@ pub fn open(id: EndpointId, producer: InputProducerHandle) -> Result<Box<dyn Inp
         })
         .map_err(|e| crate::error::Error::device_from("spawn MIDI pump", e))?;
 
-    Ok(Box::new(AlsaInput {
+    Ok(AlsaInput {
         stop: Some(stop_tx),
         died,
         ended,
         thread: Some(thread),
-    }))
+    })
 }
 
 /// Read UMP events until the stop pair closes. Reads until the queue is empty,
@@ -256,6 +271,11 @@ fn pump(
             }
         };
         errors.read();
+        // A subscription to the port, or a change of its Endpoint, is the
+        // sequencer's notice and not music.
+        if !received.is_ump() {
+            continue;
+        }
         let words = received.ump;
         let now = match received.stamp {
             Some(t) => arrivals.at(&seq, t),

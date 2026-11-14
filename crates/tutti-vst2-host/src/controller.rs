@@ -64,7 +64,7 @@ impl Vst2Controller {
     }
 
     /// The loaded plugin, for the surface the [`Control`](tutti_plugin_types::Control) impl does not cover.
-    /// The Controller does not `Deref` to it (doc 016 section 2.2).
+    /// The Controller does not `Deref` to it.
     #[must_use]
     pub fn loaded(&self) -> &Vst2Loaded {
         &self.loaded

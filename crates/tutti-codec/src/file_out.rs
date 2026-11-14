@@ -4,7 +4,9 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 
-use tutti_types::{ChannelLayout, Interleaved, SampleRate, Sink, SinkFailed};
+use tutti_buffers::Interleaved;
+use tutti_buffers::{Sink, SinkFailed};
+use tutti_types::{ChannelLayout, SampleRate};
 
 use crate::encoder::Encoder;
 use crate::error::Result;
@@ -14,7 +16,7 @@ use crate::spec::Spec;
 /// [`Format`](crate::Format) this build can write.
 ///
 /// The write edge, the mirror of `FileIn` (with a `decode-*` feature): `FileIn` is the
-/// codec's [`Source`](tutti_types::Source) and this is its
+/// codec's [`Source`](tutti_buffers::Source) and this is its
 /// [`Sink`]. It is an [`Encoder`] behind that contract, the same writer
 /// an export bounces through, so a recorded and an exported file agree
 /// sample-for-sample and byte-for-byte for a [`Spec`]. One difference is
@@ -48,7 +50,7 @@ use crate::spec::Spec;
 /// take dropped without finalizing (a pump thread that panicked) still
 /// opens.
 ///
-/// The sample rate is the [`Spec`]'s: [`Source`](tutti_types::Source)
+/// The sample rate is the [`Spec`]'s: [`Source`](tutti_buffers::Source)
 /// carries none, so build the spec at the source's rate or the file plays at
 /// the wrong speed.
 ///
@@ -57,13 +59,15 @@ use crate::spec::Spec;
 /// ```
 /// # #[cfg(feature = "encode-wav")] {
 /// use tutti_codec::{FileOut, Format, Pcm, Spec};
-/// use tutti_types::{ChannelLayout, SampleRate, Sink};
+/// use tutti_buffers::{Interleaved, Sink};
+/// use tutti_types::{ChannelLayout, SampleRate};
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let dir = tempfile::tempdir()?;
 /// let spec = Spec::of_width(Format::Wav(Pcm::Int24), ChannelLayout::STEREO, SampleRate::SR_48K);
 /// let mut out = FileOut::create(&spec, dir.path().join("tone.wav"))?;
-/// out.write(&[0.5, -0.5, 0.25, -0.25]).expect("the write lands"); // two stereo frames
+/// let frames = [0.5, -0.5, 0.25, -0.25]; // two stereo frames
+/// out.write(Interleaved::new(&frames, ChannelLayout::STEREO)?).expect("the write lands");
 /// out.finalize()?;
 /// # Ok(())
 /// # }
@@ -138,27 +142,37 @@ impl FileOut {
 }
 
 impl Sink for FileOut {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         self.spec.layout()
     }
 
-    /// Writes flat interleaved samples **already at this sink's own width**:
-    /// `frames.len() / layout().count()` whole frames, a short trailing frame
-    /// ignored. A caller feeding another width folds first, through
-    /// [`tutti_types::Fold`].
+    /// Writes frames **already at this sink's own width**. A view of another
+    /// width fails the sink rather than rotating the file's channels. A caller
+    /// feeding another width folds first, through [`tutti_buffers::Fold`].
     ///
     /// A failure stops the sink: this write and every later one returns
     /// [`SinkFailed`], and the detail of the first is reported once, from
     /// [`finalize`](Sink::finalize). Swallowing it would leave a disk-full
     /// mid-take looking like a complete recording.
-    fn write(&mut self, frames: &[f32]) -> std::result::Result<(), SinkFailed> {
+    fn write(&mut self, frames: Interleaved<'_, f32>) -> std::result::Result<(), SinkFailed> {
         if self.first_error.is_some() {
             return Err(SinkFailed); // already failed; the file is being abandoned
         }
-        // `Interleaved` views whole frames only: a trailing part of one is
-        // ignored, so an odd slice cannot rotate the file's channels.
-        let block = Interleaved::new(frames, self.spec.layout());
-        match self.encoder.write(block) {
+        let written = if frames.layout() == self.spec.layout() {
+            self.encoder.write(frames)
+        } else {
+            Err(crate::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "a {:?} view written to a {:?} file",
+                    frames.layout(),
+                    self.spec.layout()
+                ),
+            )))
+        };
+        match written {
             Ok(()) => Ok(()),
             Err(e) => {
                 self.first_error = Some(e.into());

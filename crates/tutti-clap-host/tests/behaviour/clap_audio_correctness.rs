@@ -37,6 +37,7 @@ use tutti_clap_host::{AudioBuffer32, AudioPortFlags, ClapLoaded, ClapProcessCont
 use tutti_clap_test_plugin::{PREFERRED_DIALECT_DEFAULT, REPORTED_LATENCY_SAMPLES, probe_tag};
 use tutti_graph::Offset;
 use tutti_types::Samples;
+use tutti_ump::{MidiGroup, Sysex7Packets, Ump};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const MAX_FRAMES: u32 = 512;
@@ -951,7 +952,9 @@ fn at(k: usize) -> Offset {
 
 /// The SysEx7 packets of `payload`, each `k` frames into the block.
 fn sysex_packets(payload: &[u8], k: usize) -> Vec<UmpAt> {
-    tutti_fixtures::midi::sysex7_packets(payload)
+    Sysex7Packets::from_payload(MidiGroup::FIRST, payload)
+        .expect("a payload of 7-bit bytes")
+        .collect::<Vec<Ump>>()
         .into_iter()
         .map(|ump| (at(k), ump))
         .collect()

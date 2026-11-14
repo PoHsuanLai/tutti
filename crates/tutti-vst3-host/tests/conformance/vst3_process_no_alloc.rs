@@ -27,10 +27,9 @@
 use std::path::Path;
 use tutti_graph::UmpAt;
 
-use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_types::Samples;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::MidiChannel;
 use tutti_vst3_host::{AudioBuffer, InputEvents, ParameterChanges, TransportInfo};
 
 /// A block longer than any offset these tests place an event at.
@@ -43,6 +42,7 @@ fn at(k: usize) -> Offset {
 
 #[allow(unused_imports)]
 use crate::active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
+use tutti_fixtures::midi;
 
 /// Loads `audio-probe` from the directory `build.rs` builds it into, at 64
 /// frames per block.
@@ -174,14 +174,8 @@ fn process_with_midi_does_not_allocate() {
         let ins: &[&[f32]] = &[];
         let mut buffer = AudioBuffer::new(ins, outs, 48_000.0);
         let warm = [
-            (
-                Offset::ZERO,
-                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
-            ),
-            (
-                Offset::ZERO,
-                midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-            ),
+            (Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0x8000)),
+            (Offset::ZERO, midi::note_off(MidiChannel::FIRST, 60, 0)),
         ];
         let events = InputEvents {
             midi: &warm,
@@ -191,14 +185,8 @@ fn process_with_midi_does_not_allocate() {
     }
     drive_silent(&mut inst, 32, &transport);
 
-    let on_event = [(
-        Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
-    )];
-    let off_event = [(
-        Offset::ZERO,
-        midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-    )];
+    let on_event = [(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0x8000))];
+    let off_event = [(Offset::ZERO, midi::note_off(MidiChannel::FIRST, 60, 0))];
 
     assert_no_alloc::assert_no_alloc(|| {
         for i in 0..128usize {
@@ -243,18 +231,10 @@ fn process_with_hundreds_of_events_does_not_allocate() {
             let e = if i % 2 == 0 {
                 (
                     Offset::ZERO,
-                    midi::note_on(
-                        MidiGroup::FIRST,
-                        MidiChannel::FIRST,
-                        note,
-                        midi::MID_VELOCITY,
-                    ),
+                    midi::note_on(MidiChannel::FIRST, note, 0x8000),
                 )
             } else {
-                (
-                    Offset::ZERO,
-                    midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0),
-                )
+                (Offset::ZERO, midi::note_off(MidiChannel::FIRST, note, 0))
             };
             (at(i / 4), e.1)
         })

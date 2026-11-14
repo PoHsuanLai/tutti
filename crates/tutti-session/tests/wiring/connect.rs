@@ -3,27 +3,22 @@
 //!
 //! Every figure is analytic: constants of exactly representable values.
 
+use tutti_buffers::InterleavedMut;
 use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
 use tutti_nodes::testing::{Const, Through};
 use tutti_session::{ConnectError, OutPort, Root, Session};
-use tutti_types::{ChannelLayout, InterleavedMut, MaxBlock, SampleRate, Samples};
+use tutti_types::ChannelLayout;
 
 fn offline() -> Session {
-    Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds")
+    Session::builder().build().expect("builds")
 }
 
 /// The first frame of a committed 64-frame block, per channel.
 fn first_frame(s: &mut Session) -> [f32; 2] {
     let _ = s.update();
     let mut block = vec![f32::NAN; 64 * 2];
-    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
     [block[0], block[1]]
 }
 

@@ -7,11 +7,12 @@
 use std::sync::Arc;
 
 use super::{BLOCK, Hand};
-use tutti_fixtures::midi::m1_cc;
+
+use tutti_fixtures::midi;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::SampleRate;
-use tutti_ump::{CCNumber, MidiChannel, NoteNumber, U7, U14, Voice1, Voice2};
+use tutti_ump::{CCNumber, Message, MidiChannel, U7, U14, Ump, Voice1, Voice2};
 
 pub const RATE: SampleRate = SampleRate::SR_44K1;
 
@@ -19,8 +20,6 @@ pub fn timgm6mb() -> Arc<SoundFont> {
     let mut file = std::fs::File::open(tutti_fixtures::asset("soundfonts/TimGM6mb.sf2")).unwrap();
     Arc::new(SoundFont::from_reader(&mut file).unwrap())
 }
-
-pub use tutti_fixtures::midi::{m1, m2};
 
 /// A unit over a font, with typed messages.
 pub struct Rig {
@@ -41,45 +40,40 @@ impl Rig {
     }
 
     pub fn note_on(&mut self, ch: u8, k: u8, velocity: u8) {
-        let e = m1(
-            MidiChannel::of(ch),
-            Voice1::NoteOn {
-                note: NoteNumber::of(k),
-                velocity: U7::of(velocity),
-            },
-        );
+        let e = midi::m1_note_on(MidiChannel::of(ch), k, U7::of(velocity));
         self.hand.queue_midi(&[e]);
     }
 
     pub fn note_off(&mut self, ch: u8, k: u8) {
-        let e = m1(
-            MidiChannel::of(ch),
-            Voice1::NoteOff {
-                note: NoteNumber::of(k),
-                velocity: U7::of(0),
-            },
-        );
+        let e = midi::m1_note_off(MidiChannel::of(ch), k, U7::of(0));
         self.hand.queue_midi(&[e]);
     }
 
     pub fn cc(&mut self, ch: u8, controller: CCNumber, value: u8) {
-        let e = m1_cc(MidiChannel::of(ch), controller, U7::of(value));
+        let e = midi::m1_cc(MidiChannel::of(ch), controller, U7::of(value));
         self.hand.queue_midi(&[e]);
     }
 
     /// A MIDI 2.0 message, as the input edge's translator sends an RPN,
     /// an NRPN or a Program Change with its bank.
     pub fn voice2(&mut self, ch: u8, voice: Voice2) {
-        self.hand.queue_midi(&[m2(MidiChannel::of(ch), voice)]);
+        self.hand
+            .queue_midi(&[Ump::from(Message::midi2(MidiChannel::of(ch), voice))]);
     }
 
     pub fn program(&mut self, ch: u8, program: u8) {
-        let e = m1(MidiChannel::of(ch), Voice1::ProgramChange(U7::of(program)));
+        let e = Ump::from(Message::midi1(
+            MidiChannel::of(ch),
+            Voice1::ProgramChange(U7::of(program)),
+        ));
         self.hand.queue_midi(&[e]);
     }
 
     pub fn bend(&mut self, ch: u8, bend: u16) {
-        let e = m1(MidiChannel::of(ch), Voice1::PitchBend(U14::of(bend)));
+        let e = Ump::from(Message::midi1(
+            MidiChannel::of(ch),
+            Voice1::PitchBend(U14::of(bend)),
+        ));
         self.hand.queue_midi(&[e]);
     }
 

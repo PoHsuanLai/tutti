@@ -326,46 +326,44 @@ mod tests {
         let rate = HostMessage::SetSampleRate {
             rate: SampleRate::SR_48K,
         };
-        // variant 8, 48000.0f64
+        // variant 7, 48000.0f64
         assert_eq!(
             postcard::to_allocvec(&rate).unwrap(),
-            [8, 0, 0, 0, 0, 0, 112, 231, 64]
+            [7, 0, 0, 0, 0, 0, 112, 231, 64]
         );
 
         let set_reply = BridgeMessage::SampleRateSet {
             rate: SampleRate::SR_48K,
             error: None,
         };
-        // variant 24 (26 until v25 removed `EditorOpened` and `EditorClosed`
-        // ahead of it), 48000.0f64, no error
+        // variant 22 (24 until v39 removed two earlier messages), 48000.0f64, no error
         assert_eq!(
             postcard::to_allocvec(&set_reply).unwrap(),
-            [24, 0, 0, 0, 0, 0, 112, 231, 64, 0]
+            [22, 0, 0, 0, 0, 0, 112, 231, 64, 0]
         );
 
         let some = BridgeMessage::ParameterValue {
             value: Some(Normalized::of(0.25)),
         };
-        // variant 3, Some, 0.25f64
+        // variant 2, Some, 0.25f64
         assert_eq!(
             postcard::to_allocvec(&some).unwrap(),
-            [3, 1, 0, 0, 0, 0, 0, 0, 208, 63]
+            [2, 1, 0, 0, 0, 0, 0, 0, 208, 63]
         );
         let none = BridgeMessage::ParameterValue { value: None };
-        assert_eq!(postcard::to_allocvec(&none).unwrap(), [3, 0]);
+        assert_eq!(postcard::to_allocvec(&none).unwrap(), [2, 0]);
 
         let changed = BridgeMessage::ParameterChanged {
             edit: ParamEdit::change(ParamId::new(7), Normalized::of(0.5)),
         };
-        // variant 7 (9 until v25 removed `EditorOpened` and `EditorClosed` ahead
-        // of it), then the `ParamEdit`: its variant (`Change` is 1), id 7, 0.5f64
+        // variant 5 (7 until v39 removed two earlier messages), then the `ParamEdit`: its variant (`Change` is 1), id 7, 0.5f64
         // and the recording flag (true).
         assert_eq!(
             postcard::to_allocvec(&changed).unwrap(),
-            [7, 1, 7, 0, 0, 0, 0, 0, 0, 224, 63, 1]
+            [5, 1, 7, 0, 0, 0, 0, 0, 0, 224, 63, 1]
         );
         let back: BridgeMessage =
-            postcard::from_bytes(&[7, 1, 7, 0, 0, 0, 0, 0, 0, 224, 63, 1]).unwrap();
+            postcard::from_bytes(&[5, 1, 7, 0, 0, 0, 0, 0, 0, 224, 63, 1]).unwrap();
         assert!(matches!(
             back,
             BridgeMessage::ParameterChanged { edit }
@@ -377,11 +375,11 @@ mod tests {
         let begin = BridgeMessage::ParameterChanged {
             edit: ParamEdit::Begin(ParamId::new(7)),
         };
-        assert_eq!(postcard::to_allocvec(&begin).unwrap(), [7, 0, 7]);
+        assert_eq!(postcard::to_allocvec(&begin).unwrap(), [5, 0, 7]);
         let end = BridgeMessage::ParameterChanged {
             edit: ParamEdit::End(ParamId::new(7)),
         };
-        assert_eq!(postcard::to_allocvec(&end).unwrap(), [7, 2, 7]);
+        assert_eq!(postcard::to_allocvec(&end).unwrap(), [5, 2, 7]);
     }
 
     /// **A rate that is no rate fails the message**: a `SampleRate` decodes only
@@ -397,14 +395,14 @@ mod tests {
             f64::INFINITY,
             f64::NEG_INFINITY,
         ] {
-            let mut bytes = vec![8u8];
+            let mut bytes = vec![7u8];
             bytes.extend(bad.to_le_bytes());
             assert!(
                 postcard::from_bytes::<HostMessage>(&bytes).is_err(),
                 "{bad} decoded"
             );
         }
-        let mut ok = vec![8u8];
+        let mut ok = vec![7u8];
         ok.extend(48_000.0f64.to_le_bytes());
         assert!(matches!(
             postcard::from_bytes::<HostMessage>(&ok),
@@ -441,7 +439,7 @@ mod tests {
         };
         assert_eq!(
             postcard::to_allocvec(&open).unwrap(),
-            [23, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f]
+            [22, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f]
         );
         let embedded = HostMessage::OpenEditor {
             parent: Some(300),
@@ -449,20 +447,20 @@ mod tests {
         };
         assert_eq!(
             postcard::to_allocvec(&embedded).unwrap(),
-            [23, 1, 0xac, 0x02, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f]
+            [22, 1, 0xac, 0x02, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f]
         );
         assert_eq!(
             postcard::to_allocvec(&HostMessage::CloseEditor).unwrap(),
-            [24]
+            [23]
         );
-        let mut resize = vec![25];
+        let mut resize = vec![24];
         resize.extend(size_bytes);
         assert_eq!(
             postcard::to_allocvec(&HostMessage::SetEditorSize { size }).unwrap(),
             resize
         );
 
-        let mut opened = vec![28, 0, 1];
+        let mut opened = vec![26, 0, 1];
         opened.extend(size_bytes);
         assert_eq!(
             postcard::to_allocvec(&BridgeMessage::EditorOpened {
@@ -476,15 +474,15 @@ mod tests {
                 result: Err("x".into())
             })
             .unwrap(),
-            [28, 1, 1, b'x']
+            [26, 1, 1, b'x']
         );
-        let mut sized = vec![29, 0];
+        let mut sized = vec![27, 0];
         sized.extend(size_bytes);
         assert_eq!(
             postcard::to_allocvec(&BridgeMessage::EditorSized { result: Ok(size) }).unwrap(),
             sized
         );
-        let mut wants = vec![30];
+        let mut wants = vec![28];
         wants.extend(size_bytes);
         assert_eq!(
             postcard::to_allocvec(&BridgeMessage::EditorWantsSize { size }).unwrap(),
@@ -492,10 +490,10 @@ mod tests {
         );
         assert_eq!(
             postcard::to_allocvec(&BridgeMessage::EditorClosed).unwrap(),
-            [31]
+            [29]
         );
         // The scale is a checked value on the wire: a NaN is refused.
-        let mut nan = vec![23, 0];
+        let mut nan = vec![22, 0];
         nan.extend(f64::NAN.to_le_bytes());
         assert!(postcard::from_bytes::<HostMessage>(&nan).is_err());
     }

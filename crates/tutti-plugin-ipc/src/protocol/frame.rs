@@ -33,7 +33,7 @@ use super::MAX_FRAME_BYTES;
 /// A frame whose length is over [`MAX_FRAME_BYTES`].
 #[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
 #[error("frame of {len} bytes is over the {MAX_FRAME_BYTES}-byte protocol limit")]
-pub struct FrameTooLarge {
+pub(crate) struct FrameTooLarge {
     /// The body length, in bytes, that was advertised or about to be sent.
     pub len: usize,
 }
@@ -116,7 +116,7 @@ thread_local! {
 ///
 /// # Errors
 ///
-/// [`FrameTooLarge`] (as [`BridgeError::ConnectionFailed`]) when the body is
+/// `FrameTooLarge` (as `BridgeError::ConnectionFailed`) when the body is
 /// over the cap, with nothing written; a serialization or I/O error otherwise.
 pub fn write_frame<W: Write, T: Serialize>(w: &mut W, msg: &T) -> BridgeResult<()> {
     OUT.with_borrow_mut(|frame| {
@@ -144,7 +144,7 @@ pub fn write_frame<W: Write, T: Serialize>(w: &mut W, msg: &T) -> BridgeResult<(
 ///
 /// # Errors
 ///
-/// An I/O error on EOF or a short read; [`FrameTooLarge`] (as
+/// An I/O error on EOF or a short read; `FrameTooLarge` (as
 /// [`BridgeError::ConnectionFailed`]) for an advertised length over the cap,
 /// before any allocation; a codec error for a body that does not decode as
 /// exactly one message.

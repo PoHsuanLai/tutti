@@ -45,7 +45,9 @@ fn main_thread() -> tutti_plugin_types::MainThread {
 fn offline() -> Session {
     set_server();
     Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(BLOCK)))
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(BLOCK)))
+        .build()
         .expect("an offline session builds")
 }
 
@@ -114,7 +116,7 @@ fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {
 }
 
 /// **The graph holds the tail ceiling the plugin claims** (`clap.tail`), apart
-/// from its latency (doc 023 step 2): the node's shape declares it through
+/// from its latency: the node's shape declares it through
 /// `Processing::ceiling`, an unmeasured plugin's claim, and the session's
 /// phase leaves it alone while the plugin's figure stands.
 #[test]
@@ -279,6 +281,7 @@ fn a_restart_to_another_callback_size_re_declares_a_plugins_latency() {
     set_server();
     let (driver, stream) = ManualStreamDriver::new();
     let (mut s, mut device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec(512), driver)
         .expect("builds with no device")
         .into_parts();

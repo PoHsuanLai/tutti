@@ -3,15 +3,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_fixtures::midi::{note_off, note_on};
+use tutti_buffers::InterleavedMut;
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeKey, NodeParts, Prepare, Shape, Status};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_session::{Session, SessionNode};
 use tutti_transport::MotionEvent;
-use tutti_types::{
-    Beat, BeatDuration, ChannelLayout, InterleavedMut, MaxBlock, SampleRate, Samples,
-};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_types::{Beat, BeatDuration, ChannelLayout};
+use tutti_ump::{Message, MidiChannel, NoteNumber, NoteVelocity, Ump, Voice2};
 
 /// The mezzo-forte default: MIDI 2.0's center velocity.
 pub const MF: u16 = 0x8000;
@@ -50,13 +48,7 @@ impl SessionNode for Tap {}
 
 /// An offline session at 48 kHz, stereo: the builder's MIDI nodes in.
 pub fn offline() -> Session {
-    Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds")
+    Session::builder().build().expect("builds")
 }
 
 /// A tap in `s`'s graph, and what it hears.
@@ -70,7 +62,7 @@ pub fn tap(s: &mut Session) -> (NodeKey, Seen) {
 pub fn blocks(s: &Session, n: usize) {
     let mut buf = vec![0.0f32; 512 * 2];
     for _ in 0..n {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
     }
 }
 
@@ -79,12 +71,18 @@ pub fn note(number: u8, velocity: u16, start: Beat, duration: BeatDuration) -> [
     [
         TimedMidiEvent::new(
             start,
-            note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, velocity),
+            Message::midi2(
+                MidiChannel::FIRST,
+                Voice2::note_on(NoteNumber::of(number), NoteVelocity::new(velocity)),
+            ),
         )
         .unwrap(),
         TimedMidiEvent::new(
             start + duration,
-            note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
+            Message::midi2(
+                MidiChannel::FIRST,
+                Voice2::note_off(NoteNumber::of(number), NoteVelocity::MIN),
+            ),
         )
         .unwrap(),
     ]

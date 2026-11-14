@@ -2,19 +2,20 @@
 //! `midi-hardware`): list them, open one as an input or the output, and bring
 //! back a saved one. Each call forwards to the session's
 //! [`MidiSession`](tutti_midi_hardware::MidiSession); the hot-plug and the
-//! negotiation come back as [`MidiEvent`](crate::MidiEvent)s from
+//! negotiation come back as [`MidiEvent`]s from
 //! `Session::update`.
 
 use std::sync::Arc;
 
 use tutti_midi_hardware::{
-    CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Learned, Match, PeerProfiles, ProfileSwitch,
-    ReportAsk, ReportPeer, Resolved, SavedDevice,
+    CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Learned, Match, PeerProfiles, PortDirection,
+    ProfileSwitch, ReportAsk, ReportPeer, Resolved, SavedDevice,
 };
 use tutti_ump::DeviceIdentity;
 
 use crate::MidiError;
-use crate::midi::{Midi, UmpOut};
+use crate::MidiEvent;
+use crate::midi::{Midi, MidiState, UmpOut};
 
 type Result<T> = std::result::Result<T, MidiError>;
 
@@ -54,7 +55,7 @@ impl Midi<'_> {
     /// a session with no OS MIDI layer
     /// ([`SessionBuilder::midi_hardware`](crate::SessionBuilder::midi_hardware)).
     /// A device that came or went since is reported as a
-    /// [`MidiEvent`](crate::MidiEvent) from `Session::update`.
+    /// [`MidiEvent`] from `Session::update`.
     #[must_use]
     pub fn devices(&self) -> Vec<DeviceInfo> {
         self.io
@@ -65,7 +66,11 @@ impl Midi<'_> {
     /// Opens an input device, by `&DeviceId` or by name (a case-insensitive
     /// substring: [`DeviceQuery`]). Connecting one that is open succeeds. Its
     /// events reach the hardware input node, which the session's routes
-    /// ([`route`](Midi::route)) send on.
+    /// ([`route`](Midi::route)) send on. The session keeps it connected: when
+    /// the device is removed and returns, and is surely the same one (what
+    /// [`reconnect_saved`](Self::reconnect_saved) binds unasked), it is opened
+    /// again and [`MidiEvent::InputRestored`]
+    /// says so; [`disconnect_input`](Self::disconnect_input) ends that.
     ///
     /// # Errors
     ///
@@ -73,7 +78,10 @@ impl Midi<'_> {
     /// [`MidiError::Hardware`] when no input has that name or id, the id is not
     /// an input, the device has no free slot, or the OS refuses it.
     pub fn connect_input(&mut self, device: impl Into<DeviceQuery>) -> Result<()> {
-        Ok(self.hardware_mut()?.connect_input(device)?)
+        let io = self.io.as_deref_mut().ok_or(MidiError::NoHardware)?;
+        io.connect_input(device)?;
+        self.state.lost.forget_open_inputs(io);
+        Ok(())
     }
 
     /// Turns MIDI-CI on, announcing `identity` in Discovery. **It is off by
@@ -86,7 +94,7 @@ impl Midi<'_> {
     /// identity in use it changes nothing; with another, the running devices end
     /// as [`disable_ci`](Self::disable_ci) ends them and start again under a new
     /// MUID. Found peers are
-    /// [`MidiEvent::CiPeer`](crate::MidiEvent::CiPeer) and
+    /// [`MidiEvent::CiPeer`] and
     /// [`ci_peers`](Self::ci_peers).
     ///
     /// # Errors
@@ -113,7 +121,7 @@ impl Midi<'_> {
     /// a device that answered the session's Discovery declared (identity,
     /// categories, receivable SysEx size, Function Block). Empty when the
     /// input is not open, the device has no output to talk on, or nothing
-    /// answered; a change is a [`MidiEvent::CiPeer`](crate::MidiEvent::CiPeer).
+    /// answered; a change is a [`MidiEvent::CiPeer`].
     /// The list is shared, not copied (a read clones a pointer), and stays as it
     /// was when read: read it again after a `CiPeer` event.
     #[must_use]
@@ -127,7 +135,7 @@ impl Midi<'_> {
     /// Group then MUID (M2-101 section 7): only a peer that declared Profile
     /// Configuration has an entry, and the session asks it for its Profiles when
     /// it is found. Empty when the input is not open or no peer did; a change is
-    /// a [`MidiEvent::CiProfiles`](crate::MidiEvent::CiProfiles). Shared like
+    /// a [`MidiEvent::CiProfiles`]. Shared like
     /// [`ci_peers`](Self::ci_peers), and as it was when read.
     ///
     /// A peer that has the MPE Profile (M2-120) enabled puts that input's ingest
@@ -151,7 +159,7 @@ impl Midi<'_> {
     /// Asks a peer to enable or disable a Profile it lists, on the input the
     /// switch was made from. The request goes out at the next update, and its end (the peer's
     /// Enabled or Disabled Report, its NAK, or a timeout with no answer) is a
-    /// [`MidiEvent::CiProfiles`](crate::MidiEvent::CiProfiles) with
+    /// [`MidiEvent::CiProfiles`] with
     /// [`ProfilesChange::Resolved`](tutti_midi_hardware::ProfilesChange::Resolved).
     ///
     /// # Errors
@@ -167,7 +175,7 @@ impl Midi<'_> {
     /// answered that they support MIDI Message Report, by Group then MUID (M2-101
     /// section 9): empty when the input is not open or no peer did. The session
     /// asks each such peer for its capabilities when it is found; a
-    /// [`MidiEvent::CiProcess`](crate::MidiEvent::CiProcess) says one answered.
+    /// [`MidiEvent::CiProcess`] says one answered.
     /// Shared like [`ci_peers`](Self::ci_peers), and as it was when read.
     ///
     /// Each is a [`ReportPeer`], the handle a [`ReportAsk`] is made from, so a
@@ -181,7 +189,7 @@ impl Midi<'_> {
 
     /// Asks a peer for a MIDI Message Report, on the input the request was made
     /// from. The request goes out at the next update; the peer's Reply and End, its
-    /// NAK, or a timeout are [`MidiEvent::CiProcess`](crate::MidiEvent::CiProcess)
+    /// NAK, or a timeout are [`MidiEvent::CiProcess`]
     /// events, and the report's MIDI messages reach the graph between the first
     /// and the last as the input's MIDI.
     ///
@@ -199,7 +207,7 @@ impl Midi<'_> {
     /// Identity Reply, then a MIDI-CI peer's for what those left). Empty when
     /// the input is not open, has not answered yet, or never will: the answers
     /// arrive over the first seconds after a connect, and a
-    /// [`MidiEvent::StreamSettled`](crate::MidiEvent::StreamSettled) or
+    /// [`MidiEvent::StreamSettled`] or
     /// [`CiPeer`](crate::MidiEvent::CiPeer) reports that something did. A
     /// device identity names a model and a Product Instance Id one unit
     /// (M2-101 §5.8.3.1).
@@ -235,17 +243,21 @@ impl Midi<'_> {
         saved.confirm(&self.learned(id))
     }
 
-    /// Closes an input, by id or name.
+    /// Closes an input, by id or name, and forgets it: it is not reopened when
+    /// it returns. An input that was lost
+    /// ([`MidiEvent::InputLost`]) and has not
+    /// returned is forgotten the same way.
     ///
     /// # Errors
     ///
     /// [`MidiError::NoHardware`] on a session with no OS MIDI layer;
-    /// [`MidiError::InputNotOpen`] when no open input answers to `device`.
-    /// Nothing changes.
+    /// [`MidiError::InputNotOpen`] when no open or lost input answers to
+    /// `device`. Nothing changes.
     #[must_use = "a device that was not open is an error"]
     pub fn disconnect_input(&mut self, device: impl Into<DeviceQuery>) -> Result<()> {
         let device = device.into();
-        if self.hardware_mut()?.disconnect_input(device.clone()) {
+        let closed = self.hardware_mut()?.disconnect_input(device.clone());
+        if closed || self.state.lost.forget_input(&device) {
             Ok(())
         } else {
             Err(MidiError::InputNotOpen(device))
@@ -255,22 +267,22 @@ impl Midi<'_> {
     /// Opens an output device, by id or name, and makes it the hardware out's
     /// sink: the output is the hardware out's own, replacing the sink it had (a
     /// session sends to one destination, and the stamp stream carries on across
-    /// the change). It stamps as the device's configuration says, which each
-    /// update's poll follows.
+    /// the change, and across a [`disconnect_output`](Self::disconnect_output)
+    /// before it, and across the device's removal). It stamps as the device's
+    /// configuration says, which each update's poll follows. The session
+    /// keeps it connected: when the device is removed and returns, and is
+    /// surely the same one, it is opened again
+    /// ([`MidiEvent::OutputRestored`]);
+    /// [`disconnect_output`](Self::disconnect_output) or another
+    /// `connect_output` ends that.
     ///
     /// # Errors
     ///
     /// As [`connect_input`](Self::connect_input), for an output.
     pub fn connect_output(&mut self, device: impl Into<DeviceQuery>) -> Result<()> {
-        let output = self.hardware()?.connect_output(device)?;
-        match &mut self.state.out {
-            Some(out) => out.set_device(output),
-            None => {
-                let rate = self.graph.prepared().sample_rate();
-                self.state.out = Some(UmpOut::of_device(output, rate));
-            }
-        }
-        Ok(())
+        let io = self.io.as_deref().ok_or(MidiError::NoHardware)?;
+        let rate = self.graph.prepared().sample_rate();
+        self.state.connect_output(io, rate, device.into())
     }
 
     /// The device output the hardware out sends into, if it is one: its id,
@@ -280,20 +292,27 @@ impl Midi<'_> {
         self.state.out.as_ref().and_then(UmpOut::device)
     }
 
-    /// Closes the device output: the hardware out has no sink, and what it
-    /// sends is counted as dropped until another is connected
+    /// Closes the device output and forgets it: the hardware out has no sink,
+    /// and what it sends is counted as dropped until another is connected
     /// ([`connect_output`](Self::connect_output) or
-    /// [`set_hardware_out`](Midi::set_hardware_out)).
+    /// [`set_hardware_out`](Midi::set_hardware_out)). An output that was lost
+    /// ([`MidiEvent::OutputLost`]) and has not
+    /// returned is forgotten the same way.
     ///
     /// # Errors
     ///
     /// [`MidiError::NoHardware`] on a session with no OS MIDI layer;
-    /// [`MidiError::OutputNotOpen`] when the hardware out is not a device's.
+    /// [`MidiError::OutputNotOpen`] when the hardware out is neither a
+    /// device's nor a lost one.
     #[must_use = "an output that was not open is an error"]
     pub fn disconnect_output(&mut self) -> Result<()> {
         self.hardware()?;
+        let forgot = self.state.lost.output.take().is_some();
         if self.output().is_some() {
-            self.state.out = None;
+            // The stamp stream stays, so the next output's stamps carry on.
+            self.state.parked_stream = self.state.out.take().map(UmpOut::into_stream);
+            Ok(())
+        } else if forgot {
             Ok(())
         } else {
             Err(MidiError::OutputNotOpen)
@@ -312,8 +331,88 @@ impl Midi<'_> {
     ///
     /// [`MidiError::NoHardware`] on a session with no OS MIDI layer;
     /// [`MidiError::Hardware`] when the device was found and refused to open.
+    /// It is all or nothing: when the output refuses, the input this call
+    /// opened is closed again (one that was already open stays open).
     pub fn reconnect_saved(&mut self, saved: &DeviceInfo) -> Result<Resolution> {
-        let resolved = self.hardware()?.devices().resolve(saved);
+        let io = self.io.as_deref_mut().ok_or(MidiError::NoHardware)?;
+        let rate = self.graph.prepared().sample_rate();
+        self.state.reconnect(io, rate, saved, saved.direction)
+    }
+}
+
+/// What the app connected and the OS took away: reconnected when the device
+/// returns and is surely the same one.
+#[derive(Default)]
+pub(crate) struct Lost {
+    inputs: Vec<DeviceInfo>,
+    pub(crate) output: Option<DeviceInfo>,
+}
+
+impl Lost {
+    /// A held input left: it is wanted back.
+    pub(crate) fn input(&mut self, info: DeviceInfo) {
+        self.inputs.retain(|held| held.id != info.id);
+        self.inputs.push(info);
+    }
+
+    /// The app asked for an input by `query`: forgets the lost one it names
+    /// (the lowest id, as a connect picks). Whether there was one.
+    fn forget_input(&mut self, query: &DeviceQuery) -> bool {
+        let Some(at) = self
+            .inputs
+            .iter()
+            .enumerate()
+            .filter(|(_, held)| query.matches(held))
+            .min_by(|(_, a), (_, b)| a.id.cmp(&b.id))
+            .map(|(at, _)| at)
+        else {
+            return false;
+        };
+        self.inputs.remove(at);
+        true
+    }
+
+    /// Forgets the lost inputs that are open now (the app connected them).
+    fn forget_open_inputs(&mut self, io: &tutti_midi_hardware::MidiSession) {
+        self.inputs.retain(|held| !io.is_input_connected(&held.id));
+    }
+}
+
+impl MidiState {
+    /// Opens the output `device` as the hardware out's sink. It is the output
+    /// the app wants now, so a lost one is forgotten; the stamp stream of a
+    /// closed output carries on.
+    pub(crate) fn connect_output(
+        &mut self,
+        io: &tutti_midi_hardware::MidiSession,
+        rate: tutti_types::SampleRate,
+        device: DeviceQuery,
+    ) -> Result<()> {
+        let output = io.connect_output(device)?;
+        self.lost.output = None;
+        match &mut self.out {
+            Some(out) => out.set_device(output),
+            None => {
+                self.out = Some(match self.parked_stream.take() {
+                    Some(stream) => UmpOut::resumed(output, stream),
+                    None => UmpOut::of_device(output, rate),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Connects `saved` in the `wanted` directions, **only when it is surely the
+    /// same device** (the one matcher: [`Midi::reconnect_saved`] and the
+    /// reconnection of a returning device both run it).
+    pub(crate) fn reconnect(
+        &mut self,
+        io: &mut tutti_midi_hardware::MidiSession,
+        rate: tutti_types::SampleRate,
+        saved: &DeviceInfo,
+        wanted: PortDirection,
+    ) -> Result<Resolution> {
+        let resolved = io.devices().resolve(saved);
         // The one arm that binds is `BindPolicy::ExactOnly`'s, spelled out so
         // the three that must ask cannot be bound here.
         let found = match resolved {
@@ -322,12 +421,116 @@ impl Midi<'_> {
             Resolved::Ambiguous(candidates) => return Ok(Resolution::Ambiguous(candidates)),
             Resolved::Missing => return Ok(Resolution::Missing),
         };
-        if saved.direction.is_input() && found.direction.is_input() {
-            self.connect_input(&found.id)?;
+        let mut opened_input = false;
+        if wanted.is_input() && found.direction.is_input() {
+            let was_open = io.is_input_connected(&found.id);
+            io.connect_input(&found.id)?;
+            opened_input = !was_open;
         }
-        if saved.direction.is_output() && found.direction.is_output() {
-            self.connect_output(&found.id)?;
+        if wanted.is_output()
+            && found.direction.is_output()
+            && let Err(refused) = self.connect_output(io, rate, DeviceQuery::from(&found.id))
+        {
+            if opened_input {
+                io.disconnect_input(&found.id);
+            }
+            return Err(refused);
         }
         Ok(Resolution::Connected(found.id))
+    }
+
+    /// A device that was connected is gone: the input's and the output's
+    /// connections close, and the device is wanted back. Reports
+    /// what closed.
+    pub(crate) fn lose(
+        &mut self,
+        io: &mut tutti_midi_hardware::MidiSession,
+        device: &DeviceInfo,
+        out: &mut Vec<crate::SessionEvent>,
+    ) {
+        // Held ones are closed here, not left to fail on a dead handle: the
+        // port goes and the lists agree.
+        if io.disconnect_input(&device.id) {
+            self.lost.input(device.clone());
+            out.push(
+                MidiEvent::InputLost {
+                    info: device.clone(),
+                }
+                .into(),
+            );
+        }
+        if self
+            .out
+            .as_ref()
+            .and_then(UmpOut::device)
+            .is_some_and(|open| *open.id() == device.id)
+        {
+            // The stamp stream is kept for the device's return.
+            self.parked_stream = self.out.take().map(UmpOut::into_stream);
+            self.lost.output = Some(device.clone());
+            out.push(
+                MidiEvent::OutputLost {
+                    info: device.clone(),
+                }
+                .into(),
+            );
+        }
+    }
+
+    /// `arrived` was added to the list: reopens the lost input and output
+    /// that it surely is, and reports each, or why it did not open.
+    pub(crate) fn restore(
+        &mut self,
+        io: &mut tutti_midi_hardware::MidiSession,
+        rate: tutti_types::SampleRate,
+        arrived: &DeviceInfo,
+        out: &mut Vec<crate::SessionEvent>,
+    ) {
+        let is_arrived = |io: &tutti_midi_hardware::MidiSession, lost: &DeviceInfo| matches!(io.devices().resolve(lost), Resolved::Exact(found) if found.id == arrived.id);
+        if let Some(at) = self
+            .lost
+            .inputs
+            .iter()
+            .position(|lost| is_arrived(io, lost))
+        {
+            let lost = self.lost.inputs[at].clone();
+            let wanted = PortDirection::Input;
+            match self.reconnect(io, rate, &lost, wanted) {
+                Ok(_) => {
+                    self.lost.inputs.remove(at);
+                    out.push(
+                        MidiEvent::InputRestored {
+                            info: arrived.clone(),
+                        }
+                        .into(),
+                    );
+                }
+                Err(error) => out.push(
+                    MidiEvent::RestoreFailed {
+                        info: arrived.clone(),
+                        error,
+                    }
+                    .into(),
+                ),
+            }
+        }
+        if let Some(lost) = self.lost.output.clone().filter(|lost| is_arrived(io, lost)) {
+            let wanted = PortDirection::Output;
+            match self.reconnect(io, rate, &lost, wanted) {
+                Ok(_) => out.push(
+                    MidiEvent::OutputRestored {
+                        info: arrived.clone(),
+                    }
+                    .into(),
+                ),
+                Err(error) => out.push(
+                    MidiEvent::RestoreFailed {
+                        info: arrived.clone(),
+                        error,
+                    }
+                    .into(),
+                ),
+            }
+        }
     }
 }

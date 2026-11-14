@@ -1,5 +1,8 @@
 use super::*;
 use std::num::NonZeroUsize;
+use tutti_fixtures::midi;
+use tutti_midi_protocol::widen_velocity;
+use tutti_ump::{U7, Utility};
 
 /// The node adopts the mode last asked for on its next block.
 #[test]
@@ -59,14 +62,12 @@ fn a_listener_takes_its_channel_and_the_channelless_port() {
 fn events_leave_on_their_channels_port() {
     let first = MidiInputPorts::FIRST_GROUP;
     // 7-bit velocity 100, widened (M2-115).
-    let on = tutti_fixtures::midi::note_on(
-        tutti_ump::MidiGroup::FIRST,
-        MidiChannel::of(9),
-        60,
-        tutti_fixtures::midi::wide_velocity(100),
-    );
+    let on = midi::note_on(MidiChannel::of(9), 60, widen_velocity(U7::of(100)).get());
     assert_eq!(first.port_of(&on), Some(9));
-    let clock = tutti_fixtures::midi::timing_clock(tutti_ump::MidiGroup::FIRST);
+    let clock = Ump::from(Message::System(
+        tutti_ump::MidiGroup::FIRST,
+        System::TimingClock,
+    ));
     assert_eq!(first.port_of(&clock), Some(CHANNELLESS_PORT));
 }
 
@@ -83,22 +84,24 @@ fn a_group_has_ports_of_its_own() {
     let two = MidiInputPorts::through(MidiGroup::of(1));
     assert_eq!(two.count(), 2 * MIDI_INPUT_PORTS);
     let note = |group: u8, channel: u8| {
-        tutti_fixtures::midi::note_on(
-            MidiGroup::of(group),
-            MidiChannel::of(channel),
+        midi::note_on(
+            tutti_ump::Address::new(MidiGroup::of(group), MidiChannel::of(channel)),
             60,
-            tutti_fixtures::midi::wide_velocity(100),
+            widen_velocity(U7::of(100)).get(),
         )
     };
     assert_eq!(two.port_of(&note(0, 1)), Some(1));
     assert_eq!(two.port_of(&note(1, 1)), Some(MIDI_INPUT_PORTS + 1));
     assert_eq!(
-        two.port_of(&tutti_fixtures::midi::timing_clock(MidiGroup::of(1))),
+        two.port_of(&Ump::from(Message::System(
+            MidiGroup::of(1),
+            System::TimingClock
+        ))),
         Some(MIDI_INPUT_PORTS + CHANNELLESS_PORT)
     );
     // A Utility NOOP has no Group.
     assert_eq!(
-        two.port_of(&tutti_fixtures::midi::noop()),
+        two.port_of(&Ump::from(Message::Utility(Utility::Noop))),
         Some(CHANNELLESS_PORT)
     );
     assert_eq!(two.port_of(&note(2, 1)), None, "not heard");

@@ -18,7 +18,8 @@
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
-use tutti_fixtures::midi::{m1_cc, m1_note_off, m1_note_on};
+
+use tutti_fixtures::midi;
 use tutti_graph::{
     Editor, EventCapacity, EventEdge, EventIn, EventOut, Executor, NodeKey, Prepare,
     TransportPosition,
@@ -26,7 +27,7 @@ use tutti_graph::{
 use tutti_midi_runtime::{DeviceInlets, DeviceInput, InletChange, MidiIngestNode};
 use tutti_types::MaxBlock;
 use tutti_types::{SampleRate, Samples};
-use tutti_ump::{CCNumber, MidiChannel, NoteNumber, U7, Ump};
+use tutti_ump::{CCNumber, MidiChannel, U7, Ump};
 
 const BLOCK: usize = 512;
 const EVENTS: usize = 40;
@@ -37,9 +38,9 @@ fn wire() -> Vec<Ump> {
         .map(|i| {
             let ch = MidiChannel::of(i % 4);
             match i % 4 {
-                0 => m1_note_on(ch, NoteNumber::of(40 + i), U7::of(100)),
-                1 => m1_note_off(ch, NoteNumber::of(40 + i - 1), U7::of(0)),
-                _ => m1_cc(ch, CCNumber::of(1), U7::of(i)),
+                0 => midi::m1_note_on(ch, 40 + i, U7::of(100)),
+                1 => midi::m1_note_off(ch, 40 + i - 1, U7::of(0)),
+                _ => midi::m1_cc(ch, CCNumber::of(1), U7::of(i)),
             }
         })
         .collect()

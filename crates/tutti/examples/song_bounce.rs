@@ -52,11 +52,10 @@ fn main() -> Result<(), Error> {
 fn song(dir: &std::path::Path) -> Result<Written, Error> {
     std::fs::create_dir_all(dir)?;
 
-    let mut s = Session::builder().build_offline(
-        RATE,
-        ChannelLayout::STEREO,
-        MaxBlock::of(Samples(512)),
-    )?;
+    let mut s = Session::builder()
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(512)))
+        .build()?;
     s.set_tempo(Bpm::of(120.0)).expect("not following");
 
     // The sampler: the same mono wave on beats 0 and 4, each a node as it

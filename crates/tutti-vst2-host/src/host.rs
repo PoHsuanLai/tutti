@@ -66,7 +66,7 @@ use vst::host::Host;
 /// `audioMasterAutomate` (the value, as the `f32` the callback carries) and
 /// `audioMasterEndEdit`, each with the parameter's index.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ParameterChange {
+pub(crate) enum ParameterChange {
     /// `audioMasterBeginEdit`: the plugin took hold of the parameter.
     Begin(i32),
     /// `audioMasterAutomate`: the parameter now has this value.
@@ -616,14 +616,10 @@ mod tests {
     fn a_note_on() -> WireMidi {
         WireMidi {
             offset: 0,
-            ump: tutti_fixtures::midi::note_on(
-                tutti_ump::MidiGroup::FIRST,
-                tutti_ump::MidiChannel::FIRST,
-                60,
-                tutti_fixtures::midi::MID_VELOCITY,
-            ),
+            ump: tutti_fixtures::midi::note_on(tutti_ump::MidiChannel::FIRST, 60, 0x8000),
         }
     }
+
     use vst::host::Host;
 
     fn make_host(time_info: TransportReader, default_sample_rate: f64) -> HostState {

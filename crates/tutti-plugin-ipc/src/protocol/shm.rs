@@ -65,18 +65,13 @@ impl SlabLayout {
     }
 
     /// Bytes one direction's ring occupies: every slot, every channel.
-    fn ring_bytes(&self, channels: usize) -> usize {
+    pub(crate) fn ring_bytes(&self, channels: usize) -> usize {
         self.slots as usize * channels * self.samples_per_channel * self.sample_size()
     }
 
     /// Returns the bytes the input ring occupies, across all slots and channels.
-    pub fn input_ring_bytes(&self) -> usize {
+    pub(crate) fn input_ring_bytes(&self) -> usize {
         self.ring_bytes(self.input_channels())
-    }
-
-    /// Returns the bytes the output ring occupies, across all slots and channels.
-    pub fn output_ring_bytes(&self) -> usize {
-        self.ring_bytes(self.output_channels())
     }
 
     /// Total mapping size: header, then both rings, or `None` when it does not
@@ -92,7 +87,7 @@ impl SlabLayout {
     /// details — the header's size is target-dependent (cache-line padding) and
     /// belongs with the code that knows why.
     #[must_use]
-    pub fn checked_byte_size_with_header(&self, header_bytes: usize) -> Option<usize> {
+    pub(crate) fn checked_byte_size_with_header(&self, header_bytes: usize) -> Option<usize> {
         let channels = |buses: &BusChannels| {
             buses
                 .iter()
@@ -139,7 +134,7 @@ mod tests {
         assert_eq!(l.output_channels(), 2);
         // 2 slots x 2 ch x 64 samples x 4 bytes, per direction.
         assert_eq!(l.input_ring_bytes(), 2 * 2 * 64 * 4);
-        assert_eq!(l.output_ring_bytes(), 2 * 2 * 64 * 4);
+        assert_eq!(l.ring_bytes(l.output_channels()), 2 * 2 * 64 * 4);
         assert_eq!(
             l.checked_byte_size_with_header(128),
             Some(128 + 2 * (2 * 2 * 64 * 4))
@@ -171,7 +166,7 @@ mod tests {
         assert_eq!(l.input_channels(), 3);
         assert_eq!(l.output_channels(), 2);
         assert_eq!(l.input_ring_bytes(), 2 * 3 * 64 * 4);
-        assert_eq!(l.output_ring_bytes(), 2 * 2 * 64 * 4);
+        assert_eq!(l.ring_bytes(l.output_channels()), 2 * 2 * 64 * 4);
     }
 
     /// The ring multiplies both directions. Worth pinning: the whole sizing

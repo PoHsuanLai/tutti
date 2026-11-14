@@ -1,9 +1,9 @@
 //! The plugin node, over any [`Loaded`](tutti_plugin_types::Loaded) hosting: an
 //! [`InProcess`](tutti_plugin_types::InProcess) format ([`load_client`]), or a
-//! plugin served by another process ([`client_over`], design 021 step 4b: built over an
+//! plugin served by another process ([`client_over`]: built over an
 //! already-activated plugin, with no main thread).
 //!
-//! The plugin's `Lifecycle` (doc 016 §2.6) runs on the control side; its
+//! The plugin's `Lifecycle` runs on the control side; its
 //! realtime `Processor` is lent to the audio thread through a
 //! `tutti_rt::handoff`, which takes no lock. A block with no Processor in hand
 //! (one recalled for a rate change, or refused its rate) renders silence and

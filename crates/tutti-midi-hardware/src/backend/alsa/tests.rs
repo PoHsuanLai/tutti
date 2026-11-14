@@ -67,8 +67,12 @@ impl Virtual {
 }
 
 fn plug(name: &str) -> Virtual {
-    let seq = super::client::open(name, true, tutti_alsa_ffi::UmpVersion::Midi2)
-        .expect("a sequencer to open (modprobe snd-seq)");
+    let seq = super::client::open(
+        name,
+        tutti_alsa_ffi::Blocking::NonBlock,
+        tutti_alsa_ffi::UmpVersion::Midi2,
+    )
+    .expect("a sequencer to open (modprobe snd-seq)");
     let caps = CAP_READ | CAP_SUBS_READ | CAP_WRITE | CAP_SUBS_WRITE;
     seq.open_port("port", caps, TYPE_MIDI_GENERIC | TYPE_APPLICATION)
         .expect("a port");
@@ -239,8 +243,12 @@ fn a_saved_alsa_device_resolves_by_name_only() {
 fn a_port_gaining_its_capabilities_is_added_as_a_duplex() {
     let devices = Watched::open();
     let name = unique("caps");
-    let seq = super::client::open(&name, true, tutti_alsa_ffi::UmpVersion::Midi2)
-        .expect("a sequencer to open (modprobe snd-seq)");
+    let seq = super::client::open(
+        &name,
+        tutti_alsa_ffi::Blocking::NonBlock,
+        tutti_alsa_ffi::UmpVersion::Midi2,
+    )
+    .expect("a sequencer to open (modprobe snd-seq)");
     let kind = TYPE_MIDI_GENERIC | TYPE_APPLICATION;
     let port = seq.open_port("port", 0, kind).expect("a port");
     let want = format!("{name}: port");
@@ -663,7 +671,7 @@ impl Pumped {
 /// A legacy (non-UMP) sequencer client with a subscribable port, the kind of
 /// source a MIDI 1.0 device or an old application is.
 fn plug_legacy(name: &str) -> Virtual {
-    let seq = tutti_alsa_ffi::Client::open_legacy(name, true)
+    let seq = tutti_alsa_ffi::Client::open_legacy(name, tutti_alsa_ffi::Blocking::NonBlock)
         .expect("a sequencer to open (modprobe snd-seq)");
     let caps = CAP_READ | CAP_SUBS_READ;
     seq.open_port("port", caps, TYPE_MIDI_GENERIC | TYPE_APPLICATION)

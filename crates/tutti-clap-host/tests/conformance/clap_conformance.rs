@@ -33,7 +33,6 @@ use tutti_clap_host::{
 // `#[repr(C)]` capture type directly instead of hand-mirroring it — the
 // host dlopens the cdylib, the test reads the capture through this type.
 use tutti_clap_test_plugin::ProcessCapture;
-use tutti_fixtures::midi as fx;
 use tutti_graph::Offset;
 use tutti_types::Samples;
 
@@ -51,6 +50,7 @@ fn at(k: usize) -> Offset {
 const CLAP_EVENT_NOTE_ON: u16 = 0;
 const CLAP_EVENT_PARAM_VALUE: u16 = 5;
 
+use tutti_fixtures::midi;
 /// A parameter id the reference plugin actually declares (`params_state.rs`).
 ///
 /// The tests below are about event *offsets*, not parameter identity, so the id
@@ -60,7 +60,7 @@ const CLAP_EVENT_PARAM_VALUE: u16 = 5;
 /// un-denormalized (see `add_param_changes` in `events.rs`). An invented id
 /// would make these tests fail for a reason unrelated to what they assert.
 use tutti_plugin_types::{Control, ParamId};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::MidiChannel;
 
 /// The probe's real `clap_id`. A `ParamId` because that is what a queue
 /// is keyed by — CLAP ids are opaque handles, never positional indices.
@@ -180,18 +180,9 @@ fn host_sorts_events_by_sample_offset() {
     // present them to the plugin in non-decreasing time order
     // (instance/audio.rs `sort_by_time`).
     let midi = [
-        (
-            at(200),
-            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
-        ),
-        (
-            at(50),
-            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x5000),
-        ),
-        (
-            at(100),
-            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 67, 0x7000),
-        ),
+        (at(200), midi::note_on(MidiChannel::FIRST, 60, 0x8000)),
+        (at(50), midi::note_on(MidiChannel::FIRST, 64, 0x5000)),
+        (at(100), midi::note_on(MidiChannel::FIRST, 67, 0x7000)),
     ];
     let ctx = ClapProcessContext {
         midi: &midi,
@@ -265,10 +256,7 @@ fn host_never_delivers_an_event_time_outside_the_block() {
     params.add_change(REAL_PARAM_ID, -1, 0.5); // negative → must not wrap
     params.add_change(REAL_PARAM_ID, 100_000, 0.9); // past the block → must clamp
     params.add_change(REAL_PARAM_ID, 64, 0.25); // in range → untouched
-    let midi = [(
-        at(9_999),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
-    )];
+    let midi = [(at(9_999), midi::note_on(MidiChannel::FIRST, 60, 0x8000))];
     let ctx = ClapProcessContext {
         midi: &midi,
         params: Some(&params),

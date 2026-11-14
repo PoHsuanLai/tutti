@@ -52,7 +52,7 @@ pub struct PluginDescriptor {
     #[cfg_attr(feature = "serde", serde(default))]
     pub editor: EditorPresence,
     /// What `plugin-probe --measure` found of the plugin's tail and latency, if
-    /// a measuring probe has looked (doc 023 section 6). `None` is "nobody
+    /// a measuring probe has looked. `None` is "nobody
     /// measured it", never "it measured nothing".
     ///
     /// Rides the descriptor's row in the catalog, so a file whose modification
@@ -71,7 +71,7 @@ pub struct PluginDescriptor {
 /// registry entry without instantiating it, and an editor is a property of an
 /// instance. Reporting `false` there is a guess that gets *persisted* to the
 /// catalog and then read at browse time as though it were an answer.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum EditorPresence {
     /// Nobody has instantiated the plugin to find out.
@@ -106,7 +106,7 @@ impl EditorPresence {
     /// distinguish "no GUI" from "not yet known" should match on the variant
     /// instead — that is why this is not a `From` impl.
     #[must_use]
-    pub fn is_present(self) -> bool {
+    pub(crate) fn is_present(self) -> bool {
         self == Self::Present
     }
 }
@@ -209,7 +209,7 @@ impl PluginClass {
             PluginClass::Unknown => PluginRole::Unknown,
             PluginClass::Vst2 { category } => category.role(),
             PluginClass::Vst3 { category } => category.role(),
-            PluginClass::Clap { features } => crate::clap_features_role(features),
+            PluginClass::Clap { features } => crate::classification::clap_features_role(features),
             PluginClass::Au { component_type } => component_type.role(),
         }
     }

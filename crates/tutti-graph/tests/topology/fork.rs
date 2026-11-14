@@ -836,15 +836,14 @@ fn a_fork_source_from_an_older_generation_is_refused() {
     );
 }
 
-/// **A fork carries the spec's parameter values, the editor's event
-/// capacity, and only the resolution marks inside what it forks.** The
+/// **A fork carries the editor's event capacity and only the resolution
+/// marks inside what it forks.** The
 /// emitter writes an event every frame into slots the live editor sized for
 /// 8 per block, so the fork drops some, as the live graph would; the mark
 /// on the sibling edge (outside a `Node` fork) is left behind, or the fork
 /// could not commit.
 #[test]
-fn a_fork_carries_params_event_capacity_and_its_own_marks() {
-    use tutti_graph::ParamValue;
+fn a_fork_carries_event_capacity_and_its_own_marks() {
     use tutti_graph::Resolution;
     let (emit, fold, emit2, fold2) = (NodeKey(1), NodeKey(2), NodeKey(3), NodeKey(4));
     let pre = prepare(64);
@@ -867,20 +866,10 @@ fn a_fork_carries_params_event_capacity_and_its_own_marks() {
         spec.connect_events(at, EventEdge::Direct(from));
         spec.require_resolution(at, from, Resolution::Sample);
     }
-    spec.topology
-        .nodes
-        .get_mut(&fold)
-        .expect("inserted")
-        .params
-        .insert("drive".into(), ParamValue::Scalar(0.3));
 
     let (fe, mut fx) = ed
         .fork(ForkTarget::Node(fold), ForkMode::Live, pre)
         .expect("forks");
-    assert_eq!(
-        fe.spec().topology.nodes[&fold].params,
-        ed.spec().topology.nodes[&fold].params
-    );
     let mark = (
         EventIn {
             node: fold,

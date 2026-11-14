@@ -233,7 +233,11 @@ impl Rendered {
             return;
         }
         out.resize(self.frames().interleaved_len(self.layout()), 0.0);
-        tutti_types::InterleavedMut::new(out, self.layout()).interleave_from(&self.planes, 0);
+        // At least one plane, and `out` is whole frames of them: the view
+        // always builds.
+        if let Ok(mut out) = tutti_buffers::InterleavedMut::new(out, self.layout()) {
+            out.interleave_from(&self.planes, Samples::ZERO);
+        }
     }
 }
 

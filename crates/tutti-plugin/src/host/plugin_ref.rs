@@ -14,14 +14,14 @@ use tutti_plugin_types::{BridgeError, BridgeResult, Load};
 /// Where a plugin runs: in the host's own process or in a `plugin-server`
 /// process. A choice made per plugin, as a [`PluginRef`] field
 /// ([`PluginRef::with_hosting`]); everything a loaded plugin offers is the same
-/// either way (design 029 principle 4).
+/// either way.
 ///
-/// The default, [`Auto`](Self::Auto), is the format's own (design 021 Q3):
+/// The default, [`Auto`](Self::Auto), is the format's own:
 /// CLAP, VST3 and AU run [out of process](Self::OutOfProcess), which isolates a
 /// crash and keeps the plugin out of the host's address space; VST2 runs [in
 /// process](Self::InProcess), the only way it can run, since its `AEffect`
 /// fuses the editor and the audio instance. `Auto` never moves a plugin the
-/// catalog has blacklisted into the host's process (021 Q11): a blacklisted
+/// catalog has blacklisted into the host's process: a blacklisted
 /// plugin is refused at the load, whatever the hosting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -104,7 +104,7 @@ fn in_process_built(format: PluginFormat) -> bool {
 /// Made from a scanned plugin ([`PluginRef::from`] a
 /// [`PluginEntry`]) or, for a file found by hand, [`file`](Self::file), which
 /// names the file's first plugin. With the `serde` feature it persists, and
-/// [`is_same_plugin`](Self::is_same_plugin) is how a reloaded project finds
+/// `is_same_plugin` is how a reloaded project finds
 /// out whether two refs name one plugin.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -187,7 +187,7 @@ impl PluginRef {
     /// have an id, the same id; when either has none (it names the file's first
     /// plugin), the same file.
     #[must_use]
-    pub fn is_same_plugin(&self, other: &Self) -> bool {
+    pub(crate) fn is_same_plugin(&self, other: &Self) -> bool {
         self.format == other.format
             && match (&self.id, &other.id) {
                 (Some(a), Some(b)) => a == b,
@@ -251,7 +251,7 @@ impl From<&PluginEntry<'_>> for PluginRef {
 ///
 /// A state is the plugin's own opaque bytes. Restoring them into another
 /// plugin is meaningless at best, so a state carries its [`PluginRef`] and a
-/// restore into a plugin that [is not that one](PluginRef::is_same_plugin) is
+/// restore into a plugin that is not that one (`PluginRef::is_same_plugin`) is
 /// refused with
 /// [`StateError::OtherPlugin`](tutti_plugin_types::StateError::OtherPlugin).
 /// A version of the plugin is not part of the identity: plugins read the
@@ -319,7 +319,7 @@ mod tests {
         }
     }
 
-    /// **`Auto` is the format's default** (design 021 Q3): CLAP, VST3 and AU
+    /// **`Auto` is the format's default**: CLAP, VST3 and AU
     /// are served, whatever the build holds.
     #[test]
     fn auto_serves_every_format_but_vst2() {

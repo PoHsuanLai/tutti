@@ -1,9 +1,10 @@
 use super::error::{Result, VbapError};
+use tutti_buffers::Fold;
 use tutti_dsp::{SpeakerLayout, VbapGains};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
 use tutti_types::UnitParam;
 use tutti_types::{Azimuth, Direction, Elevation, Param, SampleRate, Spread, StereoWidth, Tail};
-use tutti_types::{ChannelLayout, ChannelTopology, Fold};
+use tutti_types::{ChannelLayout, ChannelTopology};
 
 use super::panner::VbapPanner;
 use crate::buses::main_bus;

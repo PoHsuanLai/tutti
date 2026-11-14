@@ -1,6 +1,7 @@
 use super::*;
 use crate::render::Replay;
-use tutti_types::{ChannelLayout, InterleavedMut};
+use tutti_buffers::InterleavedMut;
+use tutti_types::ChannelLayout;
 
 const STEREO: ChannelLayout = ChannelLayout::STEREO;
 
@@ -18,7 +19,9 @@ fn read_all(spill: &Spill, block: usize) -> Vec<f32> {
     let mut out = Vec::new();
     let mut buf = vec![0.0f32; block * 2];
     loop {
-        let n = replay.fill(InterleavedMut::new(&mut buf, STEREO)).unwrap();
+        let n = replay
+            .fill(InterleavedMut::new(&mut buf, STEREO).unwrap())
+            .unwrap();
         if n == 0 {
             return out;
         }

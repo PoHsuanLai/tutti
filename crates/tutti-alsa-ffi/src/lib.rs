@@ -13,7 +13,7 @@
 //! | | |
 //! |---|---|
 //! | `Client` | an open sequencer client in UMP MIDI-2.0 mode: it closes on drop, and ports, subscriptions, `read_event`, `send_to_subscribers`, `stamp_port` and `list_ports` are methods |
-//! | `UmpEndpoint`, `UmpBlock` | what the sequencer records of a client's UMP Endpoint (the protocol in use, the protocols offered) and its Function Blocks, from `Client::ump_endpoint` |
+//! | `UmpEndpoint`, `UmpBlock` | what the sequencer records of a client's UMP Endpoint (the protocol in use, the protocols offered) and its Function Blocks, from `Client::ump_endpoint`; `Client::publish_ump_endpoint` records them for the client itself |
 //! | `QueueClock` | the queue a stamped port reads its timestamps from, and the clock that says what time it is now |
 //! | `Poller` | a client's descriptors and a stop descriptor, waited on with `poll(2)` |
 //! | `Received`, `Announced` | an event copied out of alsa-lib's buffer, and what an announce-port event says |
@@ -61,7 +61,7 @@ mod ump;
 
 #[cfg(feature = "testing")]
 pub use client::LegacyEvent;
-pub use client::{Client, QueueClock, Read, UmpVersion};
+pub use client::{Blocking, Client, QueueClock, Read, UmpVersion};
 pub use error::{Error, Result};
 pub use event::{Announced, Received};
 pub use poll::{Poller, Wait};

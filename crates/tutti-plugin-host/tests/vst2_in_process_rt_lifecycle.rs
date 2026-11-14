@@ -305,7 +305,7 @@ fn set_sample_rate_parks_the_rate_instead_of_dispatching_it() {
 ///
 /// The drain recalls the Processor, which is on the audio thread; the next
 /// block hands it back (and renders silence), and the next drain runs the
-/// change (doc 016 §2.6).
+/// change.
 #[test]
 fn the_parked_rate_reaches_the_plugin_on_the_main_thread_drain() {
     let _guard = lock_probe();

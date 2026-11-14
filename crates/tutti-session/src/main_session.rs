@@ -1,4 +1,4 @@
-//! The main-thread view of a session (design 029 section 3.2): the calls a
+//! The main-thread view of a session: the calls a
 //! plugin format requires on the UI thread, and the servicing they need.
 //!
 //! A [`Session`] is `Send` and has no main thread of its own: a headless
@@ -188,15 +188,14 @@ impl MainPlugin<'_> {
         crate::Plugin::new(self.node, self.hosted, self.figures)
     }
 
-    /// The plugin's presets: a list to load from, or a file to load
-    /// (design 029 section 2.4).
+    /// The plugin's presets: a list to load from, or a file to load.
     ///
     /// # Errors
     ///
     /// [`PresetError::Unsupported`] when the plugin has no preset surface;
     /// [`PresetError::Lost`] when it is gone.
     pub fn presets(&self) -> Result<crate::Presets<'_>, PresetError> {
-        crate::Presets::of(&self.hosted.handle, self.main)
+        crate::Presets::of(self.hosted, self.main)
     }
 
     /// The plugin's editor.

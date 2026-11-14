@@ -20,10 +20,12 @@ tutti-dsp = { path = "../../crates/tutti-dsp" }
 tutti-export = { path = "../../crates/tutti-export" }
 tutti-graph = { path = "../../crates/tutti-graph" }
 tutti-measure = { path = "../../crates/tutti-measure" }
+tutti-midi-protocol = { path = "../../crates/tutti-midi-protocol" }
 tutti-nodes = { path = "../../crates/tutti-nodes", default-features = false, features = ["testing"] }
 tutti-polysynth = { path = "../../crates/tutti-polysynth" }
 tutti-sampler = { path = "../../crates/tutti-sampler", features = ["testing"] }
 tutti-transport = { path = "../../crates/tutti-transport" }
+tutti-buffers = { version = "0.0.1", path = "../../crates/tutti-buffers" }
 tutti-types = { path = "../../crates/tutti-types" }
 tutti-ump = { path = "../../crates/tutti-ump", default-features = false }
 tutti-fixtures = { path = "../tutti-fixtures" }

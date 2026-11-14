@@ -46,6 +46,14 @@
 //!   (§12.2.1). A request that is not answered in time ends [`PeOutcome::TimedOut`]
 //!   and the Initiator sends the NAK that says so (§12.2.3). A time is over at its
 //!   deadline: a message arriving at the instant is late.
+//! - Notify (M2-101 §8.13, M2-103 §12): the superseded message, sub-ID#2 `0x3F`, still
+//!   read for a peer that sends it. It names a transaction by Request ID alone, so it
+//!   acts on the request with that ID and on a Subscription message of the peer's
+//!   with it, and nothing is sent back. Status 144 ends the request
+//!   ([`PeOutcome::Terminated`], by the Responder) and drops the message; 408 ends it
+//!   as the NAK of a timeout ([`PeOutcome::Nak`]) and drops it; 100 holds it one more
+//!   [`PE_TIMEOUT`], as a Timeout Wait whose period the message does not name. A
+//!   Notify with another status, or for no request in flight, changes nothing.
 //! - Status (§7.4.1, Table 15): a reply ends the request with its status, as
 //!   [`PeOutcome::Success`] for 200 and 201, [`PeOutcome::Retry`] for 341 to 343, which
 //!   the table says to retry and this machine leaves to the caller, and
@@ -71,11 +79,16 @@ use super::limits::{MediaType, PeMessage, ResourceId, ResourceName, SubscribeId}
 use super::reassemble::{
     PeFlowControl, PeReassembler, PeReassemblyError, PeReassemblyLimits, PeReceived, PeStep,
 };
-use crate::{CiHeader, CiMessage, Decoded, Destination, MaxSysexSize, Muid, Nak};
+use crate::{CiHeader, CiMessage, Decoded, Destination, MaxSysexSize, Muid, Nak, TimeoutWait};
 
 /// The most times a chunk is sent again, whether for a NAK or for the lack of an
 /// ACK, before the transaction ends (M2-103 §15.5: it fails after three).
 const MAX_RESENDS: u8 = 3;
+
+/// The extra time a Notify with the Timeout Wait status adds: the message names
+/// no period, and one more [`PE_TIMEOUT`] keeps the transaction open as long as
+/// a request that was waiting for the first (3 seconds, 30 tenths).
+const NOTIFY_WAIT: TimeoutWait = TimeoutWait::of(30);
 
 /// What an Initiator holds, fixed for the peer it talks to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,6 +121,10 @@ pub struct PeGet {
     pub encoding: PeEncoding,
     /// Whether the reply is sent under Flow Control (§15.2).
     pub flow_control: PeFlowControl,
+    /// The most the reply's Property Data may be: a reply that grows past it ends
+    /// the request with [`PeOutcome::TooLarge`], and the Responder is told to stop
+    /// (§10.2). `None` for no limit of this request's own.
+    pub reply_limit: Option<BodyLimit>,
 }
 
 impl PeGet {
@@ -121,6 +138,7 @@ impl PeGet {
             page: None,
             encoding: PeEncoding::Ascii,
             flow_control: PeFlowControl::Off,
+            reply_limit: None,
         }
     }
 
@@ -291,6 +309,9 @@ pub enum PeOutcome {
     /// The peer ended the request with a NAK that terminates it (§12.1), or this
     /// Initiator did after a chunk it could not get acknowledged.
     Terminated(PeTerminator),
+    /// The reply's Property Data grew past the limit the request set, and this
+    /// Initiator told the Responder to stop (§10.2).
+    TooLarge(BodyLimit),
     /// The peer ended the request with the NAK of a failure other than a
     /// terminate: out of sequence, malformed or a timeout.
     Nak(PeSignal),
@@ -337,6 +358,8 @@ pub enum PeNotification {
         resource: ResourceName,
         /// What changed.
         change: PeChange,
+        /// The media type of Property Data that is not JSON (§7.5).
+        media_type: Option<MediaType>,
     },
     /// The Responder ended the Subscription, which is no longer in the table.
     Ended {
@@ -423,6 +446,7 @@ impl RequestIds {
 enum Work {
     Get {
         flow: PeFlowControl,
+        limit: Option<BodyLimit>,
     },
     Set {
         chunks: Vec<PeChunk>,
@@ -466,7 +490,7 @@ impl Work {
 
     fn flow(&self) -> PeFlowControl {
         match self {
-            Self::Get { flow } | Self::Subscribe { flow, .. } | Self::Set { flow, .. } => *flow,
+            Self::Get { flow, .. } | Self::Subscribe { flow, .. } | Self::Set { flow, .. } => *flow,
             Self::Unsubscribe => PeFlowControl::Off,
         }
     }
@@ -638,6 +662,7 @@ impl PeInitiator {
                 Vec::new(),
                 Work::Get {
                     flow: get.flow_control,
+                    limit: get.reply_limit,
                 },
             ),
             PeCall::Set(set) => (
@@ -765,6 +790,7 @@ impl PeInitiator {
                 PeCiMessage::Chunk { kind, chunk } => {
                     self.on_chunk(*kind, chunk.clone(), now, &mut actions);
                 }
+                PeCiMessage::Notify(chunk) => self.on_notify(chunk, &mut actions),
                 PeCiMessage::CapabilitiesInquiry(_) => {}
             },
             CiMessage::Ack { ack, .. } => {
@@ -789,6 +815,60 @@ impl PeInitiator {
         actions
     }
 
+    /// The superseded Notify message (M2-101 §8.13, M2-103 §12): it names a
+    /// transaction by Request ID alone, so it is read as it would be for any
+    /// transaction of that ID, this Initiator's request or a Subscription message
+    /// the peer is sending, and no NAK answers it.
+    fn on_notify(&mut self, chunk: &PeChunk, actions: &mut Vec<PeAction>) {
+        let id = chunk.request_id();
+        let Some(status) = chunk.notified() else {
+            return;
+        };
+        let at = self.pending.iter().position(|p| p.id == id);
+        match status {
+            // As an ACK that asks to wait, with no period named: one more timeout.
+            PeStatus::TimeoutWait => {
+                let Some(at) = at else { return };
+                NOTIFY_WAIT.extend(&mut self.pending[at].deadline);
+                let kind = self.pending[at].work.reply_kind();
+                self.reassembler.extend(self.peer, kind, id, NOTIFY_WAIT);
+            }
+            // As a NAK that terminates; the peer is the Responder.
+            PeStatus::Terminate => {
+                self.reassembler
+                    .terminate(self.peer, PeMessageKind::SUBSCRIPTION_INQUIRY, id);
+                if let Some(at) = at {
+                    self.conclude(at, PeOutcome::Terminated(PeTerminator::Responder), actions);
+                }
+            }
+            // As a NAK that says a timeout occurred.
+            PeStatus::TimedOut => {
+                self.reassembler
+                    .terminate(self.peer, PeMessageKind::SUBSCRIPTION_INQUIRY, id);
+                if let Some(at) = at {
+                    let signal = PeSignal::TimedOut { request_id: id };
+                    self.conclude(at, PeOutcome::Nak(signal), actions);
+                }
+            }
+            // No other status is one a Notify carries (§12).
+            PeStatus::Ok
+            | PeStatus::Accepted
+            | PeStatus::Unavailable
+            | PeStatus::BadData
+            | PeStatus::TooManyRequests
+            | PeStatus::BadRequest
+            | PeStatus::Forbidden
+            | PeStatus::NotFound
+            | PeStatus::NotAllowed
+            | PeStatus::FlowControlUnsupported
+            | PeStatus::FlowControlRequired
+            | PeStatus::PayloadTooLarge
+            | PeStatus::UnsupportedMedia
+            | PeStatus::InvalidVersion
+            | PeStatus::InternalError => {}
+        }
+    }
+
     fn on_chunk(
         &mut self,
         kind: PeMessageKind,
@@ -811,12 +891,18 @@ impl PeInitiator {
         };
         match self.reassembler.push(self.peer, kind, chunk, flow, now) {
             Ok(PeStep::Pending { send }) => {
+                if kind.reply && self.stop_if_too_large(id, kind, None, actions) {
+                    return;
+                }
                 actions.extend(send.map(|s| self.signal_action(kind.transaction, s)));
                 if let Some(at) = self.find(id, kind) {
                     self.pending[at].deadline = now + PE_TIMEOUT;
                 }
             }
             Ok(PeStep::Complete { message, send }) => {
+                if kind.reply && self.stop_if_too_large(id, kind, Some(&message), actions) {
+                    return;
+                }
                 actions.extend(send.map(|s| self.signal_action(kind.transaction, s)));
                 if kind.reply {
                     self.on_reply(*message, actions);
@@ -844,6 +930,57 @@ impl PeInitiator {
                 }
             }
         }
+    }
+
+    /// Ends the Get at `id` when its reply is certain to be past the limit the
+    /// request set, telling the Responder to stop. `whole` is the reply when it is
+    /// complete. The size is judged from the bytes as sent, less what the encoding
+    /// adds: zlib's inflation is not known before the body is decoded, so a
+    /// `zlib+Mcoded7` reply is judged by the decoder's own limit.
+    fn stop_if_too_large(
+        &mut self,
+        id: PeRequestId,
+        kind: PeMessageKind,
+        whole: Option<&PeReceived>,
+        actions: &mut Vec<PeAction>,
+    ) -> bool {
+        let Some(at) = self.find(id, kind) else {
+            return false;
+        };
+        let Work::Get {
+            limit: Some(limit), ..
+        } = self.pending[at].work
+        else {
+            return false;
+        };
+        let (header, sent) = match whole {
+            Some(received) => (Some(&received.header), received.body.len()),
+            None => match self.reassembler.held(self.peer, kind, id) {
+                Some(held) => (Some(held.header), held.data.len()),
+                None => (None, 0),
+            },
+        };
+        let encoding = match header {
+            Some(PeHeader::Reply(reply)) => reply.mutual_encoding.unwrap_or(PeEncoding::Ascii),
+            _ => PeEncoding::Ascii,
+        };
+        let at_least = match encoding {
+            PeEncoding::Ascii => sent,
+            PeEncoding::Mcoded7 => sent - sent.div_ceil(8),
+            PeEncoding::ZlibMcoded7 => 0,
+        };
+        if at_least <= limit.get() {
+            return false;
+        }
+        let signal = PeSignal::Terminate {
+            request_id: id,
+            by: PeTerminator::Initiator,
+        };
+        if whole.is_none() {
+            actions.push(self.signal_action(PeTransaction::Get, signal));
+        }
+        self.conclude(at, PeOutcome::TooLarge(limit), actions);
+        true
     }
 
     /// A reply whole: the request it answers ends.
@@ -921,6 +1058,7 @@ impl PeInitiator {
                 command,
                 subscribe_id,
                 mutual_encoding,
+                media_type,
                 ..
             }) => match known(self, subscribe_id) {
                 Some(at) => {
@@ -941,6 +1079,7 @@ impl PeInitiator {
                         subscribe_id: subscribe_id.clone(),
                         resource,
                         change,
+                        media_type: media_type.clone(),
                     }));
                     None
                 }

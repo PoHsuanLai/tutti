@@ -343,25 +343,16 @@ impl PeerProfiles {
 /// A snapshot of every peer's Profiles on one input.
 pub(crate) type Snapshot = Arc<[PeerProfiles]>;
 
-/// A change of a peer's Profiles, once each from
-/// [`MidiSession::poll`](crate::MidiSession::poll). Every variant names the
-/// peer by the Group it was found on and its MUID.
+/// A change of one peer's Profiles, once each from
+/// [`MidiSession::poll`](crate::MidiSession::poll); the [`PeerId`](crate::PeerId)
+/// beside it in [`Polled::Profile`](crate::Polled::Profile) names the peer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ProfilesChange {
     /// The peer's final Reply to Profile Inquiry arrived: its table is whole.
-    Known {
-        /// The Group.
-        group: MidiGroup,
-        /// The peer.
-        muid: Muid,
-    },
+    Known,
     /// A Report (Added, Removed, Enabled or Disabled) changed one Profile.
     Changed {
-        /// The Group.
-        group: MidiGroup,
-        /// The peer.
-        muid: Muid,
         /// Where the Profile is.
         address: CiDeviceId,
         /// Which.
@@ -371,27 +362,13 @@ pub enum ProfilesChange {
     },
     /// The peer did not finish answering Profile Inquiry in time: the table
     /// keeps what it said.
-    InquiryTimedOut {
-        /// The Group.
-        group: MidiGroup,
-        /// The peer.
-        muid: Muid,
-    },
+    InquiryTimedOut,
     /// The peer NAKed the Profile Inquiry: it has no Profile Configuration to
     /// ask about.
-    InquiryRefused {
-        /// The Group.
-        group: MidiGroup,
-        /// The peer.
-        muid: Muid,
-    },
+    InquiryRefused,
     /// A [`ProfileSwitch`] ended: the peer reported the Profile's state, NAKed
     /// it, or did not answer in time.
     Resolved {
-        /// The Group.
-        group: MidiGroup,
-        /// The peer.
-        muid: Muid,
         /// What was asked.
         request: Request,
         /// How it ended.
@@ -400,10 +377,6 @@ pub enum ProfilesChange {
     /// A [`ProfileSwitch`] was not sent: one for that Profile at that address
     /// was already waiting.
     NotSent {
-        /// The Group.
-        group: MidiGroup,
-        /// The peer.
-        muid: Muid,
         /// The Profile.
         profile: ProfileId,
         /// Why.
@@ -413,10 +386,6 @@ pub enum ProfilesChange {
     /// message, which [`mpe_channel_response`](ProfilesChange::mpe_channel_response)
     /// reads for the MPE Profile.
     SpecificData {
-        /// The Group.
-        group: MidiGroup,
-        /// The peer.
-        muid: Muid,
         /// The Device ID it came on.
         address: CiDeviceId,
         /// The Profile it belongs to.
@@ -426,12 +395,7 @@ pub enum ProfilesChange {
     },
     /// The peer is gone (lost, or MIDI-CI ended): its Profiles and the
     /// Initiator that kept them went with it.
-    Dropped {
-        /// The Group.
-        group: MidiGroup,
-        /// The peer.
-        muid: Muid,
-    },
+    Dropped,
 }
 
 impl ProfilesChange {

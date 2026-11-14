@@ -7,7 +7,8 @@ use std::num::NonZeroU32;
 use super::PeFlowControl;
 use super::json;
 use super::limits::{MediaType, PeMessage, PropertyName, ResourceId, ResourceName, SubscribeId};
-use super::value::{PeExtra, PeValue};
+use super::tree::PeJson;
+use super::value::PeExtra;
 use super::write::Object;
 use crate::MaxSysexSize;
 
@@ -515,11 +516,11 @@ pub struct PeHeaderTooLong {
 }
 
 /// The properties of a header being read, in order, as a set to take from.
-struct Props(Vec<(PropertyName, PeValue)>);
+struct Props(Vec<(PropertyName, PeJson)>);
 
 impl Props {
     fn new(members: Vec<json::Member>) -> Result<Self, PeHeaderError> {
-        let mut props: Vec<(PropertyName, PeValue)> = Vec::with_capacity(members.len());
+        let mut props: Vec<(PropertyName, PeJson)> = Vec::with_capacity(members.len());
         for (name, value) in members {
             let name = PropertyName::new(&name).ok_or(PeHeaderError::InvalidName(name))?;
             if props.iter().any(|(n, _)| *n == name) {
@@ -530,7 +531,7 @@ impl Props {
         Ok(Self(props))
     }
 
-    fn take(&mut self, key: &str) -> Option<PeValue> {
+    fn take(&mut self, key: &str) -> Option<PeJson> {
         let at = self.0.iter().position(|(n, _)| n.as_str() == key)?;
         Some(self.0.remove(at).1)
     }
@@ -543,7 +544,7 @@ impl Props {
     ) -> Result<Option<T>, PeHeaderError> {
         match self.take(key) {
             None => Ok(None),
-            Some(PeValue::String(s)) => new(&s).map(Some).ok_or(PeHeaderError::InvalidValue(key)),
+            Some(PeJson::String(s)) => new(&s).map(Some).ok_or(PeHeaderError::InvalidValue(key)),
             Some(_) => Err(PeHeaderError::InvalidValue(key)),
         }
     }
@@ -552,7 +553,7 @@ impl Props {
     fn unsigned(&mut self, key: &'static str) -> Result<Option<u32>, PeHeaderError> {
         match self.take(key) {
             None => Ok(None),
-            Some(PeValue::Integer(n)) => u32::try_from(n)
+            Some(PeJson::Integer(n)) => u32::try_from(n)
                 .map(Some)
                 .map_err(|_| PeHeaderError::InvalidValue(key)),
             Some(_) => Err(PeHeaderError::InvalidValue(key)),
@@ -562,7 +563,7 @@ impl Props {
     fn boolean(&mut self, key: &'static str) -> Result<Option<bool>, PeHeaderError> {
         match self.take(key) {
             None => Ok(None),
-            Some(PeValue::Bool(b)) => Ok(Some(b)),
+            Some(PeJson::Bool(b)) => Ok(Some(b)),
             Some(_) => Err(PeHeaderError::InvalidValue(key)),
         }
     }
@@ -571,9 +572,12 @@ impl Props {
     fn extra(self) -> Result<PeExtra, PeHeaderError> {
         let mut extra = PeExtra::default();
         for (name, value) in self.0 {
+            // The reader makes scalars of every property, so only a reserved name
+            // is refused.
+            let misplaced = name.as_str().to_owned();
             extra
                 .insert(name, value)
-                .map_err(|e| PeHeaderError::Misplaced(e.0))?;
+                .map_err(|_| PeHeaderError::Misplaced(misplaced))?;
         }
         Ok(extra)
     }

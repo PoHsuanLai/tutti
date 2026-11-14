@@ -23,7 +23,11 @@ const TPQ: u16 = 480;
 fn on(tick: u64, key: u8) -> (Tick, FileEvent) {
     (
         Tick(tick),
-        Message::note_on(MidiChannel::FIRST, NoteNumber::of(key), U7::of(100)).into(),
+        Message::midi1(
+            MidiChannel::FIRST,
+            Voice1::note_on(NoteNumber::of(key), U7::of(100)),
+        )
+        .into(),
     )
 }
 
@@ -121,7 +125,10 @@ fn push_refuses_an_event_before_the_last() {
     let track = Track::new()
         .push(
             Tick(10),
-            Message::note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(1)),
+            Message::midi1(
+                MidiChannel::FIRST,
+                Voice1::note_on(NoteNumber::of(60), U7::of(1)),
+            ),
         )
         .unwrap()
         .push(Tick(10), Meta::tempo(Bpm::of(100.0)))
@@ -273,7 +280,7 @@ fn a_clip_files_timeline_is_its_packets_as_stored_without_the_header() {
     );
     let note = Message::Midi2(
         MidiChannel::FIRST.into(),
-        Voice2::note_on(NoteNumber::of(60), NoteVelocity::new(0xFFFF)),
+        Voice2::note_on(NoteNumber::of(60), NoteVelocity::MAX),
     );
     let track = Track {
         header: vec![(Tick(0), program.into())],
@@ -345,10 +352,9 @@ fn a_refused_track_list_names_the_rule_and_where() {
         }
     );
     // An SMF holds Group 1 only.
-    let g2 = Message::note_on(
+    let g2 = Message::midi1(
         Address::new(MidiGroup::of(1), MidiChannel::FIRST),
-        NoteNumber::of(60),
-        U7::of(1),
+        Voice1::note_on(NoteNumber::of(60), U7::of(1)),
     );
     let t = Track::new().push(Tick(0), g2).unwrap();
     assert_eq!(

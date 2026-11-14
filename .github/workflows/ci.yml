@@ -1,15 +1,3 @@
-# CI for the tutti audio engine.
-#
-# This replaces the workflow the engine carried as a subtree of the dawai app
-# repo, which had rotted unnoticed for the whole time it sat there unrun: it
-# named `tutti-midi` and `tutti-units` (split and renamed in 786a4c24 and
-# 91bb7540) and carried a `no_std` job for a property deliberately dropped in
-# 679a8433. A workflow that names crates which no longer exist does not fail —
-# it just stops testing anything, which is why nothing reported it.
-#
-# Three things here are load-bearing and are documented at their step:
-# the plugin-server prebuild, doctests, and the path gate.
-
 name: CI
 
 on:
@@ -20,45 +8,30 @@ on:
     types: [checks_requested]
   workflow_dispatch:
 
-# No job writes to the repository, issues or checks.
 permissions:
   contents: read
 
-# Only a pull request cancels its own stale run. A push to main and a merge
-# group never cancel one another: each merge's run on main completes. A merge
-# group's ref (`gh-readonly-queue/...`) is unique to it, so the key never
-# collides across groups.
+# Only a pull request cancels its own stale run; every push to main and merge group run completes.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
-  # Incremental off: CI builds from clean, so the incremental cache is dead weight.
+  # CI builds from clean, so an incremental cache only costs time.
   CARGO_INCREMENTAL: 0
-  # Line tables only: backtraces keep file:line, and the test binaries are a
-  # fraction of the size. Full debug info filled the ubuntu runner's disk.
+  # Line tables only: backtraces keep file:line, and full debug info filled the runner's disk.
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_PROFILE_TEST_DEBUG: line-tables-only
   RUST_BACKTRACE: 1
 
-# Reproducible builds. Every stable job installs the toolchain
-# `rust-toolchain.toml` pins (`rustup toolchain install` with no argument
-# reads it), never a floating `stable`, so a new release's lints land in the
-# PR that bumps the file. Every cargo command that resolves dependencies runs
-# `--locked` against the committed `Cargo.lock`: a lock that drifted from the
-# manifests fails loudly instead of resolving newer crates in silence (a
-# floating resolve once broke a build). Miri names its nightly (`cargo +nightly`), which overrides
-# the file.
+# Every stable job installs the toolchain `rust-toolchain.toml` pins, and every cargo command that resolves
+# dependencies runs `--locked`, so a new lint or crate release lands only in the PR that moves it.
+# Miri names its nightly, which overrides the file.
 
 jobs:
-  # Advisories (`deny.toml`): a RustSec vulnerability, a yanked crate or an
-  # unmaintained one not named there fails the job. The advisory DB is fetched
-  # fresh on the runner; a failed fetch is an error, never a pass. `bans` and
-  # `licenses` are not checked (see `deny.toml`). A pull request or merge group
-  # runs it only when the dependencies change (`deps` below); every push to
-  # main and the nightly run it whatever changed, which is where a new advisory
-  # against an unchanged lock shows.
+  # The advisory DB is fetched fresh; a failed fetch fails the job. Pull requests run it only when the
+  # dependencies change; every push to main runs it, which is where a new advisory against an unchanged lock shows.
   deny:
     name: cargo deny (advisories)
     needs: changes
@@ -66,7 +39,6 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: taiki-e/install-action@v2
         with:
@@ -79,146 +51,72 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # For the submodule-pin gate below, which reads `git submodule
-          # status`. A checkout without them still prints the recorded SHAs,
-          # but prefixed `-` for uninitialised, so the gate would report the
-          # checkout rather than the pin on every run.
+          # The submodule-pin gate reads `git submodule status`, which prefixes uninitialised submodules with `-`.
           submodules: recursive
-      # The toolchain `rust-toolchain.toml` pins: the gates below that are
-      # `cargo xtask` recipes build `xtask` (std only, a few seconds).
       - run: rustup toolchain install
-      # The two cheapest checks first, so a pull request that fails one fails
-      # in a minute, not after the workspace builds: the formatting, and
-      # xtask's own tests (a recipe or gate whose tests break in a merged tree
-      # once cost a full test run per merge group). `cargo xtask gates` runs
-      # these and the source gates below locally; `.githooks/pre-push` runs it.
+      # Cheapest checks first, so a failing pull request fails in a minute rather than after the workspace builds.
       - run: cargo fmt --all --check
       - run: cargo test --locked -p xtask
-      # Engine types are imported from a crate's root or prelude, never through
-      # its modules. Neither rustc nor clippy has a lint for a redundant path,
-      # and doc comments in ```text / ```ignore blocks are never compiled — so
-      # this scan is the only enforcement there is.
+      # The compiler and clippy do not lint a redundant path, and doc comments in `text` blocks are never compiled,
+      # so this scan is the only check.
       - run: cargo xtask check-paths
-      # `tutti-graph` keeps every module private, so rustc already refuses
-      # `tutti_graph::plan::Plan` in code. Prose is the gap: a ```text block
-      # or a *.md naming a module path compiles fine and goes stale the moment
-      # a module is renamed. The per-module gate covers it.
+      # A private module already refuses a path in code; prose is the gap. A `text` block or `*.md` naming a module
+      # path compiles and goes stale on a rename, so each crate with private modules is listed below.
       - run: cargo xtask check-paths tutti_graph arena builder command compile controls cost editor event exec fade fork graph held history instrument io kernels latency loss meter node par param plan play pool preroll reference slots spec tail tap time
-      # The same for `tutti-session`, which keeps every module private too.
       - run: cargo xtask check-paths tutti_session builder device error export graph instrument midi modulation node plugin session watch
-      # And `tutti-ump`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_ump cc_number decode encode field message midi1 midi_channel midi_group ump
-      # And `tutti-midi-protocol`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_midi_protocol midi1 narrow scale voice
-      # And `tutti-midi-device`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_midi_device id table
-      # And `tutti-midi-network`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_midi_network auth command config datagram discovery endpoint event link policy sequence session text udp
-      # And `tutti-midi-hardware`: its modules are private but `test_support`.
+      # `test_support` is public and left out of the list.
       - run: cargo xtask check-paths tutti_midi_hardware backend capability devices endpoints error port session
-      # And `tutti-plugin-db`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_plugin_db facts format fs pedal scanner table wire
-      # And `tutti-plugin-ipc`, whose modules are private but `state_chunk`, the
-      # namespace both ends of the wire chunk a state with.
+      # `state_chunk` is public and left out of the list.
       - run: cargo xtask check-paths tutti_plugin_ipc batcher client config error ipc offline_wait process_guard protocol subprocess transport
-      # And `tutti-plugin-ipc-ffi`, the process edge's `unsafe` behind safe calls.
       - run: cargo xtask check-paths tutti_plugin_ipc_ffi header mapping os
-      # And `tutti-plugin-host`, the format-generic half of plugin hosting: its
-      # modules are private, the root names every item.
       - run: cargo xtask check-paths tutti_plugin_host control_handle controls listeners liveness meter node param_delivery param_input param_values render_mode segment_points transport_source transport_walk
-      # And `tutti-dsp`: its modules are private, the root names every item.
       - run: cargo xtask check-paths tutti_dsp allpass buffer control convolver delay dither dynamics error fdn fdn_design fft filter geometry grid interp model network reverb reverb_design swept_delay waveshape window resample
-      # And `tutti-measure`, which keeps its modules private too.
       - run: cargo xtask check-paths tutti_measure align beat chord chroma features key loudness notes onset peaks pitch silence spectrum stereo tempo transform vectorscope xcorr yin
-      # And `tutti-transport`, `tutti-metering` and `tutti-engine`: modules
-      # private, the root names every item.
       - run: cargo xtask check-paths tutti_transport beat_walk clock fsm handle loop_region motion offline project_meter settings state timed timeline
       - run: cargo xtask check-paths tutti_metering load
       - run: cargo xtask check-paths tutti_engine engine error
-      # And `tutti-codec`, which keeps its modules private: the root names every item.
       - run: cargo xtask check-paths tutti_codec aiff decode encoder error flac format pcm spec staged vorbis wav wave
-      # And `tutti-sf2` and `tutti-soundfont`: modules private, the root names every item.
       - run: cargo xtask check-paths tutti_sf2 bank binary_reader error four_cc generator generator_type instrument instrument_info instrument_region loop_mode preset preset_info preset_region read_counter sample_header soundfont soundfont_info soundfont_parameters soundfont_sampledata soundfont_version zone zone_info
       - run: cargo xtask check-paths tutti_soundfont array_math bi_quad_filter channel chorus envelope_stage error fork lfo modulation_envelope node oscillator patch player region_ex region_pair render reverb settings soundfont_math voice voices volume_envelope
-      # And `tutti-sampler`: its modules are private but `stretch` (the vocoder's
-      # `stretch::Unit` is named by its module) and `testing`.
+      # `stretch` and `testing` are public and left out of the list.
       - run: cargo xtask check-paths tutti_sampler clip error lanes probe streamer voice
-      # And `tutti-tempo`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_tempo error grid map point segment
-      # And `tutti-curve`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_curve envelope law
-      # And `tutti-buffers`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_buffers convert error i24 interleaved mono planes sample
-      # And `tutti-voicing`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_voicing controller holds phase voicing
-      # And `tutti-rt`, which keeps its modules private: the root names every item.
       - run: cargo xtask check-paths tutti_rt cell denormals doorbell drain_clock edits job_gate level_cell packed_atomic pos_ring request_word scope seq_cell spin split task_graph vec
-      # The vendored VST3 SDK is three Steinberg submodules, documented as
-      # pinned at v3.8.0_build_66 in .gitmodules, in CLAUDE.md and in
-      # tutti-vst3-host's build.rs. Prose cannot notice a submodule bump moving
-      # the tree out from under it, and a silently changed SDK surfaces as an
-      # unexplained C++ compile error in `audio-probe` rather than as a version
-      # complaint — so this compares those three statements against the commits
-      # the superproject actually records. It belongs in this job because it is
-      # the other static gate: no build of the workspace, just a claim checked.
+      # Compares the SDK version the prose states against the commits the superproject records; a bumped submodule
+      # otherwise shows as an unexplained C++ error in `audio-probe`.
       - run: cargo xtask check-submodule-pins
-      # `tutti-session` is the API layer, not an umbrella (design 015 §8): no
-      # Bevy crate in its normal closure with every feature on (`cargo tree`),
-      # and no whole-crate re-export in its source.
+      # No Bevy crate in `tutti-session`'s closure with every feature on, and no whole-crate re-export.
       - run: cargo xtask check-session
-      # Every CLAP host callback, AU callback, VST3 host COM method and the VST2
-      # audioMaster callback runs in the panic guard (source scan, no build).
       - run: cargo xtask check-guards
-      # `unsafe` lives only in the crates that hold it: every other crate root
-      # forbids it (the compiler then refuses a token anywhere in it), and the
-      # `-ffi` crates carry the lints that make each block document itself
-      # (source scan, no build).
       - run: cargo xtask check-ffi
-      # Every error type derives `thiserror::Error` (no hand `impl Error for`
-      # outside the gate's allow-list), and a `pub` type named `...Error`
-      # implements it (source scan, no build).
       - run: cargo xtask check-errors
-      # Every member sits directly in `crates/<package>` or `testing/<dir>`, no
-      # shipped crate builds on a `testing/` crate, dependencies point down the
-      # layers in CLAUDE.md, the codec libraries stay behind `tutti-codec`'s
-      # decode module, `export` alone reaches no C library (`cargo tree`), and a
-      # test finds a repo file through `tutti_fixtures`, never a path that
-      # depends on its own depth.
+      # Includes `cargo tree` checks, such as that `export` alone reaches no C library.
       - run: cargo xtask check-layout
-      # A tuple struct with a private field does not derive `Deserialize`
-      # plainly: the derive skips `new` (`xtask` over the source, no build).
       - run: cargo xtask check-range-types
-      # Every InProcess/OutOfProcess impl is listed in the plugin contract's
-      # `hostings` (`xtask` over the source, no build).
       - run: cargo xtask check-hosting
-      # Every crate takes `[lints] workspace = true` and the workspace denies
-      # `missing_debug_implementations` (manifest scan, no build).
       - run: cargo xtask check-lints
-      # A fieldless public enum that is `Eq` is `Hash` (source scan, no build).
       - run: cargo xtask check-value-traits
       - run: cargo xtask check-doc-refs
       - run: cargo xtask check-pointers
-      # Backticked item names in prose resolve to code, and every `#[test]`
-      # asserts; each is a per-file ratchet over its `xtask/*.txt` baseline.
       - run: cargo xtask check-doc-idents
       - run: cargo xtask check-passive-tests
       - run: cargo xtask check-comments
       - run: cargo xtask check-alloc-binaries
-      # A public item names audio with a fixed sample format only as a row of
-      # `xtask/buffers-fixed.txt`; a ratchet like the baselines above.
       - run: cargo xtask check-buffers
-      # A platform cfg stands only on a `mod` declaration; the `-ffi` crates are
-      # exempt and the temporary rows in the gate are a ratchet.
       - run: cargo xtask check-platform-seam
-      # The spec inventories under `testing/conformance/` are well formed, every
-      # `/// Spec:` test tag names a row, and the CLAP rows are the items the
-      # locked `clap-sys` declares (its source is fetched, not built).
+      # The source of the locked `clap-sys` is fetched, not built, for the CLAP rows.
       - run: cargo fetch --locked
       - run: cargo xtask check-conformance
         env:
           TUTTI_CONFORMANCE: require
-      # Every crate under `crates/` packages as crates.io takes it: a version on
-      # each dependency, its files inside its own directory. No build.
       - run: cargo xtask package
 
   clippy:
@@ -229,21 +127,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The VST3 SDK is three submodules; without them tutti-vst3-host
-          # cannot build its `audio-probe` reference plugin.
+          # Without the VST3 SDK submodules `tutti-vst3-host` cannot build its `audio-probe` plugin.
           submodules: recursive
       - name: Install Linux audio deps
         uses: ./.github/actions/linux-audio-deps
-      # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: lint-linux
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      # One format at a time: a test helper or a match that only the other
-      # formats use is dead or irrefutable here, and the workspace run (every
-      # format on) cannot see it.
+      # One format at a time: a helper or match that only the other formats use is dead here,
+      # and the all-formats run cannot see it.
       - name: clippy (plugin server, one format)
         run: |
           for f in vst3 clap; do
@@ -253,19 +148,10 @@ jobs:
             cargo clippy --locked -p tutti-plugin-probe --no-default-features --features "$f" --all-targets -- -D warnings
           done
 
-  # The same lint, on Windows. The `clippy` job above cannot see a
-  # `#[cfg(windows)]` block, and it cannot see a cast that is load-bearing on
-  # one platform and a no-op on the other: the vst3 bindings type every SDK
-  # enum constant as `c_uint` on unix and `c_int` on Windows, so
-  # `kAudio as i32` passes Linux clippy and fails `unnecessary_cast` here. This
-  # is the only Windows job: it lints the code, and nothing runs it there.
-  #
-  # A native runner rather than a cross-check from ubuntu. The cross-check
-  # (`cargo xtask check-windows`) reaches the plugin crates, but not the workspace:
-  # `ogg_next_sys` needs real Windows C headers, and `tutti-vst3-host`'s
-  # `conformance` feature compiles and links the `audio-probe` DLL against the
-  # SDK's Win32 sources, which only an MSVC toolchain can do. Here `cc` finds
-  # MSVC, so no clang/stub workaround is needed.
+  # Lints what the Linux job cannot see: `#[cfg(windows)]` blocks, and casts that differ by platform (the vst3
+  # bindings type SDK enum constants `c_uint` on unix and `c_int` on Windows). A native runner, because
+  # `cargo xtask check-windows` cannot reach `ogg_next_sys` or `tutti-vst3-host`'s `conformance` build, which need
+  # real MSVC headers. Nothing runs tests here.
   clippy-windows:
     name: clippy (windows)
     needs: changes
@@ -275,16 +161,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-      # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Workspace
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      # The workspace run builds each crate with the features the workspace
-      # unifies to, which leaves tutti-plugin's format features dark. `au` is macOS-only and
-      # compiles to nothing here.
+      # The workspace run unifies features and leaves `tutti-plugin`'s format features dark.
+      # `au` is macOS-only and compiles to nothing here.
       - name: Plugin formats
         shell: bash
         run: |
@@ -295,10 +179,8 @@ jobs:
       - name: Device features
         run: cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
 
-  # The AU host on macOS. Every AU crate is `#![cfg(target_os = "macos")]`, so
-  # the Linux and Windows clippy jobs compile it to nothing and a lint in it
-  # (missing docs, a new clippy rule) went unseen until someone built on a Mac.
-  # Lints only; the AU suites need installed audio units and run locally.
+  # Every AU crate is macOS-only, so the Linux and Windows jobs compile it to nothing. Lints only: the AU
+  # suites need installed audio units and run locally.
   clippy-macos:
     name: clippy (macos)
     needs: changes
@@ -306,29 +188,19 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
-      # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --locked -p tutti-au-ffi -p tutti-au-host --all-targets -- -D warnings
-      # The CoreMIDI backend: the native-UMP source and the host clock are
-      # `tutti-coremidi-ffi`'s, the rest of the backend is `tutti-midi-hardware`'s.
       - run: cargo clippy --locked -p tutti-coremidi-ffi -p tutti-midi-hardware --all-targets -- -D warnings
-      # The editor loader's AU arm (`format/gui`) is compiled here only; the AU
-      # contract suite (`tutti-plugin-contract`'s `tests/au.rs`, the shared plugin's AU shell) runs in
-      # the macOS `test` job.
+      # The editor loader's AU arm is compiled only here.
       - run: cargo clippy --locked -p tutti-plugin --features au --lib -- -D warnings
-      # The server with AU alone: the one-format loop in `clippy` runs on Linux,
-      # where the AU row compiles to nothing, so a helper only the other
-      # formats use is dead only here. `--lib`,
-      # not `--all-targets`: the server's dev-dependency `tutti-vst3-host`
-      # builds the VST3 SDK, which this job does not check out.
+      # AU alone: the one-format loop in `clippy` runs on Linux, where the AU row is empty. `--lib` because the
+      # server's dev-dependency `tutti-vst3-host` builds the VST3 SDK, which this job does not check out.
       - run: cargo clippy --locked -p tutti-plugin-server --no-default-features --features au --lib -- -D warnings
 
-  # The plugin contract on Windows. Not a required check: nothing else runs a
-  # test there, and whether the shared plugin loads on a Windows runner is what
-  # this finds out. Linux and macOS run the same suite in `test`.
+  # Not a required check: it finds out whether the shared plugin loads on a Windows runner.
   contract-windows:
     name: plugin contract (windows)
     needs: changes
@@ -336,11 +208,10 @@ jobs:
     runs-on: windows-latest
     continue-on-error: true
     steps:
-      # The VST3 shells and the C++ witness build against the SDK submodules.
+      # The VST3 shells and the C++ plugin build against the SDK submodules.
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-      # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
@@ -353,102 +224,26 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
-    # Suites run here may assert golden digests; see the `test` job.
     env:
       TUTTI_GOLDEN: require
     steps:
-      # The submodules are the VST3 SDK: `tutti-plugin-contract` builds the VST3
-      # shells and the C++ witness against it.
+      # The VST3 SDK: `tutti-plugin-contract` builds its VST3 shells and the C++ plugin against it.
       - uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Install Linux audio deps
         uses: ./.github/actions/linux-audio-deps
-      # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
 
-      # Feature-gated code that no other job compiles.
-      #
-      # `cargo tree --workspace -e features -i tutti-cpal` reports only
-      # "default": nothing in this workspace turns `capture` or `audio-io`
-      # on, so the clippy and test jobs above typecheck none of them.
-      # That is the same hole the Windows cross-check exists to close, and for
-      # the same reason — a cfg block nothing compiles is a cfg block nothing
-      # lints, and it rots in silence.
-      #
-      # What was dark until this job existed:
-      #   tutti-cpal/capture  — all of src/mic.rs (MicIn, the capture ring)
-      #   tutti-export        — no feature of its own; its tests have every
-      #                         `tutti-codec` encoder on through a dev-dependency
-      #   tutti-session/encode-*, tutti/encode-*, tutti/decode-* — the codec's
-      #                         own names, forwarded; `device,soundfont` and every
-      #                         decode and encode feature of the umbrella are
-      #                         linted together, `vst3,au` of the session as a library
-      #   tutti-sampler/decode-* — the library with none, and with every
-      #                         decoder (ogg is in no test's dev-dependency)
-      #   tutti-plugin/vst3,au,serde — linted with their tests
-      #   tutti-codec/*       — a `Format` variant exists only with its encode
-      #                         feature, so each of none, encode-wav, encode-aiff,
-      #                         encode-flac and encode-vorbis is built and tested
-      #                         alone (a workspace run has them all on, through
-      #                         tutti-export, and proves nothing about the
-      #                         gating); each decode-* feature is built alone as
-      #                         a library (its tests always have every decoder on,
-      #                         through the crate's dev-dependency on itself);
-      #                         with them all and `serde`, the pinned bytes and
-      #                         Quality's range contract run
-      #   tutti-session/clap  — src/plugin.rs and src/export.rs's plugin half:
-      #                         tests/plugin/plugin.rs hosts the reference CLAP
-      #                         plugin through a real plugin-server.
-      #                         `export,modulation` so the render mode and the
-      #                         GUI-edit drain compile with it.
-      #   tutti-session/midi-hardware — tests/midi/midi.rs's hardware-port reclaim test
-      #                         and its hot-plug tests
-      #   tutti-session/sampler,vst2 — the sampler voice's export fork
-      #                         (`export_fork_sampler`) and the reference VST2
-      #                         plugin in process (`vst2_meter`,
-      #                         `vst2_modulation`).
-      #   tutti-session/device — tests/io/device.rs (the device-free restart and
-      #                         watch tests over `ManualStreamDriver`). With `audio-io`,
-      #                         tests/io/device_input.rs (the inputs a restart
-      #                         reopens, over a test's own capture).
-      #   tutti-midi-hardware/sequencer-tests — compiled and linted here, and run
-      #                         only locally (`cargo xtask test-features`): the suite
-      #                         needs the kernel's `snd-seq` module, which the
-      #                         runner's Azure kernel does not ship (no
-      #                         `linux-modules-extra` package either). It fails,
-      #                         never skips, without `/dev/snd/seq`
-      #   tutti-plugin-types/testing — the `FakePlugin` a consumer's tests
-      #                         link, built and its suite run with it on
-      #   tutti-plugin-db/serde — `PluginDb`'s serde record and its tests
-      #   tutti-plugin/clap,vst2 — the CLAP tests (the `clap_*` and
-      #                         `plugin_param_delivery*` suites, and the
-      #                         delivery tests that need a CLAP input list) and
-      #                         the in-process VST2 tests that go through the
-      #                         catalog's `Plugin` (`vst2_in_process`, `_fork`,
-      #                         `_transport`): no other job turns the features
-      #                         on, so none of them ran. Only
-      #                         `real_plugin_pressure` did, by name. The other
-      #                         in-process VST2 suites are `tutti-plugin-host`'s
-      #                         and run ungated in the workspace test job (its
-      #                         dev-dependencies build the reference plugin).
-      #   tutti-plugin-contract/server — tests/server.rs: the shared plugin's
-      #                         mode and transcript through a real plugin-server,
-      #                         in all of CLAP, VST2 and VST3 (and the C++ plugin);
-      #                         tests/probe.rs: their descriptors, and a crash, a
-      #                         hang and a print in init, through a real plugin-probe
-      #   tutti/clap          — the umbrella's §5.1 and §5.2 examples
-      #                         (`headless_modulation`, `song_bounce`; `plugin_midi_export`,
-      #                         `test = true`, which plays the reference
-      #                         plugin through a real plugin-server) and its
-      #                         prelude's request types.
-      #
-      # Not `--all-features`: that pulls every plugin-format SDK. Name the
-      # combinations, and add one here whenever a new feature is added.
+      # Feature combinations no other job compiles: nothing in the workspace turns on `capture`, `audio-io` or the
+      # codec and plugin-format features, so the clippy and test jobs never see them. Not `--all-features`, which
+      # pulls every plugin-format SDK: name each combination, and add one when a feature is added.
+      # `tutti-midi-hardware/sequencer-tests` is linted here and run only locally (`cargo xtask test-features`): it
+      # needs the kernel's `snd-seq` module, which the runner lacks.
       - name: Lint
         run: |
           cargo clippy --locked -p tutti-cpal --features capture --all-targets -- -D warnings
@@ -487,18 +282,13 @@ jobs:
           cargo clippy --locked -p tutti-plugin-db --features serde --all-targets -- -D warnings
           cargo clippy --locked -p tutti-plugin-contract --features server --all-targets -- -D warnings
 
-      # The `#![no_std]` crates (`NO_STD_CRATES` in xtask) build for a target
-      # with no `std`, so a `std` use in one fails here.
       - name: no_std build
         run: |
           rustup target add thumbv7em-none-eabihf
           cargo xtask check-no-std
 
-      # `tests/plugin_capture.rs` (and tutti-session's `tests/plugin/plugin.rs` and
-      # tutti's `plugin_midi_export` example) spawn the `plugin-server`
-      # binary, which no test build produces (it would be a dependency cycle through
-      # `tutti-plugin`), so it is built here, before the tests, as the `test`
-      # job does. Without `au`, which is macOS-only.
+      # `plugin-server` cannot be a dev-dependency (a cycle through `tutti-plugin`), so the tests that spawn it
+      # need it built first. No `au`: it is macOS-only.
       - name: Build plugin-server (tutti-session/clap, tutti/clap and the plugin contract spawn it)
         run: |
           cargo build --locked -p tutti-plugin-server --no-default-features --features clap,vst3
@@ -519,8 +309,7 @@ jobs:
           cargo nextest run --locked -p tutti-codec --features encode-flac
           cargo nextest run --locked -p tutti-codec --features encode-vorbis
           cargo nextest run --locked -p tutti-codec --all-features
-          # This step names tutti-ump/serde so tests/messages/serde.rs runs whether or not
-          # another member's dependency edge turns it on.
+          # Named so `tests/messages/serde.rs` runs even when no other member turns the feature on.
           cargo nextest run --locked -p tutti-ump --features serde
           cargo nextest run --locked -p tutti-midi-protocol --features serde
           cargo nextest run --locked -p tutti-midi-device --features serde
@@ -529,11 +318,8 @@ jobs:
           cargo nextest run --locked -p tutti-plugin-db --features serde
           cargo nextest run --locked -p tutti-plugin-contract --features server
 
-      # JACK hard-links libjack at build time, so it gets its own step (and its
-      # own apt package) rather than joining the list above. `AudioHost::Jack`
-      # exists on every platform and answers `Error::HostUnavailable` where it
-      # cannot be served, so only the Linux build reaches the real code — which
-      # is precisely why it needs compiling somewhere.
+      # JACK hard-links libjack at build time, so it has its own step and apt package. `AudioHost::Jack` exists
+      # on every platform, so only the Linux build reaches the real code.
       - name: Install JACK headers
         uses: ./.github/actions/linux-audio-deps
         with:
@@ -541,17 +327,9 @@ jobs:
       - name: Lint JACK
         run: cargo clippy --locked -p tutti-cpal --features jack --all-targets -- -D warnings
 
-      # The out-of-process plugin bridge, driven at real callback pacing against
-      # the reference CLAP probe, which cargo builds as a dev-dependency.
-      #
-      # `plugin-server` first: the suite spawns it, and it cannot be a
-      # dev-dependency because `tutti-plugin-server` depends on `tutti-plugin`
-      # and the edge would be a cycle. Nothing else in a test run builds it.
-      #
-      # These pace themselves to a 1.333 ms block and spawn up to 8
-      # subprocesses. If that proves too much for a shared runner, the honest
-      # fix is to reduce the instance count here with the failure recorded —
-      # not `continue-on-error`, which is how the pre-extraction workflow died.
+      # Driven at real callback pacing against the reference CLAP probe, with `plugin-server` built first (see above).
+      # These pace to a 1.333 ms block and spawn up to 8 subprocesses; if that is too much for a shared runner,
+      # reduce the instance count rather than add `continue-on-error`.
       - name: Build plugin-server and plugin-probe
         run: |
           cargo build --locked -p tutti-plugin-server
@@ -559,23 +337,9 @@ jobs:
       - name: tutti-plugin suites (CLAP, in-process VST2) and the bridge under pressure
         run: cargo nextest run --locked -p tutti-plugin --features clap,vst2,serde
 
-  # Benchmarks: proved to RUN, never compared.
-  #
-  # GitHub's runners are shared and swing 30-50% on this workload, and the
-  # engine's own profile_stretch_clone harness (deleted with `Net`; its
-  # figures are in doc 013) measured an 81x spread on a QUIET
-  # machine. A timing threshold here would flap, and a flapping gate gets
-  # `continue-on-error: true` within a month and then tests nothing — the same
-  # death the pre-extraction workflow died. So this job runs every benchmark
-  # exactly once (`--test`) to prove the harnesses still work against the
-  # current API, and compares nothing.
-  #
-  # The real perf gate is `tutti-engine/tests/alloc_budget.rs`, which runs in the
-  # ordinary test job: allocation counts are machine-independent, so a budget
-  # on them survives a noisy vCPU.
-  #
-  # Not on `pull_request` or `merge_group`: this is a full release build of the
-  # workspace. It runs on the push to main.
+  # Each benchmark runs once (`--test`) to prove the harness builds and runs; nothing is timed or compared,
+  # because shared runners swing too much for a threshold. The perf gate is `tutti-engine/tests/alloc_budget.rs`:
+  # allocation counts do not depend on the machine. Push to main only, since this is a full release build.
   bench-smoke:
     name: bench smoke
     if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
@@ -586,14 +350,10 @@ jobs:
           submodules: recursive
       - name: Install Linux audio deps
         uses: ./.github/actions/linux-audio-deps
-      # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
-      # No Rust cache: push-only and release-profile, so it would hold 260 MB
-      # for one rarely-run job.
-      # Named targets, not a sweep: a bare `cargo bench` (and `--benches`)
-      # also runs the test targets in the release profile, where
-      # `debug_assert!` is gone and a `#[should_panic]` over one fails.
-      # Mirrors `cargo xtask bench`; adding a bench means adding a line in both.
+      # No Rust cache: push-only and release-profile, so it would hold 260 MB for one rarely-run job.
+      # Named targets, because a bare `cargo bench` also runs test targets in release, where `debug_assert!` is gone
+      # and a `#[should_panic]` over one fails. Keep in step with `cargo xtask bench`.
       - run: |
           cargo bench --locked -p tutti-nodes     --bench engine_render  -- --test
           cargo bench --locked -p tutti-graph     --bench graph_render   -- --test
@@ -613,15 +373,12 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(needs.changes.outputs.test_os) }}
-    # The golden digests are glibc libm's on 24.04; 26.04's libm moves them.
-    # `require` makes a Linux runner whose glibc is not the recorded one fail
-    # instead of skipping the digests (CLAUDE.md, Testing).
+    # Golden digests are glibc libm's on 24.04; 26.04's libm moves them. `require` fails a Linux runner on any
+    # other glibc instead of skipping.
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     env:
       TUTTI_GOLDEN: ${{ matrix.os == 'ubuntu-latest' && 'require' || '' }}
-      # Optimized dependencies and workspace crates, with debug assertions and
-      # overflow checks still on: the suite is CPU-bound (the differential
-      # suite alone was a third of the run at opt-level 0).
+      # Optimized dependencies with debug assertions still on: the suite is CPU-bound.
       CARGO_PROFILE_DEV_OPT_LEVEL: '1'
     steps:
       - uses: actions/checkout@v7
@@ -630,7 +387,6 @@ jobs:
       - name: Install Linux audio deps
         if: runner.os == 'Linux'
         uses: ./.github/actions/linux-audio-deps
-      # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
@@ -639,37 +395,21 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
 
-      # MUST come before the test run. `tutti-plugin`'s clap_pdc_alignment,
-      # clap_crash_recovery and real_stall_tests drive the reference CLAP plugin
-      # through a real out-of-process host, so they spawn this binary. It cannot
-      # be a dev-dependency that cargo would build for them — tutti-plugin-server
-      # depends on tutti-plugin, so the edge would be a dependency *cycle* — and
-      # nothing else in a test run builds it. Skipping it makes those three
-      # suites hard-fail rather than silently skip, which is deliberate: a suite
-      # that skips on a missing fixture is one typo away from reporting success
-      # having executed nothing.
+      # Before the test run: several `tutti-plugin` suites spawn this binary, and it cannot be a dev-dependency
+      # (a cycle). A missing binary fails those suites rather than skipping them.
       - name: Build plugin-server and plugin-probe (three plugin-host suites spawn the server)
         run: |
           cargo build --locked -p tutti-plugin-server
           cargo build --locked -p tutti-plugin-probe
 
-      # nextest, not `cargo test`: each test gets its own process, which is what
-      # the audio suites need — they touch device and global state, and a panic
-      # or abort in one no longer takes the whole binary's results with it.
-      #
-      # `au_gui_lifecycle_main` is a `harness = false` main that drives a plugin
-      # editor on the process main thread; it answers nextest's
-      # `--list --format terse` and `<case> --exact`, so it runs here like any
-      # other binary.
+      # nextest runs each test in its own process; the audio suites touch device and global state.
+      # `au_gui_lifecycle_main` is a `harness = false` main that answers nextest's list protocol.
       - name: Test
         shell: bash
         run: |
           cargo nextest run --locked --workspace --no-fail-fast
 
-      # tutti-session's `plugin` suite is feature-gated, and the dark-features
-      # job that runs it is Linux-only. It drives the plugin-server and
-      # in-process VST2, whose timing and file naming differ on macOS, so a
-      # macOS-only difference there went unnoticed (the replacement-ports race).
+      # The `plugin` suite is feature-gated and the dark-features job is Linux-only; its timing and file naming differ on macOS.
       - name: tutti-session plugin suite (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -677,10 +417,7 @@ jobs:
             --features clap,export,modulation,device,midi,sampler,vst2 \
             -E 'binary(plugin)'
 
-  # What `test` used to run after the workspace suite, on its own runner so the
-  # two overlap: the critical path was the macOS `test` job, which ran all of
-  # this serially behind the 8-minute suite. The same checks, the same
-  # commands, the same `TUTTI_GOLDEN` and profile env.
+  # Split from `test` so the two run on separate runners and overlap; same env and profile.
   test-more:
     name: test (${{ matrix.os }}, editor + release + doctests)
     needs: changes
@@ -700,7 +437,6 @@ jobs:
       - name: Install Linux audio deps
         if: runner.os == 'Linux'
         uses: ./.github/actions/linux-audio-deps
-      # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
@@ -708,23 +444,15 @@ jobs:
           save-if: false
       - uses: taiki-e/install-action@nextest
 
-      # The RT primitives in release. Some of their properties only exist
-      # with `debug_assertions` off: `AudioThreadCell`'s borrow check was
-      # debug-only once (two `&mut T` from safe code in release), and nothing
-      # but this run would have caught it outside the loom job.
-      # `tutti-graph`'s executor guards (a caller bug asserts in debug and
-      # renders silence in release) have a test per build.
+      # Some of these properties exist only with `debug_assertions` off: `tutti-graph`'s executor guards assert in
+      # debug and render silence in release.
       - name: Test tutti-types, tutti-rt and tutti-graph (release)
         run: cargo nextest run --locked --release -p tutti-types -p tutti-rt -p tutti-graph
 
-      # nextest does NOT run doctests, and says nothing about skipping them.
-      # That is not a rounding error here: these are the only tests covering the
-      # `///` examples, so a green nextest run is not a green workspace.
+      # nextest does not run doctests and does not say so; these are the only tests of the `///` examples.
       - name: Doctests
         run: cargo test --locked --doc --workspace
-      # tutti-session's doctests behind its own features (`Device`'s
-      # `compile_fail` proof under `device`, `PumpLoop`'s under `record`, ...):
-      # a workspace run does not turn them on, so every feature is named here.
+      # A workspace run does not turn on the features behind `tutti-session`'s doctests, so every feature is named.
       - name: Doctests (tutti-session, all features)
         run: cargo test --locked --doc -p tutti-session --all-features
 
@@ -739,46 +467,29 @@ jobs:
           submodules: recursive
       - name: Install Linux audio deps
         uses: ./.github/actions/linux-audio-deps
-      # JACK too: the umbrellas' `--all-features` line below turns on
-      # `tutti-cpal/jack`, whose `jack-sys` build script wants the headers. The
-      # action keys its cache on what is already installed, so this second call
-      # has its own cache, apart from a job that asks for the JACK list first.
+      # JACK too: `--all-features` below turns on `tutti-cpal/jack`, whose build script wants the headers.
       - name: Install JACK headers
         uses: ./.github/actions/linux-audio-deps
         with:
           extra: libjack-jackd2-dev
-      # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # The workspace sets broken_intra_doc_links and private_intra_doc_links to
-      # deny; this is where that is actually enforced, since a plain build never
-      # runs rustdoc.
-      # `--document-private-items`: the crates' internals carry doc comments
-      # with links too, and one that only breaks in a private item rots
-      # unseen.
+      # Intra-doc link lints are denied workspace-wide but only rustdoc enforces them. `--document-private-items`
+      # catches links that break only in a private item.
       - run: cargo doc --locked --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings --document-private-items
-      # The two umbrellas with every feature at once, JACK included (the one
-      # feature `check-doc-features` below leaves out, since its build script
-      # wants the headers this job installs).
+      # Both umbrellas with every feature, JACK included (the one feature `check-doc-features` leaves out).
       - run: cargo doc --locked -p tutti-session -p tutti --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings --document-private-items
-      # Every member with its features together, private items included, then
-      # each feature of the umbrellas alone (`xtask/src/gates/doc_features.rs`).
-      # A workspace build turns on only what some member's edge enables, so an
-      # item behind a feature nothing enables (a `contract` harness,
-      # `testing`, a codec) and its links are documented by no line above;
-      # broken links reached main from five crates that way. The member list and
-      # the features are read from the manifests, so a new crate is covered.
+      # Every member with its features together, then each umbrella feature alone: a workspace build documents only
+      # what some member's edge enables. The lists come from the manifests.
       - run: cargo xtask check-doc-features
-      # The docs.rs build: nightly and `--cfg docsrs`, so `doc_cfg` parses and
-      # the feature badges render. A dated nightly (bumped by hand, like
-      # `rust-toolchain.toml`'s stable) so a new rustdoc lint cannot turn CI
-      # red; named with `+` because `rust-toolchain.toml` pins stable.
+      # The docs.rs build: nightly with `--cfg docsrs`. A dated nightly, bumped by hand, so a new rustdoc lint cannot
+      # turn CI red; named with `+` because `rust-toolchain.toml` pins stable.
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly-2026-10-14
@@ -786,13 +497,8 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings --cfg docsrs
 
-  # The same rustdoc gate on macOS. The `rustdoc` job above runs on Linux, where
-  # `tutti-au-host`, the AU half of `tutti-au-ffi`, `tutti-coremidi-ffi`, the
-  # CoreMIDI backend of `tutti-midi-hardware` and the macOS paths of
-  # `tutti-vst3-ffi` and `tutti-plugin-server` compile to nothing, so a broken
-  # or private intra-doc link in them (denied by the workspace) is invisible
-  # there. Submodules: the workspace build runs `tutti-vst3-host`'s build script,
-  # which wants the VST3 SDK.
+  # The Linux job compiles the AU, CoreMIDI and macOS plugin paths to nothing, so a broken intra-doc link in them
+  # is invisible there. Submodules: `tutti-vst3-host`'s build script wants the VST3 SDK.
   doc-macos:
     name: rustdoc (macos)
     needs: changes
@@ -802,7 +508,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-      # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
@@ -811,43 +516,21 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings --document-private-items
 
-  # Miri over the non-FFI `unsafe` (tutti-rt's README, "Safety", lists it).
-  # Why these crates and not the rest: most of this repo's `unsafe` is a C
-  # ABI, which miri does not execute at all, and out-of-process hosting is the
-  # structural answer there instead. Of what is left, the ones that matter
-  # are `tutti-rt`'s: the aliasing in `AudioThreadCell`, the claims behind
-  # `SplitMut`/`SplitRw`, `JobGate`'s job cell and `edit_ring`'s slot words
-  # (their unit tests, `--lib` below, run under miri). `arc-lend` is an
-  # external crate whose own CI runs its miri and loom models.
-  #
-  # Its own job because it needs nightly and is slow — minutes, not seconds —
-  # and because a failure here should read as "a memory-safety claim broke",
-  # not as part of a general test failure.
-  #
-  # This is the JACK situation again: the recipe could not be verified on the
-  # machine that wrote it (installing nightly there failed repeatedly), so CI
-  # is the first thing to run it. A check nobody has run is not a check.
+  # Miri over `tutti-rt`'s `unsafe`: most other `unsafe` is a C ABI miri does not execute, and `arc-lend` runs its
+  # own miri and loom in its CI. Its own job because it needs nightly and is slow.
   miri:
     name: miri (tutti-rt)
     needs: changes
-    # Miri runs `tutti-rt` only, which depends on no other workspace crate, so
-    # it runs when the `loom` filter says it (or the lock, the toolchain or
-    # this file) changed.
+    # `tutti-rt` depends on no other workspace crate, so the `loom` filter covers what miri reads.
     if: needs.changes.outputs.loom == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
-    # About 10 minutes on main: a hang (a test miri cannot finish) fails here,
-    # not at GitHub's six-hour cap. A test that is slow only because it is a
-    # pure-arithmetic loop or a large transform shrinks under `cfg!(miri)`
-    # (an O(n^2) DFT reference or a 200 000-step search ran 10 to 15 minutes
-    # each); the native test job still runs it at full size.
+    # About 10 minutes on main; a hang fails here, not at GitHub's cap. Slow pure-arithmetic tests shrink under `cfg!(miri)`.
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
-      # ALSA headers: `tutti-rt` does not need them, but
-      # cargo resolves the whole workspace before building a member.
+      # `tutti-rt` needs no ALSA headers, but cargo resolves the whole workspace first.
       - uses: ./.github/actions/linux-audio-deps
-      # `+nightly` on each command below: `rust-toolchain.toml` overrides the
-      # default this action sets, and an explicit `+toolchain` overrides it.
+      # `+nightly` on each command: `rust-toolchain.toml` overrides the default this action sets.
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
@@ -855,66 +538,28 @@ jobs:
         with:
           shared-key: miri
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # `denormals.rs`'s register tests are `#[cfg_attr(miri, ignore)]`d — they read
-      # MXCSR, and miri has no x86 SSE intrinsics. They report as skipped
-      # rather than vanishing, so the run says what it did not cover. So are
-      # `rt/parked.rs`'s two: a thousand-odd publishes each, against a retired
-      # list parked loans keep growing, is quadratic and runs past this job's
-      # timeout under miri. They test a debug-only policy check, which the
-      # native nextest run covers.
+      # Register tests in `denormals.rs` are ignored under miri (no x86 SSE intrinsics) and report as skipped. So are
+      # two in `rt/parked.rs`: they are quadratic and run past the timeout, and the native run covers the debug-only
+      # check they test.
       - run: cargo +nightly miri test --locked -p tutti-rt --lib
-      # The thread hand-over of `edit_ring` under 16 schedules: one seed
-      # explores one interleaving.
+      # 16 seeds: one seed explores one interleaving.
       - run: cargo +nightly miri test --locked -p tutti-rt --lib edits
         env:
           MIRIFLAGS: -Zmiri-many-seeds=0..16
 
-  # The loom models: `PosRing`'s no-tear protocol (run against the shipped
-  # code — its atomics switch to loom's under the flag) and the plugin
-  # shm header's Release/Acquire protocol (a replica, for the reasons in
-  # `tutti-shm-model/Cargo.toml`). `--cfg loom` is global, so each is built for
-  # its own target only, never the workspace.
-  #
-  # Release, because loom explores every interleaving in-process. The
-  # `ArcLend` models are arc-lend's own CI's.
-  # What a pull request or a merge group changed, read once for the jobs that
-  # can skip it. A skipped job counts as passing in `CI result`. A pull request
-  # is diffed against its base; a merge group against the base of its queue
-  # entry, so its diff is the pull request's change plus the entries ahead of
-  # it and it runs the same jobs or more. A push to main and a manual run
+  # What changed, read once for the jobs that can skip. A skipped job passes in `CI result`. A pull request is
+  # diffed against its base, a merge group against its queue entry's base; a push to main and a manual run
   # always run everything.
   #
-  # `code`: false when every changed file is prose that nothing compiles: under
-  # top-level `docs/`, or a `*.md` at the repository root. A crate's README
-  # is pulled into rustdoc by `include_str!`, so it lives under `crates/` and
-  # counts as code. A prose PR
-  # still runs `canonical paths`, which scans `*.md`. Before this, a doc-only
-  # PR ran the whole matrix (about 17 minutes) for nothing it could change.
-  #
-  # `loom`: whether the change can affect a loom model. The models run the
-  # shipped code of `tutti-rt` (and `tutti-shm-model`'s mirror
-  # of the plugin slab header), so a PR that touches neither, nor the
-  # lock, the toolchain or this file, cannot change their result. `loom` is the
-  # slowest job (about 12 minutes); it runs on the PRs that can change it.
-  #
-  # `macos`: whether the change touches code that differs on macOS: the crates
-  # with a macOS path (thread priority in `tutti-rt`, CoreAudio through
-  # `tutti-cpal`, CoreMIDI, the AU host and the plugin stack's process and
-  # bundle code), the test plugins and the contract, or the build. It gates
-  # `clippy (macos)` and the macOS `test`; a change outside it runs no macOS job
-  # before the push to main. The macOS editor, release and doctest runs
-  # (`test-more`) and the macOS rustdoc (`macos_main`) are the push's alone.
-  #
-  # `deps`: whether a manifest, the lock, `deny.toml`, the toolchain or this
-  # file changed, which is what `cargo deny` reads.
-  #
-  # `full`: false on a pull request, which runs the light set (the static gates,
-  # Linux clippy, the Linux `test` and rustdoc, and `cargo deny` when `deps`);
-  # the merge group runs everything the filters above select, and the queue is
-  # what guards main. Windows and macOS clippy, the Windows contract, the dark
-  # features, the macOS `test`, `test-more`, loom and miri are the merge group's
-  # and the push's. The pre-push hook runs the static gates locally, and
-  # `cargo xtask check-windows` and `check-features` run the rest a PR skips.
+  # `code`: false when every change is prose nothing compiles (top-level `docs/`, or a root `*.md`). A crate's
+  # README is pulled in by `include_str!`, so it counts as code. `canonical paths` still runs for prose.
+  # `loom`: the change can affect a loom model: `tutti-rt`, `tutti-shm-model`, the lock, the toolchain or this file.
+  # `macos`: the change touches code that differs on macOS. It gates `clippy (macos)` and the macOS `test`;
+  # `macos_main` (editor, release and doctest runs, macOS rustdoc) is for pushes only.
+  # `deps`: a manifest, the lock, `deny.toml`, the toolchain or this file changed, which is what `cargo deny` reads.
+  # `full`: false on a pull request, which runs the light set (static gates, Linux clippy, the Linux `test`,
+  # rustdoc, `cargo deny` when `deps`); the merge group and the push run the rest. `cargo xtask check-windows`
+  # and `check-features` run locally what a pull request skips.
   changes:
     name: what changed?
     runs-on: ubuntu-24.04
@@ -966,9 +611,8 @@ jobs:
           else
             echo "loom=false" >> "$GITHUB_OUTPUT"
           fi
-          # The editor, release and doctest runs and the macOS rustdoc are the
-          # push's alone: Linux runs the same tests, and what only macOS
-          # compiles is linted by `clippy (macos)` here.
+          # The editor, release and doctest runs and the macOS rustdoc are for pushes only: Linux runs the same tests,
+          # and `clippy (macos)` lints what only macOS compiles.
           echo "macos_main=false" >> "$GITHUB_OUTPUT"
           echo 'test_more_os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
           if echo "$changed" | grep -qE '^(Cargo\.(toml|lock)|deny\.toml|rust-toolchain\.toml|\.github/workflows/ci\.yml)$|/Cargo\.toml$'; then
@@ -992,77 +636,52 @@ jobs:
     name: loom (${{ matrix.group }})
     needs: changes
     if: needs.changes.outputs.loom == 'true' && needs.changes.outputs.full == 'true'
-    # Three runners, because `pos_ring_loom` (about five minutes) and
-    # `doorbell_loom` (about two) were most of the job's nine, run back to back.
-    # Every model still runs, at the same bound, in exactly one group.
+    # Three runners: `pos_ring_loom` and `doorbell_loom` were most of the runtime. Every model runs, at the same
+    # bound, in exactly one group. Release builds, since loom explores every interleaving in-process; `--cfg loom`
+    # is global, so each model builds for its own target, never the workspace.
     strategy:
       fail-fast: false
       matrix:
         group: [pos_ring, doorbell, rest]
     runs-on: ubuntu-24.04
-    # About 12 minutes with the `PosRing` models: a model that stops
-    # terminating fails here.
+    # About 12 minutes; a model that stops terminating fails here.
     timeout-minutes: 25
     env:
       RUSTFLAGS: --cfg loom
     steps:
       - uses: actions/checkout@v7
-      # ALSA headers: neither crate needs them, but cargo resolves the whole
-      # workspace before building a member.
+      # Neither crate needs ALSA headers, but cargo resolves the whole workspace first.
       - uses: ./.github/actions/linux-audio-deps
-      # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          # One cache for the four loom jobs (same cfg, same crates); `rest`
-          # writes it.
+          # One cache for the loom jobs; `rest` writes it.
           shared-key: loom
           save-if: ${{ github.ref == 'refs/heads/main' && matrix.group == 'rest' }}
-      # Clippy under `--cfg loom`: the flag changes constants the lints see
-      # (`PROGRESS_EVERY` is 1, so `% PROGRESS_EVERY` tripped `modulo_one`),
-      # and no other job compiles that configuration.
+      # `--cfg loom` changes constants the lints see, and no other job compiles that configuration.
       - if: matrix.group == 'rest'
         run: cargo clippy --locked -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings
-      # `PosRing`'s no-tear protocol (the disk stream's ring), against the
-      # shipped code: nine models, about five minutes at this bound (the
-      # shrink models a minute each); every recorded mutation fails at it but
-      # the documented survivor (`tests/pos_ring_loom.rs`).
+      # Nine models, about five minutes at this bound.
       - if: matrix.group == 'pos_ring'
         run: cargo test --locked -p tutti-rt --release --test pos_ring_loom
         env:
           LOOM_MAX_PREEMPTIONS: 4
-      # `PackedAtomic`'s one property (no torn `[min, max]`), against the
-      # shipped code: one model, seconds.
       - if: matrix.group == 'rest'
         run: cargo test --locked -p tutti-rt --release --test packed_atomic_loom
-      # `SeqWriter`/`SeqReader`'s one property (no copy mixing two writes),
-      # against the shipped code: two models (the writer on either thread),
-      # unbounded, about four seconds.
       - if: matrix.group == 'rest'
         run: cargo test --locked -p tutti-rt --release --test seq_cell_loom
-      # `AudioThreadCell`'s always-on borrow flag (no aliasing, a granted
-      # borrow sees the last one's writes), against the shipped code: one
-      # model, unbounded, under a second.
       - if: matrix.group == 'rest'
         run: cargo test --locked -p tutti-rt --release --test cell_loom
-      # `handoff`'s slot (a value is never moved out twice, never lost, and a
-      # recall is never dropped), against the shipped code: unbounded.
       - if: matrix.group == 'rest'
         run: cargo test --locked -p tutti-rt --release --test handoff_loom -- --nocapture
-      # `Doorbell` (a ring before, during or between parks is never lost),
-      # against the shipped code. Unbounded (about 45 s): the plain-store
-      # variant its model guards against needs 4 preemptions, and
-      # `loom-parallel` sets 3 for the whole job, which cannot be unset.
+      # Unbounded (about 45 s): the variant its model guards against needs 4 preemptions.
       - if: matrix.group == 'doorbell'
         run: cargo test --locked -p tutti-rt --release --test doorbell_loom
       - if: matrix.group == 'rest'
         run: cargo test --locked -p tutti-shm-model --release
 
-  # The parallel executor's runtime primitives (doc 013), each
-  # against the shipped code: `SplitMut`/`SplitRw`'s claims, `JobGate`'s
-  # borrowed-job hand-off and `TaskGraph`'s dispatch and self-reset. Their own
-  # job, so neither this nor the one above nears its timeout. Every recorded
-  # mutation in the three files fails at this bound.
+  # The parallel executor's primitives (`SplitMut`/`SplitRw`, `JobGate`, `TaskGraph`) against the shipped code.
+  # Its own job so neither loom job nears its timeout.
   loom-parallel:
     name: loom (parallel executor)
     needs: changes
@@ -1075,7 +694,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/linux-audio-deps
-      # The toolchain `rust-toolchain.toml` pins, with its components.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
@@ -1084,30 +702,16 @@ jobs:
       - run: cargo test --locked -p tutti-rt --release --test split_loom
       - run: cargo test --locked -p tutti-rt --release --test job_gate_loom
       - run: cargo test --locked -p tutti-rt --release --test task_graph_loom
-      # `RequestWord` (no bit lost, each taken once, a raise orders what
-      # preceded it) and `edit_ring` (each edit applied once, in order, no torn
-      # slot), against the shipped code.
       - run: cargo test --locked -p tutti-rt --release --test request_word_loom
-      # `DirtySet` (a flag set during a take is in that take or the next,
-      # never lost, each set taken once), against the shipped code.
       - run: cargo test --locked -p tutti-rt --release --test dirty_set_loom
       - run: cargo test --locked -p tutti-rt --release --test edit_ring_loom
-      # `level_cell` (a block lands whole in one take, none lost or twice),
-      # against the shipped code.
       - run: cargo test --locked -p tutti-rt --release --test level_cell_loom
-      # `drain_clock` (a write leaves the record only after a drain that must
-      # have seen it has begun), against the shipped code.
       - run: cargo test --locked -p tutti-rt --release --test drain_clock_loom -- --nocapture
-      # `FaultLatch` (a failure is never read before the frames pushed ahead
-      # of it: the flag is read before the ring), against the shipped code.
       - run: cargo test --locked -p tutti-rt --release --test fault_latch_loom -- --nocapture
-      # `WakeFlag` (a raise racing a take is seen by that take or the next,
-      # never lost, never invented), against the shipped code.
       - run: cargo test --locked -p tutti-rt --release --test wake_flag_loom
 
-  # The one check the merge queue's ruleset requires. It waits for every other
-  # job and passes when each succeeded or was skipped; a failed or cancelled
-  # job fails it. A job added to this file is added to `needs` here.
+  # The one check the merge queue requires: it passes when every other job succeeded or was skipped.
+  # A job added to this file is added to `needs`.
   result:
     name: CI result
     if: always()

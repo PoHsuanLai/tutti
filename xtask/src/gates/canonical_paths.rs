@@ -212,8 +212,6 @@ mod tests {
         assert_eq!(r.out, ["==> chained tutti_X::tutti_Y:: paths", "ok"]);
     }
 
-    // Mutation: make `chained` accept `tutti_a::` alone (drop the second
-    // `crate_then_colons`): this and `the_chained_pattern_is_the_greps` fail.
     #[test]
     fn a_chained_path_is_reported_with_its_place_and_a_count() {
         let mut m = base();
@@ -258,9 +256,6 @@ mod tests {
         }
     }
 
-    // Mutation: drop `|| f.ends_with(".md")` from the scanned suffixes: the
-    // markdown finding above is lost. Scan every suffix: this test fails
-    // on the `.txt`. Drop an entry of EXCLUDED_DIRS: this test fails on its file.
     #[test]
     fn only_rs_and_md_are_scanned_and_three_directories_are_excluded() {
         let mut m = base();
@@ -278,7 +273,6 @@ mod tests {
         assert!(r.passed(), "{:?}", r.findings);
     }
 
-    // Mutation: drop `"testing"` from the root loop: the first case fails.
     #[test]
     fn a_root_without_rs_files_fails_at_once() {
         let mut m = base();
@@ -297,8 +291,6 @@ mod tests {
         );
     }
 
-    // Mutation: pass `&excluded` instead of `&|_| false` to the root check:
-    // this fails.
     #[test]
     fn the_root_check_counts_excluded_directories_as_find_does() {
         let mut m = Mem::with(&[("crates/target/x.rs", ""), ("testing/_archive/y.rs", "")]);
@@ -306,7 +298,6 @@ mod tests {
         assert!(run(&m, &[]).passed());
     }
 
-    // Mutation: drop the facade block: this test fails.
     #[test]
     fn a_bare_facade_reexport_is_reported_by_line() {
         let mut m = base();
@@ -365,9 +356,6 @@ mod tests {
         );
     }
 
-    // Mutation: build the needles as `::{m}::` (crate dropped), or take
-    // `mods` from the crate argument: the `tutti_dsp` line is then reported,
-    // or the module hits vanish.
     #[test]
     fn the_per_module_gate_takes_a_crate_and_its_modules() {
         let mut m = base();
@@ -394,8 +382,6 @@ mod tests {
         );
     }
 
-    // Mutation: test `args.len() >= 1` instead of `!mods.is_empty()`: this
-    // fails.
     #[test]
     fn a_lone_argument_is_ignored() {
         let mut m = base();

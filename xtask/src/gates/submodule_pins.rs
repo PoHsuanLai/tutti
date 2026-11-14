@@ -20,16 +20,6 @@
 //! perfectly correct tree, and a gate that cries wolf is a gate somebody
 //! deletes. A SHA cannot be wrong about which commit is checked out, and it is
 //! what the superproject actually records, so that is what this compares.
-//!
-//! Mutation record (each planted, seen to fail the named test, removed):
-//! - drop the `'-'` arm: `an_uninitialised_submodule_is_not_a_mismatch`;
-//! - drop the `'+'` arm: `a_submodule_at_another_commit_than_recorded_is_named`;
-//! - drop the `'U'` arm: `a_merge_conflict_is_named`;
-//! - `_ if have != want` made `_ if false`: `a_mismatch_prints_both_shas_and_the_summary`;
-//! - the "git knows no submodule" lines reported as output, not findings:
-//!   `a_path_git_does_not_know_fails`;
-//! - drop the final summary (`if !r.passed()` made `if false`): every failing
-//!   test above that asserts it.
 
 use super::{Git, Report};
 
@@ -166,7 +156,6 @@ mod tests {
         }
     }
 
-    // Mutation: drop the `None` arm's body (treat as ok): this fails.
     #[test]
     fn a_path_git_does_not_know_fails() {
         let r = check(&Mem::default(), PIN);

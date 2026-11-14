@@ -30,16 +30,6 @@
 //! ^[ \t]*(?:#\[.*?\][ \t]*)*(?:pub(?:\([^)]*\))?[ \t]+)?struct[ \t]+(\w+)
 //!   (?:<[^>]*>)?[ \t]*\([ \t\n]*(pub(?![\w(])|\))?
 //! ```
-//!
-//! Mutation record (each planted in this file, seen to fail the named test,
-//! removed):
-//! - `private` always true: `a_pub_field_and_a_unit_struct_are_not_checked`;
-//! - drop `try_from` from the accepted spellings:
-//!   `try_from_is_the_one_accepted_spelling`;
-//! - `attrs_before` never walks past a `//` line:
-//!   `attributes_are_read_above_comments_and_across_lines`;
-//! - drop the stale-exception loop: `a_stale_exception_is_an_error`;
-//! - skip nothing in `SKIPPED_DIRS`: `tests_target_and_benches_are_skipped`.
 
 use super::{Report, Tree, under_skipped_dir};
 
@@ -577,9 +567,6 @@ mod tests {
         assert_eq!(r.out, r.findings);
     }
 
-    // Mutation: drop `try_from` from the accepted spellings (`has_word`
-    // test): the `try_from` lines below are flagged. Accept it as a substring
-    // (`contains`): the `x_try_from_x` case is no longer flagged.
     #[test]
     fn try_from_is_the_one_accepted_spelling() {
         assert!(
@@ -599,8 +586,6 @@ mod tests {
         }
     }
 
-    // Mutation: make `private` always true: the `pub` and `()` cases are
-    // flagged. Treat `pub(crate)` as public: the second case is not flagged.
     #[test]
     fn a_pub_field_and_a_unit_struct_are_not_checked() {
         assert!(one("#[derive(serde::Deserialize)] struct P(pub u8);\n").passed());
@@ -611,9 +596,6 @@ mod tests {
         assert!(!one("#[derive(serde::Deserialize)] struct P(u8, pub u8);\n").passed());
     }
 
-    // Mutation: `attrs_before` returns at the first `//` line instead of
-    // walking past it: the first case is no longer flagged; stop at a
-    // single-line attribute: the multi-line case passes.
     #[test]
     fn attributes_are_read_above_comments_and_across_lines() {
         let r = one(
@@ -651,7 +633,6 @@ mod tests {
         }
     }
 
-    // Mutation: scan only `crates`: the second case fails.
     #[test]
     fn crates_and_testing_are_scanned_and_only_rs_files() {
         let bad = "#[derive(serde::Deserialize)] struct P(u8);\n";
@@ -668,7 +649,6 @@ mod tests {
         );
     }
 
-    // Mutation: empty `SKIPPED_DIRS`: this fails.
     #[test]
     fn tests_target_and_benches_are_skipped() {
         let bad = "#[derive(serde::Deserialize)] struct P(u8);\n";
@@ -684,9 +664,6 @@ mod tests {
         assert!(r.passed(), "{:?}", r.findings);
     }
 
-    // Mutation: drop the `seen.push`: every entry below is reported stale.
-    // Compare the path as well as the name: the other-file case passes
-    // wrongly.
     #[test]
     fn every_exception_is_honoured_by_path_and_name() {
         for (path, name, _) in EXCEPTIONS {

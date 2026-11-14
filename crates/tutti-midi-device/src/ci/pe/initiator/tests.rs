@@ -936,23 +936,24 @@ fn a_timeout_frees_the_id_of_a_full_pool() {
     assert!(i.start(get("C"), now + 3 * SECOND).is_ok());
 }
 
-// M2-103 §5.3: there are 128 Request IDs, 0 to 127, and each is given to one request
-// at a time; the pool refuses when every ID is in use, and one that is released is
-// the one given next.
+// M2-103 §5.3: there are 128 Request IDs, 0 to 127, each given to one request at
+// a time; a peer takes at most 127 at once (M2-101 §8.5), so at the largest count
+// the pool gives 127 distinct IDs and refuses the next, and a freed slot goes to
+// the ID not yet given before the one just released.
 #[test]
-fn the_pool_gives_each_of_the_128_ids_once_and_refuses_the_next() {
+fn the_pool_gives_distinct_ids_up_to_the_largest_count_and_refuses_the_next() {
+    let most = SimultaneousRequests::of(SimultaneousRequests::MAX);
     let mut ids = RequestIds::default();
     let mut given = std::collections::BTreeSet::new();
-    for _ in 0..128 {
-        let id = ids.allocate(128).expect("an ID is free");
+    for _ in 0..SimultaneousRequests::MAX {
+        let id = ids.allocate(most).expect("an ID is free");
         assert!(given.insert(id.get()), "{id:?} given twice");
     }
-    assert_eq!(given.len(), 128);
-    assert_eq!(given.iter().copied().max(), Some(127));
-    assert_eq!(ids.allocate(128), None);
+    assert_eq!(given.len(), 127);
+    assert_eq!(ids.allocate(most), None);
     ids.release(id(77));
-    assert_eq!(ids.allocate(128), Some(id(77)));
-    assert_eq!(ids.allocate(128), None);
+    assert_eq!(ids.allocate(most), Some(id(127)));
+    assert_eq!(ids.allocate(most), None);
 }
 
 // M2-103 §5.3: an Initiator "shall not use more than the reported number": the
@@ -960,11 +961,11 @@ fn the_pool_gives_each_of_the_128_ids_once_and_refuses_the_next() {
 #[test]
 fn the_pool_stops_at_the_peers_count_and_reuses_an_id_after_the_others() {
     let mut ids = RequestIds::default();
-    let first = ids.allocate(2).unwrap();
-    let second = ids.allocate(2).unwrap();
-    assert_eq!(ids.allocate(2), None);
+    let first = ids.allocate(SimultaneousRequests::of(2)).unwrap();
+    let second = ids.allocate(SimultaneousRequests::of(2)).unwrap();
+    assert_eq!(ids.allocate(SimultaneousRequests::of(2)), None);
     ids.release(first);
-    let third = ids.allocate(2).unwrap();
+    let third = ids.allocate(SimultaneousRequests::of(2)).unwrap();
     assert!(
         third != first && third != second,
         "the freed ID waits its turn"
@@ -973,7 +974,7 @@ fn the_pool_stops_at_the_peers_count_and_reuses_an_id_after_the_others() {
     ids.release(third);
     let ids_seen: Vec<_> = (0..130)
         .map(|_| {
-            let id = ids.allocate(1).unwrap();
+            let id = ids.allocate(SimultaneousRequests::ONE).unwrap();
             ids.release(id);
             id.get()
         })

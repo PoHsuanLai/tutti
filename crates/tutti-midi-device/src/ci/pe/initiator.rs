@@ -400,8 +400,8 @@ impl RequestIds {
 
     /// An ID not in use, searching on from the one after the last given, unless
     /// `limit` IDs are in use already.
-    fn allocate(&mut self, limit: usize) -> Option<PeRequestId> {
-        if self.used.count_ones() as usize >= limit {
+    fn allocate(&mut self, limit: SimultaneousRequests) -> Option<PeRequestId> {
+        if self.used.count_ones() >= u32::from(limit.get()) {
             return None;
         }
         (0..Self::COUNT)
@@ -582,7 +582,7 @@ impl PeInitiator {
         };
         let id = self
             .ids
-            .allocate(usize::from(capabilities.requests.get()))
+            .allocate(capabilities.requests)
             .ok_or(PeError::TooManyRequests {
                 limit: capabilities.requests,
             })?;
@@ -884,19 +884,18 @@ impl PeInitiator {
         let PeHeader::Reply(header) = received.header else {
             return PeOutcome::Unreadable(PeUnreadable::NotAReply);
         };
-        let class = header.status.class();
-        if class == PeStatusClass::Notify {
-            return PeOutcome::Unreadable(PeUnreadable::NotAReplyStatus(header.status));
-        }
-        let body = match self.decode(header.mutual_encoding, &received.body) {
-            Ok(body) => body,
-            Err(error) => return PeOutcome::Unreadable(error.into()),
+        // No Reply carries a Notify code (§7.4.1): such a reply is malformed.
+        let outcome: fn(PeResponse) -> PeOutcome = match header.status.class() {
+            PeStatusClass::Success => PeOutcome::Success,
+            PeStatusClass::Retry => PeOutcome::Retry,
+            PeStatusClass::ClientError | PeStatusClass::ServerError => PeOutcome::Failed,
+            PeStatusClass::Notify => {
+                return PeOutcome::Unreadable(PeUnreadable::NotAReplyStatus(header.status));
+            }
         };
-        let response = PeResponse { header, body };
-        match class {
-            PeStatusClass::Success => PeOutcome::Success(response),
-            PeStatusClass::Retry => PeOutcome::Retry(response),
-            _ => PeOutcome::Failed(response),
+        match self.decode(header.mutual_encoding, &received.body) {
+            Ok(body) => outcome(PeResponse { header, body }),
+            Err(error) => PeOutcome::Unreadable(error.into()),
         }
     }
 

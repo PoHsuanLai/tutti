@@ -5,11 +5,11 @@
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    AutomationMode, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features,
-    KeyEvent, KeyUse, LoadedPlugin, ModifierConvention, Normalized, ParamEdit, ParamId,
-    ParamMapping, ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult,
-    PluginTail, Preset, PresetId, RenderModeSupport, Request, RescanScope, Samples, StateUse,
-    Vst3SubCategories, WindowHandle,
+    AutomationMode, ContentScale, Control, EditorPresence, EditorWindow, Features, KeyEvent,
+    KeyUse, LoadedPlugin, ModifierConvention, Normalized, ParamEdit, ParamId, ParamMapping,
+    ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail, Preset,
+    PresetId, RenderModeSupport, Request, RescanScope, Samples, StateUse, Vst3SubCategories,
+    WindowHandle,
 };
 
 use crate::error::Vst3Error;
@@ -535,7 +535,8 @@ impl EditorWindow for Vst3Loaded {
     }
 
     /// Creates the plugin editor, attaches it to `parent` and returns its
-    /// initial pixel size. Only one editor may be open at a time per instance:
+    /// initial size, in the unit of this platform's `ViewRect` (pixels on Win32 and
+    /// X11, points on macOS). Only one editor may be open at a time per instance:
     /// opening a second replaces the first.
     ///
     /// `scale` is `parent`'s backing-store scale. On a physical-pixel window
@@ -554,7 +555,7 @@ impl EditorWindow for Vst3Loaded {
         main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
+    ) -> PluginResult<dpi::Size> {
         self.embed_editor(main, parent, scale)
             .map_err(|error| match error {
                 Vst3Error::PluginError { code, .. } => {
@@ -638,8 +639,8 @@ impl EditorWindow for Vst3Loaded {
     fn set_editor_size(
         &mut self,
         main: &MainThread,
-        requested: tutti_plugin_types::EditorSize,
-    ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
+        requested: dpi::Size,
+    ) -> PluginResult<dpi::Size> {
         Vst3Loaded::resize_editor(self, main, requested).map_err(|e| {
             tutti_plugin_types::PluginError::Editor(tutti_plugin_types::EditorError::PluginError(
                 format!("VST3 resize_editor failed: {e}"),
@@ -649,10 +650,7 @@ impl EditorWindow for Vst3Loaded {
 
     /// The latest `IPlugFrame::resizeView` the plugin made since the last poll
     /// ([`Vst3Loaded::poll_editor_resize_request`]).
-    fn poll_editor_resize_request(
-        &mut self,
-        main: &MainThread,
-    ) -> Option<tutti_plugin_types::EditorSize> {
+    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<dpi::Size> {
         Vst3Loaded::poll_editor_resize_request(self, main)
     }
 }

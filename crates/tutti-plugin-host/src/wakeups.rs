@@ -74,7 +74,7 @@ mod tests {
                 _: &MainThread,
                 _: tutti_plugin_types::WindowHandle,
                 _: tutti_plugin_types::ContentScale,
-            ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
+            ) -> tutti_plugin_types::PluginResult<dpi::Size> {
                 unreachable!("no editor")
             }
             fn close_editor(&mut self, _: &MainThread) {}
@@ -88,14 +88,11 @@ mod tests {
             fn set_editor_size(
                 &mut self,
                 _: &MainThread,
-                _: tutti_plugin_types::EditorSize,
-            ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
+                _: dpi::Size,
+            ) -> tutti_plugin_types::PluginResult<dpi::Size> {
                 unreachable!("no editor")
             }
-            fn poll_editor_resize_request(
-                &mut self,
-                _: &MainThread,
-            ) -> Option<tutti_plugin_types::EditorSize> {
+            fn poll_editor_resize_request(&mut self, _: &MainThread) -> Option<dpi::Size> {
                 None
             }
             fn wakeups(&mut self, _: &MainThread, out: &mut Wakeups) {

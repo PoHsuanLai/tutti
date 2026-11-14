@@ -109,6 +109,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use tutti_plugin::MainThread;
 
+use dpi::Size;
 use tutti_graph::NodeKey;
 use tutti_plugin::catalog::{
     AudioConfig, Catalog, Hosting, Plugin as HostPlugin, PluginRef, PluginState,
@@ -119,8 +120,8 @@ use tutti_plugin_host::{
     NodeControls, Notice, PluginControls, PluginHandle, PluginStatus, Subscription,
 };
 use tutti_plugin_types::{
-    BridgeError, EditorSize, Normalized, ParamEdit, ParamId, PluginFailure, PluginInvalidation,
-    PluginRefresh, PluginTail,
+    BridgeError, Normalized, ParamEdit, ParamId, PluginFailure, PluginInvalidation, PluginRefresh,
+    PluginTail,
 };
 use tutti_types::{SampleRate, Samples, Seconds};
 
@@ -583,9 +584,9 @@ pub enum PluginChange {
     /// collapsing panel), found while [`MainSession::update`](crate::MainSession::update)
     /// serviced the editor. Answer with
     /// [`EditorView::resize`](crate::EditorView::resize) after sizing the window
-    /// it lives in. The size is in the platform's own pixels, as
-    /// [`EditorSize`] says.
-    EditorWantsSize(EditorSize),
+    /// it lives in. The size is in the plugin's format's own unit, as
+    /// [`Opened::Embedded`](crate::Opened::Embedded)'s is.
+    EditorWantsSize(Size),
     /// A hosted plugin was declared dead
     /// (`tutti_plugin_host::Liveness`) with recovery off: its node was
     /// removed. Reported once. With recovery on the death is

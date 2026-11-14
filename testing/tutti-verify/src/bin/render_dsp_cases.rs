@@ -37,7 +37,7 @@ fn run<D: Family<Recurrence: Recurrence<Capacity = ()>>>(
     rate: SampleRate,
     input: &[f32],
 ) -> Vec<Vec<f32>> {
-    let mut k = design.realized();
+    let mut k = design.realized(rate);
     let setup = Setup {
         rate,
         max_block: MaxBlock::of(Samples(512)),

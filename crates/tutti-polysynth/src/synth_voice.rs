@@ -19,9 +19,10 @@
 use crate::Portamento;
 use crate::bank::VoiceBank;
 use crate::mpe::{MpeControl, SLIDE_CENTER};
+use crate::tuning::A4_FREQ;
 use crate::unison::MAX_UNISON_VOICES;
 use crate::{FilterModConfig, FilterType, SynthConfig};
-use crate::{MpeVoiceState, UnisonEngine, UnisonVoiceParams};
+use crate::{MpeVoiceState, UnisonEngine, UnisonVoiceParams, UnisonVoices};
 use tutti_midi_protocol::MpeMode;
 use tutti_types::{
     Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance, SampleRate, Seconds, Semitones,
@@ -96,7 +97,7 @@ pub(crate) struct SynthVoice {
     /// per-note pitch and the channel's bend are three factors on one pitch and
     /// none overwrites another. Only this voice glides.
     glide: Portamento,
-    sub_voices: usize,
+    sub_voices: UnisonVoices,
 }
 
 /// What the channel's Volume and Expression do to a voice's gain: General MIDI
@@ -193,7 +194,7 @@ impl SynthVoice {
     pub(crate) fn from_config(
         config: &SynthConfig,
         sample_rate: SampleRate,
-        unison_count: usize,
+        unison_count: UnisonVoices,
     ) -> Self {
         let (base_filter_cutoff, base_filter_resonance) = match config.filter {
             FilterType::Moog { cutoff, resonance } => (cutoff, resonance),
@@ -210,7 +211,7 @@ impl SynthVoice {
             snap_tone: false,
             snap_gain: false,
             start_phases: [Phase::START; MAX_UNISON_VOICES],
-            pitch: Hz(440.0),
+            pitch: A4_FREQ,
             base_filter_cutoff,
             base_filter_resonance,
             velocity_mod_value: 1.0,
@@ -221,11 +222,15 @@ impl SynthVoice {
             envelope_level: 0.0,
             active: false,
             mpe: MpeVoiceState::new(config.mpe != MpeMode::Disabled),
-            base_note_freq: Hz(440.0),
+            base_note_freq: A4_FREQ,
             tuned: None,
             tune: Semitones(0.0),
-            glide: Portamento::new(config.portamento.clone().unwrap_or_default(), sample_rate),
-            sub_voices: unison_count.max(1),
+            glide: Portamento::new(
+                config.portamento.clone().unwrap_or_default(),
+                sample_rate,
+                A4_FREQ,
+            ),
+            sub_voices: unison_count,
         }
     }
 
@@ -281,11 +286,11 @@ impl SynthVoice {
         self.cc_resonance_value = 0.0;
         self.lfo_phase = Phase::START;
         self.mpe.reset();
-        self.base_note_freq = Hz(440.0);
+        self.base_note_freq = A4_FREQ;
         self.tuned = None;
         self.tune = Semitones(0.0);
-        self.pitch = Hz(440.0);
-        self.glide.reset(Hz(440.0));
+        self.pitch = A4_FREQ;
+        self.glide.reset(A4_FREQ);
     }
 
     /// Re-rates the glide.
@@ -329,7 +334,7 @@ impl SynthVoice {
 
     #[cfg(test)]
     pub fn sub_voice_count(&self) -> usize {
-        self.sub_voices
+        usize::from(self.sub_voices.get())
     }
 
     /// The frequency the voice sounds at before unison detune: the per-note
@@ -375,7 +380,8 @@ impl SynthVoice {
         channel: &ChannelState,
     ) {
         let edge = core::mem::replace(&mut self.edge, GateEdge::None);
-        for sub in 0..self.sub_voices {
+        let sub_voices = usize::from(self.sub_voices.get());
+        for sub in 0..sub_voices {
             let lane = bank.lane(index, sub);
             match edge {
                 GateEdge::On { fresh } => {
@@ -396,9 +402,9 @@ impl SynthVoice {
 
         // One coefficient computation for the whole stack: the sub-voices
         // share the voice's cutoff.
-        bank.set_filter(bank.lane(index, 0), self.sub_voices, cutoff, resonance);
+        bank.set_filter(bank.lane(index, 0), sub_voices, cutoff, resonance);
 
-        for sub in 0..self.sub_voices {
+        for sub in 0..sub_voices {
             let lane = bank.lane(index, sub);
             let (ratio, pan, amplitude) = match unison {
                 Some(u) => {
@@ -470,10 +476,12 @@ impl SynthVoice {
             cutoff *= vel_mult;
         }
 
-        if fm.lfo_depth > Depth::of(0.0) && fm.lfo_rate > Hz(0.0) {
+        if let Some(lfo_rate) = fm.lfo_rate
+            && fm.lfo_depth > Depth::of(0.0)
+        {
             // `advance` rather than `% 1.0`: the remainder operator keeps the
             // dividend's sign, so it is not a wrap for a negative phase.
-            let step = PhaseIncrement::per_sample(fm.lfo_rate, sample_rate) * frames as f32;
+            let step = PhaseIncrement::per_sample(lfo_rate, sample_rate) * frames as f32;
             self.lfo_phase = self.lfo_phase.advance(step);
             let lfo_val = self.lfo_phase.to_radians().sin();
             cutoff *= 1.0 + lfo_val * fm.lfo_depth.get() * 0.5;
@@ -485,7 +493,7 @@ impl SynthVoice {
 
         // Slide modulates the cutoff around its center.
         if let Some(slide) = self.mpe.effective_slide() {
-            cutoff *= (4.0_f32).powf(slide - SLIDE_CENTER);
+            cutoff *= (4.0_f32).powf(slide.get() - SLIDE_CENTER.get());
         }
 
         Hz(cutoff)
@@ -562,3 +570,6 @@ impl SynthVoice {
         self.set_pitch(freq);
     }
 }
+
+#[cfg(test)]
+mod tests;

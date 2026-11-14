@@ -16,9 +16,9 @@ pub use tutti_vst3_ffi::{
 };
 
 pub use tutti_plugin_types::{
-    AudioBuffer, ContentScale, EditorCapabilities, EditorSize, NoteExpressionIntValue,
-    NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterPoint, ParameterQueue,
-    Sample, SampleFormat, TransportInfo, WindowHandle, WireMidi,
+    AudioBuffer, ContentScale, EditorCapabilities, NoteExpressionIntValue, NoteExpressionType,
+    NoteExpressionValue, ParameterChanges, ParameterPoint, ParameterQueue, Sample, SampleFormat,
+    TransportInfo, WindowHandle, WireMidi,
 };
 
 /// A parameter's own `[min, max]`, as the plugin's controller maps the

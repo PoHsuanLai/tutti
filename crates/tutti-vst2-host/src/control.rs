@@ -4,10 +4,10 @@
 use tutti_plugin_types::MainThread;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    AutomationMode, ContentScale, Control, EditorPresence, EditorSize, EditorWindow, Features,
-    KeyEvent, KeyUse, LoadedPlugin, ModifierConvention, Normalized, ParamEdit, ParamId,
-    ParameterInfo, PluginBus, PluginClass, PluginDescriptor, PluginError, PluginResult, Preset,
-    PresetId, RenderMode, RenderModeSupport, Request, StateUse, WindowHandle,
+    AutomationMode, ContentScale, Control, EditorPresence, EditorWindow, Features, KeyEvent,
+    KeyUse, LoadedPlugin, ModifierConvention, Normalized, ParamEdit, ParamId, ParameterInfo,
+    PluginBus, PluginClass, PluginDescriptor, PluginError, PluginResult, Preset, PresetId,
+    RenderMode, RenderModeSupport, Request, StateUse, WindowHandle,
 };
 
 use crate::error::Vst2Error;
@@ -279,13 +279,14 @@ impl EditorWindow for Vst2Loaded {
     }
 
     /// `scale` is ignored: VST2 has no content-scale call, the fused `AEffect`
-    /// editor sizes itself in the parent's pixels.
+    /// editor sizes itself in the parent's pixels. The size it opens at is in the
+    /// unit of an `ERect` ([`EditorUnit::WINDOWING`](tutti_plugin_types::EditorUnit::WINDOWING): pixels, or points on macOS).
     fn open_editor(
         &mut self,
         main: &MainThread,
         parent: WindowHandle,
         _scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
+    ) -> PluginResult<dpi::Size> {
         self.open_editor_in(main, parent).map_err(plugin_error)
     }
 
@@ -323,8 +324,8 @@ impl EditorWindow for Vst2Loaded {
     fn set_editor_size(
         &mut self,
         _main: &tutti_plugin_types::MainThread,
-        _requested: tutti_plugin_types::EditorSize,
-    ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
+        _requested: dpi::Size,
+    ) -> PluginResult<dpi::Size> {
         Err(tutti_plugin_types::PluginError::Editor(
             tutti_plugin_types::EditorError::PluginError("set_editor_size not supported".into()),
         ))
@@ -335,7 +336,7 @@ impl EditorWindow for Vst2Loaded {
     fn poll_editor_resize_request(
         &mut self,
         _main: &tutti_plugin_types::MainThread,
-    ) -> Option<tutti_plugin_types::EditorSize> {
+    ) -> Option<dpi::Size> {
         self.host.take_size_request()
     }
 }

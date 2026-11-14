@@ -149,3 +149,36 @@ fn a_node_that_is_not_there_or_feeds_itself_is_refused() {
         Some(ConnectError::NoSuchNode(gone.erase()))
     );
 }
+
+/// **`topology` shows a wiring call at once**: before any commit, the edge a
+/// `connect` wrote is the source's output port at the sink's input port, and
+/// an unwired port has none.
+#[test]
+fn topology_shows_the_edge_a_connect_wrote() {
+    use tutti_graph::{Edge, InPort, OutPort as RawOut, Source};
+
+    let mut s = offline();
+    let (src, _) = s.graph().add(ForkByClone(Const::frame(&[0.25, 0.5])));
+    let (through, _) = s
+        .graph()
+        .add(ForkByClone(Through::new(ChannelLayout::STEREO)));
+    assert!(
+        s.graph().topology().edges.is_empty(),
+        "nothing feeds the pass-through yet"
+    );
+    s.graph().connect(src, through).expect("both are stereo");
+    for c in 0..2 {
+        assert_eq!(
+            s.graph().topology().edges.get(&InPort {
+                node: through.erase(),
+                port: c,
+            }),
+            Some(&vec![Edge::Direct(Source::Node(RawOut {
+                node: src.erase(),
+                port: c
+            }))]),
+            "channel {c} is fed by the source's channel {c}"
+        );
+    }
+    assert!(s.graph().is_edited(), "and no commit has run");
+}

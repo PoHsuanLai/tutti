@@ -6,7 +6,7 @@
 //! and spread are recomputed only when they change, so the audio thread does an
 //! array index rather than the trigonometry.
 
-use tutti_types::{Amplitude, Cents, Pan, Param, Phase, Spread};
+use tutti_types::{Amplitude, CentsSpan, Pan, Param, Phase, Spread};
 
 pub(crate) const MAX_UNISON_VOICES: usize = UnisonVoices::MAX as usize;
 
@@ -93,12 +93,12 @@ pub struct UnisonConfig {
     /// Even counts have no centre voice, so the written pitch is not itself
     /// sounded.
     pub voice_count: UnisonVoices,
-    /// Detune amount in [`Cents`], applied symmetrically: sub-voices are spaced
+    /// Detune amount as a [`CentsSpan`], applied symmetrically: sub-voices are spaced
     /// evenly over ±this value, so the outermost pair sits `2 * detune_cents`
     /// apart and the centre (odd counts only) stays at the written pitch.
-    /// Negative values are clamped to zero. A few cents is a chorus shimmer;
+    /// A few cents is a chorus shimmer;
     /// tens of cents is an overtly out-of-tune stack.
-    pub detune_cents: Cents,
+    pub detune_cents: CentsSpan,
     /// How wide the sub-voices are panned, as a [`Spread`] in 0.0..1.0.
     /// `0.0` stacks them all at centre, `1.0` puts the outermost pair hard
     /// left and hard right, with the rest spaced evenly between. Pans track
@@ -118,7 +118,7 @@ impl Default for UnisonConfig {
     fn default() -> Self {
         Self {
             voice_count: UnisonVoices::ONE,
-            detune_cents: Cents(0.0),
+            detune_cents: CentsSpan::ZERO,
             stereo_spread: Spread::POINT,
             phase_randomize: false,
         }
@@ -154,7 +154,7 @@ pub struct UnisonEngine {
     /// called once per block, folds any change back into `config` + a
     /// recompute. Detune/spread only affect per-voice params on recompute (not
     /// per-sample), so a block-rate sync is exact.
-    detune: Param<Cents>,
+    detune: Param<CentsSpan>,
     spread: Param<Spread>,
 }
 
@@ -183,7 +183,7 @@ impl UnisonEngine {
     }
 
     /// The detune cell (cents), for the synth's declared params.
-    pub(crate) fn detune(&self) -> &Param<Cents> {
+    pub(crate) fn detune(&self) -> &Param<CentsSpan> {
         &self.detune
     }
 
@@ -198,20 +198,11 @@ impl UnisonEngine {
     ///
     /// `driven` is the block's detune and spread from the synth's param
     /// ports where a lane drives them; `None` reads the atomic.
-    /// A detune in cents as `set_detune` stores it:
-    /// floored at 0. Shared by the setter and the block's read.
-    #[inline]
-    fn clamp_detune(cents: f32) -> f32 {
-        cents.max(0.0)
-    }
-
     pub fn sync_from_atomics(&mut self, [detune, spread]: [Option<f32>; 2]) {
-        // `set_detune`'s floor at the point of use, driven or not: a
-        // negative detune is no detune, and comparing it unfloored against
-        // the stored config would recompute every block.
-        let detune = Cents(Self::clamp_detune(
-            detune.unwrap_or_else(|| self.detune.load().get()),
-        ));
+        // A lane's value is any float; the span saturates it (a negative
+        // detune is no detune), so the comparison against the stored config
+        // never recomputes a block for an out-of-range lane.
+        let detune = detune.map_or_else(|| self.detune.load(), CentsSpan::clamped);
         let spread = Spread::new_clamped(spread.unwrap_or_else(|| self.spread.load().get()));
         let changed = (detune.get() - self.config.detune_cents.get()).abs() > f32::EPSILON
             || (spread.get() - self.config.stereo_spread.get()).abs() > f32::EPSILON;
@@ -226,9 +217,8 @@ impl UnisonEngine {
         let count = usize::from(self.config.voice_count.get());
 
         let amplitude = Amplitude(1.0 / (count as f32).sqrt());
-        // A converter, not a divide: `Cents` is `Scalable`, so
-        // `detune_cents / 100.0` would compile and hand back `Cents` — wrong by
-        // 100x, with a type that says it is fine.
+        // A converter, not a divide: the span's unit changes from cents to
+        // semitones here.
         let detune_semitones = self.config.detune_cents.to_semitones();
 
         for i in 0..count {
@@ -287,8 +277,8 @@ impl UnisonEngine {
     }
 
     #[inline]
-    pub fn voice_count(&self) -> usize {
-        usize::from(self.config.voice_count.get())
+    pub fn voice_count(&self) -> UnisonVoices {
+        self.config.voice_count
     }
 
     #[inline]
@@ -298,7 +288,7 @@ impl UnisonEngine {
 
     #[inline]
     pub fn all_params(&self) -> &[UnisonVoiceParams] {
-        &self.voices[..self.voice_count()]
+        &self.voices[..usize::from(self.config.voice_count.get())]
     }
 
     pub fn config(&self) -> &UnisonConfig {

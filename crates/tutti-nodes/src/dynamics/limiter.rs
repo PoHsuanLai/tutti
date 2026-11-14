@@ -226,19 +226,20 @@ mod tests {
         assert_eq!(mono.shape().latency, Latency::new(Samples(221)));
     }
 
-    /// A limiter is **born at the placeholder rate**, and `prepare` is what makes its
-    /// lookahead a wall-clock duration rather than a frame count: the window is `ceil`ed
-    /// from the *exact* product (0.1 s at 48 kHz is 4800 frames, where the `f32` nearest
-    /// 0.1 would make 4801).
+    /// The lookahead frames are the `ceil` of the *exact* product of the window and the
+    /// prepared rate (0.1 s at 48 kHz is 4800 frames, where the `f32` nearest 0.1 would
+    /// make 4801).
     #[test]
     fn lookahead_frames_are_the_ceil_of_the_exact_product() {
         let device = SampleRate::SR_48K;
-        let mut lim = LimiterNode::new(
-            BusTopology::STEREO,
-            Lookahead::of(Seconds(0.1)),
-            LimiterControls::DEFAULT,
+        let lim = prepared_at(
+            LimiterNode::new(
+                BusTopology::STEREO,
+                Lookahead::of(Seconds(0.1)),
+                LimiterControls::DEFAULT,
+            ),
+            device,
         );
-        lim.prepare(&Prepare::new(device, MaxBlock::of(Samples(64))));
         assert_eq!(
             lim.shape().latency,
             Latency::new(Samples((0.1_f64 * 48_000.0).ceil() as usize))
@@ -246,55 +247,48 @@ mod tests {
         assert_eq!(lim.shape().latency.samples().get(), 4800);
     }
 
-    /// The lookahead is a duration, and `prepare` is what preserves it: the count is
-    /// right for the placeholder rate and short at the device's until the node is prepared,
-    /// then it is the same wall-clock window; and the graph is told the corrected figure,
-    /// the one PDC compensates against. Repeated rate changes land on the same count each
-    /// time (the count is `ceil`ed, so re-deriving it from the count rather than from the
-    /// request would ratchet it up).
+    /// The lookahead is a duration: the frames the node declares follow the rate it is
+    /// prepared at, each count the `ceil` of the window at that rate, and a node declares
+    /// none until it is prepared. Preparing again at a rate it has been prepared at lands
+    /// on the same count (the count is derived from the window, not from the previous
+    /// count, so rounding does not ratchet).
     #[test]
-    fn lookahead_is_a_duration_and_prepare_is_what_preserves_it() {
+    fn lookahead_is_a_duration_and_the_frames_follow_the_prepared_rate() {
         const LOOKAHEAD: Seconds = Seconds(0.005);
-        let device = SampleRate::SR_48K;
+        let (low, high) = (SampleRate::SR_44K1, SampleRate::SR_96K);
         let mut lim = limiter(Db::new(-6.0), Db::new(-0.3));
 
         let frames = |lim: &LimiterNode| lim.shape().latency.samples().get();
-        let born = frames(&lim);
-        assert_eq!(
-            born,
-            LOOKAHEAD.to_samples_ceil(SampleRate::DEFAULT).get(),
-            "construction sizes the delay at the placeholder rate"
-        );
-        let born_secs = born as f64 / device.get();
-        assert!(
-            born_secs < LOOKAHEAD.get() * 0.95,
-            "an uncorrected delay is audibly short at {device:?}: {born_secs:.5}s of the {:.5}s",
-            LOOKAHEAD.get()
-        );
+        assert_eq!(frames(&lim), 0, "no rate, no latency");
 
-        lim.prepare(&Prepare::new(device, MaxBlock::of(Samples(64))));
-        let fixed = frames(&lim);
-        assert_eq!(fixed, LOOKAHEAD.to_samples_ceil(device).get());
+        lim.prepare(&Prepare::new(low, MaxBlock::of(Samples(64))));
+        let at_low = frames(&lim);
+        assert_eq!(at_low, LOOKAHEAD.to_samples_ceil(low).get());
+        lim.prepare(&Prepare::new(high, MaxBlock::of(Samples(64))));
+        let at_high = frames(&lim);
+        assert_eq!(at_high, LOOKAHEAD.to_samples_ceil(high).get());
         assert!(
-            fixed > born,
-            "a higher rate needs more frames ({born} -> {fixed})"
+            at_high > at_low,
+            "a higher rate needs more frames ({at_low} -> {at_high})"
         );
-        assert!(((fixed as f64 / device.get()) - LOOKAHEAD.get()).abs() < 1e-4);
+        for (count, rate) in [(at_low, low), (at_high, high)] {
+            assert!(
+                ((count as f64 / rate.get()) - LOOKAHEAD.get()).abs() < 1e-4,
+                "the window is the same wall-clock time at {rate:?}"
+            );
+        }
 
         for _ in 0..4 {
-            lim.prepare(&Prepare::new(
-                SampleRate::DEFAULT,
-                MaxBlock::of(Samples(64)),
-            ));
+            lim.prepare(&Prepare::new(low, MaxBlock::of(Samples(64))));
             assert_eq!(
                 frames(&lim),
-                born,
-                "back to the original rate, the original count"
+                at_low,
+                "a rate change does not accumulate rounding"
             );
-            lim.prepare(&Prepare::new(device, MaxBlock::of(Samples(64))));
+            lim.prepare(&Prepare::new(high, MaxBlock::of(Samples(64))));
             assert_eq!(
                 frames(&lim),
-                fixed,
+                at_high,
                 "a rate change does not accumulate rounding"
             );
         }

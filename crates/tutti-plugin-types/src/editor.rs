@@ -1,5 +1,6 @@
 //! Editor (plugin GUI) primitives shared across host crates.
 
+use dpi::{LogicalSize, PhysicalSize, Size};
 use keyboard_types::{Code, Key, KeyState, Modifiers};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::ffi::c_void;
@@ -20,8 +21,9 @@ pub enum ModifierConvention {
     Pc,
 }
 
-// The platform's convention is chosen here and nowhere else: a different target is a
-// different file and changes no code that reads `ModifierConvention::HOST`.
+// The platform's modifier convention and windowing unit are chosen here and nowhere else:
+// a different target is a different file and changes no code that reads
+// `ModifierConvention::HOST` or `EditorUnit::WINDOWING`.
 #[cfg(target_os = "macos")]
 #[path = "editor/macos.rs"]
 mod platform;
@@ -79,15 +81,49 @@ pub enum KeyUse {
     Ignored,
 }
 
-/// Pixel dimensions of a plugin editor window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct EditorSize {
-    /// Width in pixels, in the platform's own coordinate space — not scaled for
-    /// a HiDPI backing factor.
-    pub width: u32,
-    /// Height in pixels, in the same space as [`width`](Self::width).
-    pub height: u32,
+/// The unit a plugin format's editor ABI counts its window size in.
+///
+/// An editor size travels as a [`dpi::Size`], which names its unit; this is the
+/// one place that turns the pair of integers a format's ABI speaks into one and
+/// back. Each format states its unit once, as a constant, and every size it
+/// reads or writes goes through [`size`](Self::size) and
+/// [`native`](Self::native).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EditorUnit {
+    /// Device pixels: a [`dpi::PhysicalSize`].
+    Physical,
+    /// Points, which the window system scales to the display: a
+    /// [`dpi::LogicalSize`].
+    Logical,
+}
+
+impl EditorUnit {
+    /// The unit of the host platform's window system: device pixels on Win32
+    /// and X11, points on AppKit. The unit of every format whose embedded window
+    /// is measured the way the window system measures its own.
+    pub const WINDOWING: Self = platform::WINDOWING;
+
+    /// The size of `width` by `height` in this unit.
+    #[must_use]
+    pub fn size(self, width: u32, height: u32) -> Size {
+        match self {
+            Self::Physical => PhysicalSize::new(width, height).into(),
+            Self::Logical => LogicalSize::new(width, height).into(),
+        }
+    }
+
+    /// `size` as the `(width, height)` an ABI in this unit takes, converted at
+    /// `scale` when `size` is in the other unit. A logical extent rounds to the
+    /// nearest pixel, and one that is negative, NaN or past `u32::MAX` saturates (a size
+    /// the caller built by hand can be any `f64`; one off the IPC wire is refused on
+    /// decode).
+    #[must_use]
+    pub fn native(self, size: Size, scale: ContentScale) -> (u32, u32) {
+        match self {
+            Self::Physical => size.to_physical::<u32>(scale.get()).into(),
+            Self::Logical => size.to_logical::<u32>(scale.get()).into(),
+        }
+    }
 }
 
 /// The static resize capabilities of a plugin editor view.
@@ -157,8 +193,8 @@ pub struct AspectRatio {
 /// it is closed and reopened. On macOS this does not arise, since a plugin
 /// reads its own view's scale there.
 ///
-/// Finite and positive by construction: a plugin multiplies its geometry by
-/// it.
+/// A normal positive number by construction ([`dpi::validate_scale_factor`]): a
+/// plugin multiplies its geometry by it, and [`dpi`] panics on one that is not.
 ///
 /// # Examples
 ///
@@ -181,10 +217,11 @@ impl ContentScale {
     /// 1.0: a standard-density display.
     pub const IDENTITY: Self = Self(1.0);
 
-    /// The scale `factor`, or `None` unless it is finite and positive.
+    /// The scale `factor`, or `None` unless it is a normal positive number
+    /// ([`dpi::validate_scale_factor`]).
     #[must_use]
     pub fn new(factor: f64) -> Option<Self> {
-        (factor.is_finite() && factor > 0.0).then_some(Self(factor))
+        dpi::validate_scale_factor(factor).then_some(Self(factor))
     }
 
     /// The factor. A raw `f64`: it is handed straight to a C ABI (CLAP takes
@@ -216,9 +253,9 @@ impl From<ContentScale> for f64 {
     }
 }
 
-/// A scale factor that is not finite and positive (see [`ContentScale::new`]).
+/// A scale factor that is not a normal positive number (see [`ContentScale::new`]).
 #[derive(thiserror::Error, Debug, Clone, Copy, PartialEq)]
-#[error("a content scale must be finite and positive, got {0}")]
+#[error("a content scale must be a normal positive number, got {0}")]
 pub struct InvalidContentScale(pub f64);
 
 /// A native platform window that a plugin editor embeds into.
@@ -409,16 +446,24 @@ mod tests {
         }
     }
 
-    /// **A content scale is finite and positive**: anything else is refused,
-    /// on construction and on the wire, since a plugin multiplies its
-    /// geometry by it.
+    /// **A content scale is a normal positive number**: anything else is
+    /// refused, on construction and on the wire, since a plugin multiplies its
+    /// geometry by it and `dpi` panics on one that is not.
     #[test]
-    fn a_content_scale_is_finite_and_positive() {
+    fn a_content_scale_is_a_normal_positive_number() {
         for good in [0.5, 1.0, 1.25, 2.0, 3.0] {
             assert_eq!(ContentScale::new(good).map(ContentScale::get), Some(good));
             assert_eq!(ContentScale::try_from(good).map(f64::from), Ok(good));
         }
-        for bad in [0.0, -0.0, -2.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for bad in [
+            0.0,
+            -0.0,
+            -2.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::MIN_POSITIVE / 2.0,
+        ] {
             assert_eq!(ContentScale::new(bad), None, "{bad}");
             assert!(ContentScale::try_from(bad).is_err(), "{bad}");
         }
@@ -434,9 +479,65 @@ mod tests {
             get: ContentScale::get,
             of: None,
             valid: &[f64::MIN_POSITIVE, 0.5, 1.0, 2.0, 3.0, 100.0, f64::MAX],
-            invalid: &[0.0, -0.0, -2.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY],
+            invalid: &[
+                0.0,
+                -0.0,
+                -2.0,
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::MIN_POSITIVE / 2.0,
+            ],
         };
         tutti_fixtures::check_range_contract(&c);
         tutti_fixtures::check_range_serde(&c);
+    }
+
+    /// **A size crosses between units at the scale, rounding to the nearest
+    /// pixel**: 600 points at 1.5 is 900 pixels and 901 pixels at 1.5 is 601
+    /// points; a size already in the unit is taken as it is at any scale.
+    #[test]
+    fn an_editor_size_converts_between_units_at_the_scale() {
+        let scale = ContentScale::new(1.5).expect("a scale");
+        let points = Size::from(LogicalSize::new(600_u32, 400));
+        let pixels = Size::from(PhysicalSize::new(901_u32, 600));
+        assert_eq!(EditorUnit::Physical.native(points, scale), (900, 600));
+        assert_eq!(EditorUnit::Logical.native(pixels, scale), (601, 400));
+        assert_eq!(EditorUnit::Physical.native(pixels, scale), (901, 600));
+        assert_eq!(EditorUnit::Logical.native(points, scale), (600, 400));
+    }
+
+    /// **A native pair is tagged with its unit** and reads back unchanged at any
+    /// scale.
+    #[test]
+    fn a_native_pair_keeps_its_unit() {
+        let scale = ContentScale::new(2.0).expect("a scale");
+        assert_eq!(
+            EditorUnit::Physical.size(800, 600),
+            Size::Physical(PhysicalSize::new(800, 600))
+        );
+        assert_eq!(
+            EditorUnit::Logical.size(800, 600),
+            Size::Logical(LogicalSize::new(800.0, 600.0))
+        );
+        for unit in [EditorUnit::Physical, EditorUnit::Logical] {
+            assert_eq!(unit.native(unit.size(800, 600), scale), (800, 600));
+        }
+    }
+
+    /// **A logical extent that is not a size saturates**: a negative or `NaN`
+    /// one is 0 and one past `u32::MAX` is `u32::MAX`, never a wrap.
+    #[test]
+    fn a_logical_extent_that_is_not_a_size_saturates() {
+        let wild = Size::Logical(LogicalSize::new(-5.0, f64::NAN));
+        assert_eq!(
+            EditorUnit::Logical.native(wild, ContentScale::IDENTITY),
+            (0, 0)
+        );
+        let huge = Size::Logical(LogicalSize::new(1e12, 3.0));
+        assert_eq!(
+            EditorUnit::Logical.native(huge, ContentScale::IDENTITY),
+            (u32::MAX, 3)
+        );
     }
 }

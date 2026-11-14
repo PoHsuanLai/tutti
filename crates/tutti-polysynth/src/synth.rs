@@ -6,7 +6,7 @@ use core::fmt;
 use std::num::NonZeroUsize;
 
 use crate::{AllocationStrategy, PortamentoConfig, Tuning, UnisonConfig, VoiceMode};
-use tutti_midi_protocol::{MpeMode, SysexDeviceId};
+use tutti_midi_protocol::{MpeMode, PitchBendSensitivity, SysexDeviceId};
 use tutti_types::Adsr;
 use tutti_types::{Depth, Hz, Q, Resonance, Semitones};
 use tutti_ump::MidiGroup;
@@ -165,16 +165,16 @@ pub struct FilterModConfig {
     /// the base value — velocity only ever darkens. Per-note, latched at
     /// note-on from that voice's velocity.
     pub velocity_depth: Depth,
-    /// LFO rate in [`Hz`]. `0.0` (the default) disables the LFO outright — the
-    /// sweep block is gated on `lfo_rate > 0`, so a nonzero
-    /// [`lfo_depth`](Self::lfo_depth) alone does nothing.
+    /// LFO rate in [`Hz`], above zero. `None` (the default) has no LFO — the
+    /// sweep block is skipped, so a nonzero [`lfo_depth`](Self::lfo_depth)
+    /// alone does nothing.
     ///
     /// The one [`Hz`] among three [`Depth`]s, sitting between two depths that
     /// read nothing like a frequency — as bare floats any permutation of the
     /// four compiles.
-    pub lfo_rate: Hz,
+    pub lfo_rate: Option<Hz>,
     /// How far the LFO sweeps the cutoff, as a [`Depth`] in 0.0..1.0. At 1.0
-    /// the sine sweeps cutoff ±50% around its base. Needs a nonzero
+    /// the sine sweeps cutoff ±50% around its base. Needs an
     /// [`lfo_rate`](Self::lfo_rate) to do anything.
     pub lfo_depth: Depth,
 }
@@ -250,7 +250,7 @@ pub struct SynthConfig {
     /// zones, or single-channel note rotation. Per-note messages are
     /// *accepted* either way; this decides whether the accumulated per-note
     /// bend, pressure, slide and gain reach the audio. The per-note pitch-bend
-    /// range of a zone is its member range (`MpeZoneConfig::member_pitch_bend_range`,
+    /// range of a zone is its member range (`MpeZoneConfig::pitch_bend_range_for` a member channel,
     /// 48 semitones by default); without zones it is 48 semitones. A channel's
     /// own per-note pitch-bend sensitivity RPN (00/07, M2-104 section 7.4.13)
     /// replaces it for that channel alone.
@@ -276,12 +276,17 @@ impl SynthConfig {
     /// says otherwise: a zone's member range ([`mpe`](Self::mpe)), else the MPE
     /// convention of 48 semitones.
     pub(crate) fn per_note_bend_range(&self) -> Semitones {
+        let default = PitchBendSensitivity::MPE_MEMBER_DEFAULT.semitones();
         match &self.mpe {
             MpeMode::Zones(zones) => zones
                 .zones()
                 .next()
-                .map_or(Semitones(48.0), |z| z.member_pitch_bend_range().semitones()),
-            _ => Semitones(48.0),
+                .and_then(|z| {
+                    let member = z.member_channels().next()?;
+                    Some(z.pitch_bend_range_for(member).semitones())
+                })
+                .unwrap_or(default),
+            _ => default,
         }
     }
 }

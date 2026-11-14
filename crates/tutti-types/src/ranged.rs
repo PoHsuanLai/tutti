@@ -1,4 +1,4 @@
-//! [`ranged!`](crate::ranged), the one way to write a range-checked type.
+//! [`ranged!`](crate::ranged!), the one way to write a range-checked type.
 
 /// Defines a range-checked type: a raw value its `new` accepts and never
 /// clamps, in the `MidiChannel` shape, and its refused-raw error.

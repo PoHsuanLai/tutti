@@ -40,8 +40,6 @@
 //! own thread and sends deltas back; [`poll_scan`](Catalog::poll_scan)
 //! applies them on the owner. The catalog is readable throughout, and nothing
 //! here runs on or reaches the audio thread.
-//!
-//! Audio knobs are separate and default sensibly ([`AudioConfig::default`]).
 
 use crate::host::db_probe::{measure_record, probe_plugin, probe_plugin_measured};
 use crate::host::plugin_ref::PluginRef;
@@ -52,7 +50,7 @@ use tutti_plugin_db::{
     BlacklistedFile, Delta, FileFacts, PluginDb, PluginEntry, Scan, ScanBusy, ScanPoll, ScanResult,
     Scanner,
 };
-use tutti_plugin_ipc::{AudioConfig, CatalogConfig};
+use tutti_plugin_ipc::CatalogConfig;
 use tutti_plugin_types::PluginDescriptor;
 use tutti_plugin_types::{BridgeError, BridgeResult};
 
@@ -93,7 +91,6 @@ pub struct Catalog {
     db: PluginDb,
     scanner: Scanner,
     config: CatalogConfig,
-    audio: AudioConfig,
     persist: Persist,
     unreported: Unreported,
     /// The write a finished rescan started on its own thread.
@@ -104,7 +101,6 @@ impl std::fmt::Debug for Catalog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Catalog")
             .field("config", &self.config)
-            .field("audio", &self.audio)
             .finish_non_exhaustive()
     }
 }
@@ -154,8 +150,6 @@ impl Catalog {
     /// recovery, and on a short-lived thread for the save after a rescan, which
     /// gets a copy of the table. A crash recovery removes its sentinel only
     /// after `persist` succeeds.
-    ///
-    /// Audio settings are [`AudioConfig::default`].
     #[must_use]
     pub fn new(
         db: PluginDb,
@@ -167,7 +161,6 @@ impl Catalog {
             db,
             scanner,
             config,
-            audio: AudioConfig::default(),
             persist: Arc::new(persist),
             unreported: Unreported::default(),
             pending_save: None,
@@ -186,15 +179,6 @@ impl Catalog {
     pub fn with_measuring(mut self) -> Self {
         self.scanner = Scanner::new(self.config.pedal_path(), probe_plugin_measured);
         self
-    }
-
-    /// Returns the audio settings a load that names this catalog applies.
-    ///
-    /// `PluginLoad::with_catalog` (the session's load) takes them, with the
-    /// blacklist's verdict, so no borrow of the catalog has to outlive the
-    /// launch, which can take from half a second to several seconds.
-    pub fn audio_config(&self) -> &AudioConfig {
-        &self.audio
     }
 
     /// The database, for reading rows this catalog has no method for.

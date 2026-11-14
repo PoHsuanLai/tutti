@@ -213,16 +213,14 @@ impl PluginLoad {
         self
     }
 
-    /// This load under `catalog`: its audio settings
-    /// ([`Catalog::audio_config`]) and its blacklist ([`Catalog::check`]),
-    /// asked now and answered by [`run`](Self::run) (and so by
+    /// This load under `catalog`'s blacklist ([`Catalog::check`]), asked now
+    /// and answered by [`run`](Self::run) (and so by
     /// [`add_plugin`](Session::add_plugin)) as the load's failure,
     /// [`BridgeError::Blacklisted`] with the recorded reason, before any
     /// server starts or library loads. The catalog is not borrowed past this
     /// call, so the load stays `Send`; a load that does not name a catalog
     /// consults no blacklist (a host offering to load a plugin anyway).
     pub fn with_catalog(mut self, catalog: &Catalog) -> Self {
-        self.config = catalog.audio_config().clone();
         self.refusal = catalog.check(&self.plugin).err().map(Box::new);
         self
     }

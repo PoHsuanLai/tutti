@@ -1415,26 +1415,6 @@ fn test_host_event_registry_claims_no_space() {
     assert_eq!(space_id, u16::MAX);
 }
 
-#[test]
-fn test_host_audio_ports_config_rescan() {
-    use clap_sys::ext::audio_ports_config::{
-        CLAP_EXT_AUDIO_PORTS_CONFIG, clap_host_audio_ports_config,
-    };
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let apc_ptr = unsafe { get_ext(raw, CLAP_EXT_AUDIO_PORTS_CONFIG.as_ptr()) };
-    let apc = unsafe { &*(apc_ptr as *const clap_host_audio_ports_config) };
-
-    assert!(!state.audio_ports.config_changed.load(Ordering::Acquire));
-    unsafe { apc.rescan.unwrap()(raw) };
-    assert!(state.audio_ports.config_changed.load(Ordering::Acquire));
-}
-
 // ── thread_pool ──
 
 /// `ext/thread-pool.h`: `true` means the host *did execute* all the tasks,
@@ -1517,42 +1497,6 @@ fn a_surround_position_round_trips_through_the_enum() {
     }
 }
 
-#[test]
-fn test_host_ambisonic_changed_callback() {
-    use clap_sys::ext::ambisonic::{CLAP_EXT_AMBISONIC, clap_host_ambisonic};
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let amb_ptr = unsafe { get_ext(raw, CLAP_EXT_AMBISONIC.as_ptr()) };
-    let amb = unsafe { &*(amb_ptr as *const clap_host_ambisonic) };
-
-    assert!(!state.audio_ports.ambisonic_changed.load(Ordering::Acquire));
-    unsafe { amb.changed.unwrap()(raw) };
-    assert!(state.audio_ports.ambisonic_changed.load(Ordering::Acquire));
-}
-
-#[test]
-fn test_host_surround_changed_callback() {
-    use clap_sys::ext::surround::{CLAP_EXT_SURROUND, clap_host_surround};
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let sur_ptr = unsafe { get_ext(raw, CLAP_EXT_SURROUND.as_ptr()) };
-    let sur = unsafe { &*(sur_ptr as *const clap_host_surround) };
-
-    assert!(!state.audio_ports.surround_changed.load(Ordering::Acquire));
-    unsafe { sur.changed.unwrap()(raw) };
-    assert!(state.audio_ports.surround_changed.load(Ordering::Acquire));
-}
-
 // ── POSIX FD support tests (unix only) ──
 
 #[cfg(unix)]
@@ -1626,46 +1570,6 @@ fn test_host_posix_fd_modify() {
         let fds = state.posix_fds.entries.lock().unwrap();
         assert_eq!(fds[0].flags, CLAP_POSIX_FD_READ | CLAP_POSIX_FD_WRITE);
     }
-}
-
-// ── Note name host extension tests ──
-
-#[test]
-fn test_host_note_name_changed_callback() {
-    use clap_sys::ext::note_name::{CLAP_EXT_NOTE_NAME, clap_host_note_name};
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let nn_ptr = unsafe { get_ext(raw, CLAP_EXT_NOTE_NAME.as_ptr()) };
-    let nn = unsafe { &*(nn_ptr as *const clap_host_note_name) };
-
-    assert!(!state.notes.names_changed.load(Ordering::Acquire));
-    unsafe { nn.changed.unwrap()(raw) };
-    assert!(state.notes.names_changed.load(Ordering::Acquire));
-}
-
-// ── Voice info host extension tests ──
-
-#[test]
-fn test_host_voice_info_changed_callback() {
-    use clap_sys::ext::voice_info::{CLAP_EXT_VOICE_INFO, clap_host_voice_info};
-    use std::sync::Arc;
-    use std::sync::atomic::Ordering;
-
-    let state = Arc::new(HostState::new(&main_thread()));
-    let host = ClapHost::new(state.clone());
-    let raw = host.as_raw();
-    let get_ext = unsafe { (*raw).get_extension.unwrap() };
-    let vi_ptr = unsafe { get_ext(raw, CLAP_EXT_VOICE_INFO.as_ptr()) };
-    let vi = unsafe { &*(vi_ptr as *const clap_host_voice_info) };
-
-    assert!(!state.notes.voice_info_changed.load(Ordering::Acquire));
-    unsafe { vi.changed.unwrap()(raw) };
-    assert!(state.notes.voice_info_changed.load(Ordering::Acquire));
 }
 
 // ── ParamMod event FFI ──

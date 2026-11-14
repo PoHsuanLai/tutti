@@ -64,7 +64,53 @@ fn starts(s: &str, prefixes: &[&str]) -> bool {
     prefixes.iter().any(|p| s.starts_with(p))
 }
 
+/// The standard library's items that prose names bare (a path rooted at
+/// `std`, `core` or `alloc` passes already). The pinned toolchain ships no
+/// library source to read them from, so they are listed.
+const STD: &[&str] = &[
+    "Arc",
+    "Barrier",
+    "BinaryHeap",
+    "BTreeMap",
+    "BTreeSet",
+    "Cell",
+    "Condvar",
+    "Cow",
+    "Duration",
+    "HashMap",
+    "HashSet",
+    "Instant",
+    "LazyLock",
+    "ManuallyDrop",
+    "MaybeUninit",
+    "Mutex",
+    "NonNull",
+    "NonZero",
+    "OnceCell",
+    "OnceLock",
+    "PhantomData",
+    "Pin",
+    "Rc",
+    "RefCell",
+    "RwLock",
+    "SystemTime",
+    "UnsafeCell",
+    "VecDeque",
+    "Waker",
+    "Weak",
+];
+
 pub(super) const ALLOW: &[Allow] = &[
+    (
+        &[""],
+        |s| STD.contains(&s),
+        "standard-library items named bare (`RwLock`, `NonZero`)",
+    ),
+    (
+        &[""],
+        |s| s.starts_with("ArcSwap"),
+        "arc-swap's cells, named where tutti says why the audio thread reads none (`ArcSwap`, `ArcSwapOption`)",
+    ),
     (&[""], |s| s == "NaN", "the IEEE 754 value, not an item"),
     (
         &[""],
@@ -108,7 +154,7 @@ pub(super) const ALLOW: &[Allow] = &[
     (
         &[""],
         |s| {
-            ["NS", "CG", "CF", "UI", "AU", "MIDI", "MusicDevice"]
+            ["NS", "CG", "CF", "FS", "UI", "AU", "MIDI", "MusicDevice"]
                 .iter()
                 .any(|p| camel_after(s, p))
                 || starts(
@@ -138,8 +184,13 @@ pub(super) const ALLOW: &[Allow] = &[
             "crates/tutti-plugin/",
             "crates/tutti-plugin-host/",
         ],
-        |s| camel_after(s, "Vst") || starts(s, &["eff", "audioMaster", "AEff"]) || s == "ERect",
-        "VST 2 SDK opcodes (`effOpen`, `audioMasterVersion`) and structs (`VstTimeInfo`, `AEffect`)",
+        |s| {
+            camel_after(s, "Vst")
+                || camel_after(s, "Offline")
+                || starts(s, &["eff", "audioMaster", "AEff"])
+                || s == "ERect"
+        },
+        "VST 2 SDK opcodes (`effOpen`, `audioMasterVersion`), structs (`VstTimeInfo`, `AEffect`) and the offline interface (`OfflineTask`)",
     ),
     (
         &[
@@ -528,6 +579,21 @@ mod tests {
         ]);
         assert_eq!(r.findings.len(), 3, "{:?}", r.findings);
         assert!(r.findings[2].contains("`tutti_a::Gone`"));
+    }
+
+    #[test]
+    fn a_standard_library_name_and_arc_swaps_cells_are_known_anywhere() {
+        let r = run(&[(
+            "crates/tutti-graph/src/lib.rs",
+            "// `RwLock<T>: Sync`, `NonZero`, `ArcSwapOption`, `RwLocked`\n",
+        )]);
+        assert_eq!(
+            r.findings[1..],
+            [
+                "  crates/tutti-graph/src/lib.rs: 1 unresolved names, baseline 0",
+                "    crates/tutti-graph/src/lib.rs:1: `RwLocked` names no item (`RwLocked` is in no code)",
+            ]
+        );
     }
 
     #[test]

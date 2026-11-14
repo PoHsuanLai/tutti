@@ -1,5 +1,3 @@
-4 crates/arc-lend/BENCHMARKS.md
-7 crates/arc-lend/src/docs/design.md
 1 crates/tutti-au-ffi/src/editor/cocoa.rs
 1 crates/tutti-au-ffi/src/listener.rs
 1 crates/tutti-au-ffi/src/parameters.rs
@@ -34,7 +32,6 @@
 1 crates/tutti-au-host/tests/render/au_process_no_alloc.rs
 5 crates/tutti-au-host/tests/support/corpus.rs
 8 crates/tutti-au-host/tests/support/probe_au.rs
-1 crates/tutti-clap-ffi/src/roles.rs
 2 crates/tutti-clap-host/src/instance/audio.rs
 1 crates/tutti-clap-host/src/types.rs
 1 crates/tutti-clap-host/tests/behaviour/clap_event_lists.rs
@@ -42,7 +39,7 @@
 1 crates/tutti-clap-host/tests/behaviour/clap_param_gain.rs
 3 crates/tutti-clap-host/tests/conformance/clap_params_state_conformance.rs
 1 crates/tutti-codec/src/contract.rs
-3 crates/tutti-codec/src/decode/extensions.rs
+1 crates/tutti-codec/src/decode/extensions.rs
 1 crates/tutti-codec/tests/decode_golden.rs
 1 crates/tutti-coremidi-ffi/src/destination.rs
 1 crates/tutti-dsp/src/convolver.rs
@@ -50,18 +47,14 @@
 1 crates/tutti-dsp/src/lib.rs
 2 crates/tutti-dsp/src/resample/streaming.rs
 1 crates/tutti-engine/tests/render/engine_graph.rs
-1 crates/tutti-engine/tests/render/env_beat.rs
-1 crates/tutti-engine/tests/rt_no_alloc_engine.rs
 1 crates/tutti-export/src/control.rs
 1 crates/tutti-export/src/graph.rs
 1 crates/tutti-export/tests/formats/oracle_decode.rs
-1 crates/tutti-export/tests/graph_export/graph_source.rs
 3 crates/tutti-export/tests/render/render.rs
 1 crates/tutti-graph/benches/graph_render.rs
 1 crates/tutti-graph/src/event_tap.rs
 1 crates/tutti-graph/src/graph.rs
 2 crates/tutti-graph/src/node.rs
-1 crates/tutti-graph/src/time.rs
 1 crates/tutti-graph/tests/topology/bus_edges.rs
 1 crates/tutti-measure/src/loudness.rs
 1 crates/tutti-measure/src/yin.rs
@@ -81,7 +74,6 @@
 1 crates/tutti-nodes/src/lib.rs
 1 crates/tutti-nodes/src/strip.rs
 1 crates/tutti-plugin-host/src/control_handle.rs
-1 crates/tutti-plugin-host/src/meter.rs
 1 crates/tutti-plugin-ipc/src/client/composite.rs
 1 crates/tutti-plugin-ipc/src/protocol/envelope.rs
 1 crates/tutti-plugin-ipc/src/protocol/frame.rs
@@ -124,7 +116,6 @@
 3 crates/tutti-vst2-ffi/src/api.rs
 2 crates/tutti-vst2-ffi/src/editor.rs
 2 crates/tutti-vst2-ffi/src/event.rs
-4 crates/tutti-vst2-ffi/src/host.rs
 5 crates/tutti-vst2-ffi/src/plugin.rs
 1 crates/tutti-vst2-host/src/keys.rs
 2 crates/tutti-vst2-host/tests/integration_tests.rs
@@ -161,10 +152,8 @@
 2 crates/tutti-vst3-host/tests/host/integration_tests.rs
 3 crates/tutti-vst3-host/tests/support/audio-probe/README.md
 10 crates/tutti-vst3-host/tests/support/conformance.rs
-44 docs/engineering-notes.md
+43 docs/engineering-notes.md
 6 docs/style-guide.md
-4 testing/arc-lend-compare/benches/compare/contenders.rs
-1 testing/arc-lend-compare/benches/compare/main.rs
 1 testing/tutti-clap-test-plugin/src/lib.rs
 3 testing/tutti-clap-test-plugin/src/params_state.rs
 1 testing/tutti-fixtures/src/sf2.rs

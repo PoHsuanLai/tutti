@@ -440,8 +440,8 @@ fn the_heard_tap_is_allocation_free() {
 }
 
 /// The metronome on the graph: `ClickNode` and a node walking its
-/// block's beat (`Env::for_each_beat`, what `EnvClock` did: whole beats and
-/// fraction to outputs 2 and 3) side by side, with timestamped seeks, tempo and loop changes landing
+/// block's beat (`Env::for_each_beat`: whole beats and fraction to outputs 2
+/// and 3) side by side, with timestamped seeks, tempo and loop changes landing
 /// inside blocks, so both walk several segments per block. Neither segment
 /// walk nor the click's meter read allocates.
 ///

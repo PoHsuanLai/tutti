@@ -17,6 +17,7 @@ use tutti_fixtures::main_thread;
 use tutti_plugin_types::Load;
 use tutti_vst2_host::Vst2Loaded;
 
+use tutti_fixtures::midi;
 use tutti_plugin_host::PluginHandle;
 use tutti_plugin_types::EditorPresence;
 use tutti_plugin_types::{Normalized, ParamId};
@@ -415,12 +416,11 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
 /// other 44. A block within the cap adds nothing.
 #[test]
 fn midi_past_the_blocks_capacity_is_counted() {
-    use tutti_fixtures::midi;
     use tutti_graph::contract::Direct;
     use tutti_graph::{Event, Offset};
     use tutti_plugin_types::MIDI_STACK_CAPACITY;
     use tutti_types::{SampleRate, Samples};
-    use tutti_ump::{MidiChannel, MidiGroup};
+    use tutti_ump::MidiChannel;
 
     let _lock = lock_probe();
     clear_probe_env();
@@ -442,12 +442,7 @@ fn midi_past_the_blocks_capacity_is_counted() {
     let notes = |n: usize| -> Vec<Event> {
         (0..n)
             .map(|i| {
-                let on = midi::note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    (i % 128) as u8,
-                    0xFFFF,
-                );
+                let on = midi::note_on(MidiChannel::FIRST, (i % 128) as u8, 0xFFFF);
                 Event::midi(Offset::of(Samples(i), Samples(512)), on)
             })
             .collect()

@@ -587,9 +587,9 @@ impl VoiceAllocator {
         let cc = Voice2::ControlChange {
             controller,
             value: if down {
-                ControlValue::new(u32::MAX)
+                ControlValue::MAX
             } else {
-                ControlValue::new(0)
+                ControlValue::MIN
             },
         };
         self.run(channel, &cc, None);

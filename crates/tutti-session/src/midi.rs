@@ -2338,8 +2338,8 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
+    use tutti_fixtures::midi;
     use tutti_types::SampleRate;
-    use tutti_ump::MidiGroup;
 
     /// **A device's inlet holds at least a second of a saturated MIDI 1.0
     /// cable** (MIDI 1.0 Detailed Specification, Hardware: a byte every 320
@@ -2374,12 +2374,7 @@ mod tests {
     fn note(offset: usize) -> UmpAt {
         (
             Offset::of(Samples(offset), Samples(512)),
-            tutti_fixtures::midi::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                60,
-                tutti_fixtures::midi::MID_VELOCITY,
-            ),
+            midi::note_on(MidiChannel::FIRST, 60, 0x8000),
         )
     }
 

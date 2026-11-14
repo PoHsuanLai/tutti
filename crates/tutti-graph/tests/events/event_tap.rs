@@ -20,7 +20,8 @@ use tutti_graph::testing as common;
 use std::sync::{Arc, Mutex};
 
 use common::{Kind, TestNode, prepare};
-use tutti_fixtures::midi::{m1_note_off, m1_note_on};
+
+use tutti_fixtures::midi;
 use tutti_graph::{CloseError, EventCapacity, EventTapId, EventTapReader};
 use tutti_graph::{
     Cx, Edge, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, ForkByClone,
@@ -29,7 +30,7 @@ use tutti_graph::{
     TransportPosition, note_off_room,
 };
 use tutti_types::{Frame, Latency, Samples};
-use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
+use tutti_ump::{MidiChannel, U7, Ump};
 
 const MAX_BLOCK: usize = 512;
 
@@ -60,11 +61,11 @@ impl IntoNode for Forkable {
 
 /// MIDI 1.0, group 0, channel 0, note-on, velocity 100.
 fn on(key: u32) -> Ump {
-    m1_note_on(MidiChannel::FIRST, NoteNumber::of(key as u8), U7::of(100))
+    midi::m1_note_on(MidiChannel::FIRST, key as u8, U7::of(100))
 }
 
 fn off(key: u32) -> Ump {
-    m1_note_off(MidiChannel::FIRST, NoteNumber::of(key as u8), U7::of(0))
+    midi::m1_note_off(MidiChannel::FIRST, key as u8, U7::of(0))
 }
 
 /// What a port of the script node carries: the script's packet with word 1

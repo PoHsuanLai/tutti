@@ -10,7 +10,8 @@
 use std::sync::Arc;
 
 use tutti_fixtures::main_thread;
-use tutti_fixtures::midi::m1_note_on;
+
+use tutti_fixtures::midi;
 use tutti_graph::contract::{self, assert_honest_tail, drive_input};
 use tutti_graph::{
     Editor, Env, EventCapacity, EventEdge, EventIn, EventInletNode, EventOut, Executor, Node,
@@ -23,7 +24,7 @@ use tutti_plugin_types::{Control, Loaded, Prepare};
 use tutti_tempo::TempoMap;
 use tutti_transport::TempoReader;
 use tutti_types::{Bpm, Frame, MaxBlock, SampleRate, Samples, Tail};
-use tutti_ump::{MidiChannel, NoteNumber, U7};
+use tutti_ump::{MidiChannel, U7};
 
 const SR: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 64;
@@ -167,7 +168,7 @@ fn render(exec: &mut Executor) -> [Vec<f32>; 2] {
 }
 
 fn note() -> tutti_ump::Ump {
-    m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100))
+    midi::m1_note_on(MidiChannel::FIRST, 60, U7::of(100))
 }
 
 /// **A parked plugin is woken by a note on its frame**, at a block's first

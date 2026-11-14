@@ -189,8 +189,8 @@ impl PolySynth {
     /// Takes `&mut self`, so it cannot reach a synth that is already in a
     /// graph; there, send MIDI on the event input instead. Useful for setting
     /// a synth up before insertion or driving it by hand.
-    pub fn apply_midi(&mut self, ump: Ump) {
-        self.process_midi_event(ump);
+    pub fn apply_midi(&mut self, ump: impl Into<Ump>) {
+        self.process_midi_event(ump.into());
     }
 
     /// Returns how the channels are occupied by MPE: what the config said, or

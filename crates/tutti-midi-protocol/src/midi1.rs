@@ -93,7 +93,7 @@ pub fn narrow(voice: Voice2) -> Result<Voice1, NoMidi1Form> {
 /// let to = Address::new(MidiGroup::of(2), MidiChannel::of(5));
 /// let on2 = Message::Midi2(to, Voice2::note_on(NoteNumber::of(60), widen_velocity(U7::of(100))));
 /// let on1 = narrow_message(on2).unwrap();
-/// assert_eq!(on1, Message::note_on(to, NoteNumber::of(60), U7::of(100)));
+/// assert_eq!(on1, Message::midi1(to, Voice1::note_on(NoteNumber::of(60), U7::of(100))));
 /// ```
 ///
 /// # Errors

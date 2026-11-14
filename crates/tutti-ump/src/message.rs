@@ -6,7 +6,7 @@ use crate::field::{
 };
 use crate::{
     BendValue, CCNumber, ControlValue, ManufacturerId, MdsChunk, MdsChunkSize, MdsChunks,
-    MdsIdentity, MidiChannel, MidiGroup, NoteVelocity, Ump,
+    MdsIdentity, MidiChannel, MidiGroup, NoteVelocity, Rpn, Ump,
 };
 
 /// One UMP, decoded.
@@ -126,71 +126,47 @@ impl From<MidiChannel> for Address {
 
 // ---- Constructors ----------------------------------------------------------
 
-/// Named constructors for the common channel voice messages. Each takes an
-/// [`Address`] or, for the first Group, a bare [`MidiChannel`]
-/// (`impl Into<Address>`), and the typed fields of the message. The plain name
-/// is the MIDI 1.0 form (message type `0x2`, 7-bit data: [`U7`], [`U14`]); the
-/// `2` form is the MIDI 2.0 one (type `0x4`, the wire's wider integers
-/// [`NoteVelocity`], [`ControlValue`] and [`BendValue`], no attribute and no
-/// bank). Neither scales: a 7-bit value reaches a wide one through M2-115, in
-/// `tutti-midi-protocol`'s `widen_velocity`, `widen_value` and `widen_bend`.
-///
-/// # Examples
-///
-/// ```
-/// use tutti_ump::{
-///     BendValue, CCNumber, ControlValue, Message, MidiChannel, NoteNumber, NoteVelocity, U7,
-///     Voice2,
-/// };
-///
-/// let ch = MidiChannel::FIRST;
-/// // MIDI 1.0: 7-bit data.
-/// let note = Message::note_on(ch, NoteNumber::of(60), U7::of(100));
-/// // MIDI 2.0: 16- and 32-bit data, each its own type.
-/// let velocity = NoteVelocity::new(0xC000);
-/// let note2 = Message::Midi2(ch.into(), Voice2::note_on(NoteNumber::of(60), velocity));
-/// let cc = Message::Midi2(
-///     ch.into(),
-///     Voice2::ControlChange { controller: CCNumber::VOLUME, value: ControlValue::CENTER },
-/// );
-/// let bend = Message::Midi2(ch.into(), Voice2::PitchBend(BendValue::CENTER));
-/// # let _ = (note, note2, cc, bend);
-/// ```
 impl Message {
-    /// A MIDI 1.0 Note On. At velocity 0 it is still a Note On here (a
-    /// receiver reads it as a Note Off, M2-104 §7.3.2).
+    /// A MIDI 1.0 channel voice message (message type `0x2`) at `address`;
+    /// a bare [`MidiChannel`] addresses the first Group.
+    ///
+    /// ```
+    /// use tutti_ump::{Message, MidiChannel, NoteNumber, U7, Voice1};
+    ///
+    /// let note = Message::midi1(MidiChannel::FIRST, Voice1::note_on(NoteNumber::of(60), U7::of(100)));
+    /// # let _ = note;
+    /// ```
     #[inline]
     #[must_use]
-    pub fn note_on(address: impl Into<Address>, note: NoteNumber, velocity: U7) -> Self {
-        Self::Midi1(address.into(), Voice1::NoteOn { note, velocity })
+    pub fn midi1(address: impl Into<Address>, voice: Voice1) -> Self {
+        Self::Midi1(address.into(), voice)
     }
 
-    /// A MIDI 1.0 Note Off with release `velocity`.
+    /// A MIDI 2.0 channel voice message (message type `0x4`) at `address`;
+    /// a bare [`MidiChannel`] addresses the first Group. A 7-bit value reaches
+    /// a MIDI 2.0 field through M2-115, in `tutti-midi-protocol`'s
+    /// `widen_velocity`, `widen_value` and `widen_bend`.
+    ///
+    /// ```
+    /// use tutti_ump::{
+    ///     Address, BendValue, MidiChannel, MidiGroup, Message, NoteNumber, NoteVelocity, Voice2,
+    /// };
+    ///
+    /// let channel = MidiChannel::of(3);
+    /// let note = Message::midi2(
+    ///     channel,
+    ///     Voice2::note_on(NoteNumber::of(60), NoteVelocity::new(0xC000)),
+    /// );
+    /// let bend = Message::midi2(
+    ///     Address::new(MidiGroup::of(2), channel),
+    ///     Voice2::PitchBend(BendValue::CENTER),
+    /// );
+    /// # let _ = (note, bend);
+    /// ```
     #[inline]
     #[must_use]
-    pub fn note_off(address: impl Into<Address>, note: NoteNumber, velocity: U7) -> Self {
-        Self::Midi1(address.into(), Voice1::NoteOff { note, velocity })
-    }
-
-    /// A MIDI 1.0 Control Change.
-    #[inline]
-    #[must_use]
-    pub fn control_change(address: impl Into<Address>, controller: CCNumber, value: U7) -> Self {
-        Self::Midi1(address.into(), Voice1::ControlChange { controller, value })
-    }
-
-    /// A MIDI 1.0 Program Change.
-    #[inline]
-    #[must_use]
-    pub fn program_change(address: impl Into<Address>, program: U7) -> Self {
-        Self::Midi1(address.into(), Voice1::ProgramChange(program))
-    }
-
-    /// A MIDI 1.0 Pitch Bend, `0x2000` centred.
-    #[inline]
-    #[must_use]
-    pub fn pitch_bend(address: impl Into<Address>, bend: U14) -> Self {
-        Self::Midi1(address.into(), Voice1::PitchBend(bend))
+    pub fn midi2(address: impl Into<Address>, voice: Voice2) -> Self {
+        Self::Midi2(address.into(), voice)
     }
 }
 
@@ -270,6 +246,37 @@ pub enum Voice1 {
     ChannelPressure(U7),
     /// Pitch Bend, `0x2000` centred.
     PitchBend(U14),
+}
+
+impl Voice1 {
+    /// A Note On. At velocity 0 it is still a Note On here (a receiver reads
+    /// it as a Note Off, M2-104 section 7.3.2).
+    #[inline]
+    #[must_use]
+    pub const fn note_on(note: NoteNumber, velocity: U7) -> Self {
+        Self::NoteOn { note, velocity }
+    }
+
+    /// A Note Off with release `velocity`.
+    #[inline]
+    #[must_use]
+    pub const fn note_off(note: NoteNumber, velocity: U7) -> Self {
+        Self::NoteOff { note, velocity }
+    }
+
+    /// Polyphonic key pressure.
+    #[inline]
+    #[must_use]
+    pub const fn poly_pressure(note: NoteNumber, pressure: U7) -> Self {
+        Self::PolyPressure { note, pressure }
+    }
+
+    /// A Control Change.
+    #[inline]
+    #[must_use]
+    pub const fn control_change(controller: CCNumber, value: U7) -> Self {
+        Self::ControlChange { controller, value }
+    }
 }
 
 // ---- System Exclusive ------------------------------------------------------
@@ -734,6 +741,73 @@ impl Voice2 {
             velocity,
             attribute: Attribute::None,
         }
+    }
+
+    /// A Control Change.
+    #[inline]
+    #[must_use]
+    pub const fn control_change(controller: CCNumber, value: ControlValue) -> Self {
+        Self::ControlChange { controller, value }
+    }
+
+    /// Polyphonic key pressure.
+    #[inline]
+    #[must_use]
+    pub const fn poly_pressure(note: NoteNumber, value: ControlValue) -> Self {
+        Self::PolyPressure { note, value }
+    }
+
+    /// A Per-Note Pitch Bend.
+    #[inline]
+    #[must_use]
+    pub const fn per_note_pitch_bend(note: NoteNumber, value: BendValue) -> Self {
+        Self::PerNotePitchBend { note, value }
+    }
+
+    /// A Program Change with no bank.
+    #[inline]
+    #[must_use]
+    pub const fn program_change(program: U7) -> Self {
+        Self::ProgramChange {
+            program,
+            bank: None,
+        }
+    }
+
+    /// A Registered Controller at the address `rpn`.
+    #[inline]
+    #[must_use]
+    pub const fn registered(rpn: Rpn, value: ControlValue) -> Self {
+        Self::Registered {
+            bank: rpn.bank(),
+            index: rpn.index(),
+            value,
+        }
+    }
+
+    /// A Relative Registered Controller at the address `rpn`.
+    #[inline]
+    #[must_use]
+    pub const fn relative_registered(rpn: Rpn, delta: i32) -> Self {
+        Self::RelativeRegistered {
+            bank: rpn.bank(),
+            index: rpn.index(),
+            delta,
+        }
+    }
+
+    /// An Assignable Controller.
+    #[inline]
+    #[must_use]
+    pub const fn assignable(bank: U7, index: U7, value: ControlValue) -> Self {
+        Self::Assignable { bank, index, value }
+    }
+
+    /// A Relative Assignable Controller.
+    #[inline]
+    #[must_use]
+    pub const fn relative_assignable(bank: U7, index: U7, delta: i32) -> Self {
+        Self::RelativeAssignable { bank, index, delta }
     }
 
     /// The note a message addresses: the one in byte 3 of a Note On or Off,

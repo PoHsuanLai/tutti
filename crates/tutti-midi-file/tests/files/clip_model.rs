@@ -3,7 +3,8 @@
 //! only a hand-built stream can get wrong on purpose).
 
 use crate::common::{track, unsorted};
-use tutti_fixtures::midi::{note_off, note_on};
+
+use tutti_fixtures::midi;
 use tutti_midi_file::{
     ClipFileError, Error, FileEvent, Meta, MidiFile, MidiFileKind, SmfFormat, Tick, Track,
 };
@@ -33,10 +34,10 @@ fn end() -> Ump {
     Message::Stream(Stream::EndOfClip).into()
 }
 fn on(note: u8, vel: u16) -> Ump {
-    note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, vel)
+    midi::note_on(MidiChannel::FIRST, note, vel)
 }
 fn off(note: u8) -> Ump {
-    note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0)
+    midi::note_off(MidiChannel::FIRST, note, 0)
 }
 fn set_tempo(bpm: f64) -> Ump {
     Message::Flex(MidiGroup::FIRST, Flex::SetTempo((6.0e9 / bpm) as u32)).into()
@@ -364,7 +365,10 @@ fn a_note_off_only_closes_its_own_group() {
     let g1 = MidiGroup::new(1).unwrap();
     let notes = notes_of(vec![
         (0, on(60, 100)),
-        (10, note_off(g1, MidiChannel::FIRST, 60, 0)),
+        (
+            10,
+            midi::note_off(Address::new(g1, MidiChannel::FIRST), 60, 0),
+        ),
         (20, off(60)),
     ]);
     assert_eq!(notes.len(), 1);
@@ -520,7 +524,7 @@ fn a_header_with_program_change_cc_and_sysex_round_trips() {
         Address::first(MidiChannel::FIRST),
         tutti_ump::Voice2::ControlChange {
             controller: tutti_ump::CCNumber::of(7),
-            value: ControlValue::new(0x8000_0000),
+            value: ControlValue::CENTER,
         },
     ));
     let sysex = sysex7(tutti_ump::SysexStatus::Complete, &[0x7D, 1, 2, 3]);

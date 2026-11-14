@@ -3,13 +3,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeKey, NodeParts, Prepare, Shape, Status};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_session::{Session, SessionNode};
 use tutti_transport::MotionEvent;
 use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{Message, MidiChannel, NoteNumber, NoteVelocity, Ump, Voice2};
 
 /// The mezzo-forte default: MIDI 2.0's center velocity.
 pub const MF: u16 = 0x8000;
@@ -71,12 +70,18 @@ pub fn note(number: u8, velocity: u16, start: Beat, duration: BeatDuration) -> [
     [
         TimedMidiEvent::new(
             start,
-            note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, velocity),
+            Message::midi2(
+                MidiChannel::FIRST,
+                Voice2::note_on(NoteNumber::of(number), NoteVelocity::new(velocity)),
+            ),
         )
         .unwrap(),
         TimedMidiEvent::new(
             start + duration,
-            note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
+            Message::midi2(
+                MidiChannel::FIRST,
+                Voice2::note_off(NoteNumber::of(number), NoteVelocity::MIN),
+            ),
         )
         .unwrap(),
     ]

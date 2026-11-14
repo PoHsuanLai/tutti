@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
+use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Editor, ForkError, ForkFaultKind, ForkMode, ForkTarget, IntoNode, Prepare, Renderer,
@@ -41,6 +42,7 @@ use tutti_plugin_types::PluginForkError;
 use tutti_plugin_types::{Normalized, ParamId};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::{SampleRate, Samples};
+use tutti_ump::{Address, Message, NoteNumber, NoteVelocity, Voice2};
 
 /// The probe's applied gain (`GAIN_PARAM_ID` in the plugin), and its range in
 /// dB. Mirrored rather than imported: this crate links no probe rlib.
@@ -764,7 +766,6 @@ fn a_clip_note_reaches_an_exported_plugin_on_its_frame() {
 /// Feed the plugin at `plugin` from a clip node holding a chord of `n`
 /// notes, started on frame `on` and ended on frame `off`.
 fn feed_chord(live: &mut Editor, plugin: NodeKey, n: u8, on: usize, off: usize) {
-    use tutti_fixtures::midi;
     use tutti_graph::{EventEdge, EventIn, EventOut};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
     use tutti_types::Beat;
@@ -774,9 +775,22 @@ fn feed_chord(live: &mut Editor, plugin: NodeKey, n: u8, on: usize, off: usize) 
         // Notes 0..100 on channel 0, 100..200 on channel 1.
         let (g, c, key) = (MidiGroup::FIRST, MidiChannel::of(k / 100), k % 100);
         [
-            TimedMidiEvent::new(Beat(on as f64 / 24_000.0), midi::note_on(g, c, key, 0xFFFF))
-                .unwrap(),
-            TimedMidiEvent::new(Beat(off as f64 / 24_000.0), midi::note_off(g, c, key, 0)).unwrap(),
+            TimedMidiEvent::new(
+                Beat(on as f64 / 24_000.0),
+                Message::midi2(
+                    Address::new(g, c),
+                    Voice2::note_on(NoteNumber::of(key), NoteVelocity::MAX),
+                ),
+            )
+            .unwrap(),
+            TimedMidiEvent::new(
+                Beat(off as f64 / 24_000.0),
+                Message::midi2(
+                    Address::new(g, c),
+                    Voice2::note_off(NoteNumber::of(key), NoteVelocity::MIN),
+                ),
+            )
+            .unwrap(),
         ]
     });
     let clip = NodeKey(1);
@@ -859,11 +873,10 @@ fn a_chord_larger_than_a_chunk_ends_and_the_export_counts_the_loss() {
 /// `frame` of a 120 BPM timeline at [`SAMPLE_RATE`] (a beat is 24 000
 /// frames).
 fn feed_note(live: &mut Editor, plugin: NodeKey, frame: usize) {
-    use tutti_fixtures::midi;
     use tutti_graph::{EventEdge, EventIn, EventOut};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
     use tutti_types::Beat;
-    use tutti_ump::{MidiChannel, MidiGroup};
+    use tutti_ump::MidiChannel;
 
     let clip = NodeKey(1);
     live.insert(
@@ -871,7 +884,10 @@ fn feed_note(live: &mut Editor, plugin: NodeKey, frame: usize) {
         "clip",
         MidiClipNode::new([TimedMidiEvent::new(
             Beat(frame as f64 / 24_000.0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
+            Message::midi2(
+                MidiChannel::FIRST,
+                Voice2::note_on(NoteNumber::of(60), NoteVelocity::MAX),
+            ),
         )
         .unwrap()]),
     );
@@ -960,11 +976,10 @@ fn a_clip_note_in_a_chunk_that_begins_mid_block_lands_on_its_frame() {
 /// the note at 6 300 in the chunk from 6 240.
 #[test]
 fn a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame() {
-    use tutti_fixtures::midi;
     use tutti_graph::{EventEdge, EventIn, EventOut};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
     use tutti_types::Beat;
-    use tutti_ump::{MidiChannel, MidiGroup};
+    use tutti_ump::MidiChannel;
 
     let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::NOTES);
@@ -981,7 +996,10 @@ fn a_clip_nodes_note_reaches_the_plugins_event_input_on_its_frame() {
         "clip",
         MidiClipNode::new([TimedMidiEvent::new(
             Beat(NOTE_FRAME as f64 / 24_000.0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
+            Message::midi2(
+                MidiChannel::FIRST,
+                Voice2::note_on(NoteNumber::of(60), NoteVelocity::MAX),
+            ),
         )
         .unwrap()]),
     );
@@ -1061,11 +1079,10 @@ impl tutti_graph::Node for MidiSink {
 /// reply raced the audio.
 #[test]
 fn a_plugins_midi_out_keeps_its_place_against_its_audio() {
-    use tutti_fixtures::midi;
     use tutti_graph::{EventEdge, EventIn, EventOut};
     use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
     use tutti_types::Beat;
-    use tutti_ump::{MidiChannel, MidiGroup};
+    use tutti_ump::MidiChannel;
 
     let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::NOTES);
@@ -1077,7 +1094,7 @@ fn a_plugins_midi_out_keeps_its_place_against_its_audio() {
         let prepare = Prepare::new(SampleRate::of(SAMPLE_RATE), MaxBlock::of(Samples(CHUNK)));
         let (mut live, _exec) = Editor::new(prepare);
         let (clip, key, sink) = (NodeKey(1), NodeKey(9), NodeKey(3));
-        let on = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
+        let on = midi::note_on(MidiChannel::FIRST, 60, 0xFFFF);
         live.insert(
             clip,
             "clip",
@@ -1361,11 +1378,10 @@ fn an_export_of_plugins_is_bit_identical_on_a_pool() {
 /// within the cap adds nothing.
 #[test]
 fn midi_past_the_chunks_capacity_is_counted() {
-    use tutti_fixtures::midi;
     use tutti_graph::contract::Direct;
     use tutti_graph::{Event, Offset};
     use tutti_plugin_types::MIDI_STACK_CAPACITY;
-    use tutti_ump::{MidiChannel, MidiGroup};
+    use tutti_ump::MidiChannel;
 
     let _lock = machine_lock();
     let _env = ProbeEnv::new().render_mode(render::NOTES);
@@ -1382,12 +1398,7 @@ fn midi_past_the_chunks_capacity_is_counted() {
     let notes = |n: usize| -> Vec<Event> {
         (0..n)
             .map(|i| {
-                let on = midi::note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    (i % 128) as u8,
-                    0xFFFF,
-                );
+                let on = midi::note_on(MidiChannel::FIRST, (i % 128) as u8, 0xFFFF);
                 Event::midi(Offset::of(Samples(i), Samples(512)), on)
             })
             .collect()

@@ -11,10 +11,8 @@ use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
 use crate::common::{at, beat_of, connect, off, on, rolling};
-use tutti_fixtures::midi::{
-    cc, channel_pressure, from_midi1_bytes, key_of, m1_cc, note_on, per_note_controller,
-    pitch_bend, program_change, registered_rpn, relative_registered_controller,
-};
+use tutti_fixtures::midi;
+use tutti_fixtures::midi::key_of;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventKind, Executor, IntoNode, Io, LoopRange, Node, Offset, Prepare, Shape, Status,
@@ -23,6 +21,7 @@ use tutti_graph::{
 use tutti_midi_runtime::{MidiClipControls, MidiClipNode, NoteLedger, TimedMidiEvent};
 use tutti_types::{Beat, BeatDuration, Bpm, SampleRate, Samples};
 use tutti_ump::Ump;
+use tutti_ump::{Address, ControlValue, NoteNumber, RegisteredPerNoteController, parse_exact};
 use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Rpn, U7, U14, Voice1, Voice2};
 
 const RATE: f64 = 48_000.0;
@@ -247,14 +246,7 @@ fn a_shifted_event_moves_its_beat_and_refuses_a_beat_that_is_not_finite() {
 /// nothing but the debt would release them).
 #[test]
 fn refused_note_offs_are_retried_until_none_is_held() {
-    let note = |i: u16| {
-        note_on(
-            MidiGroup::FIRST,
-            MidiChannel::of((i / 128) as u8),
-            (i % 128) as u8,
-            0xFFFF,
-        )
-    };
+    let note = |i: u16| midi::note_on(MidiChannel::of((i / 128) as u8), (i % 128) as u8, 0xFFFF);
     let clip = MidiClipNode::new((0..400u16).map(|i| at(if i < 200 { 10 } else { 300 }, note(i))));
     let (_ed, mut exec, _c, seen) = rig(clip, 256);
     roll(&mut exec, 512, 256);
@@ -679,10 +671,9 @@ fn a_loop_shorter_than_a_frame_costs_one_pass_a_frame() {
 /// before the later note.
 #[test]
 fn a_clip_ending_on_a_lone_cc_6_flushes_its_rpn_at_the_cc_6() {
-    use tutti_fixtures::midi::m1_cc;
     use tutti_ump::{CCNumber, Message, U7, Voice2};
     let ch = MidiChannel::FIRST;
-    let cc = |n: CCNumber, v: u8| m1_cc(ch, n, U7::of(v));
+    let cc = |n: CCNumber, v: u8| midi::m1_cc(ch, n, U7::of(v));
     let clip = MidiClipNode::new([
         at(100, cc(CCNumber::RPN_MSB, 0)),
         at(200, cc(CCNumber::RPN_LSB, 0)),
@@ -709,16 +700,11 @@ const DOWN: u32 = 0xFFFF_FFFF;
 const CENTRE: u32 = 0x8000_0000;
 
 fn pedal(channel: u8, controller: CCNumber, value: u32) -> Ump {
-    cc(
-        MidiGroup::FIRST,
-        MidiChannel::of(channel),
-        controller,
-        value,
-    )
+    midi::cc(MidiChannel::of(channel), controller, value)
 }
 
 fn bend(channel: u8, value: u32) -> Ump {
-    pitch_bend(MidiGroup::FIRST, MidiChannel::of(channel), value)
+    midi::pitch_bend(MidiChannel::of(channel), value)
 }
 
 /// **A stop returns every pedal and the bend to their normal positions,
@@ -865,14 +851,7 @@ fn a_seek_returns_the_controllers_where_the_jump_happens() {
 /// once.
 #[test]
 fn a_refused_pedal_up_is_owed_and_follows_the_last_note_off() {
-    let note = |i: u16| {
-        note_on(
-            MidiGroup::FIRST,
-            MidiChannel::of((i / 128) as u8),
-            (i % 128) as u8,
-            0xFFFF,
-        )
-    };
+    let note = |i: u16| midi::note_on(MidiChannel::of((i / 128) as u8), (i % 128) as u8, 0xFFFF);
     let s = CCNumber::SUSTAIN;
     let clip = MidiClipNode::new(
         (0..400u16)
@@ -936,8 +915,8 @@ impl Node for SendThenRelease {
 #[test]
 fn a_midi_1_pedal_and_bend_are_returned_in_midi_1() {
     let ch = MidiChannel::of(2);
-    let m1_bend = |v: u16| tutti_fixtures::midi::m1(ch, Voice1::PitchBend(U14::of(v)));
-    let m1_pedal = |controller, v: u8| tutti_fixtures::midi::m1_cc(ch, controller, U7::of(v));
+    let m1_bend = |v: u16| Ump::from(Message::midi1(ch, Voice1::PitchBend(U14::of(v))));
+    let m1_pedal = |controller, v: u8| midi::m1_cc(ch, controller, U7::of(v));
     let script = vec![
         m1_pedal(CCNumber::SUSTAIN, 127),
         m1_pedal(CCNumber::SOSTENUTO, 63),
@@ -976,18 +955,38 @@ fn a_midi_1_pedal_and_bend_are_returned_in_midi_1() {
 #[test]
 fn a_render_that_starts_mid_clip_starts_from_the_timelines_state() {
     let (g, c0, c1) = (MidiGroup::FIRST, MidiChannel::FIRST, MidiChannel::of(1));
-    let volume = |ch, v| cc(g, ch, CCNumber::VOLUME, v);
-    let range = registered_rpn(g, c0, Rpn::PITCH_BEND_SENSITIVITY, 0x1800_0000);
+    let volume = |ch, v| midi::cc(Address::new(g, ch), CCNumber::VOLUME, v);
+    let range = midi::registered(
+        Address::new(g, c0),
+        Rpn::PITCH_BEND_SENSITIVITY,
+        0x1800_0000,
+    );
     let clip = MidiClipNode::new([
-        at(10, program_change(g, c0, 5, None)),
+        at(10, midi::program_change(Address::new(g, c0), 5, None)),
         at(20, volume(c0, 0x1000_0000)),
         at(30, on(60)),
-        at(35, per_note_controller(g, c0, 60, 3, 0x4000_0000, true)),
+        at(
+            35,
+            Ump::from(Message::midi2(
+                Address::new(g, c0),
+                Voice2::RegisteredPerNote {
+                    note: NoteNumber::of(60),
+                    controller: RegisteredPerNoteController::from(3),
+                    value: ControlValue::new(0x4000_0000),
+                },
+            )),
+        ),
         at(40, volume(c0, 0x2000_0000)),
-        at(45, relative_registered_controller(g, c0, 0, 0, 0x100)),
+        at(
+            45,
+            Ump::from(Message::midi2(
+                Address::new(g, c0),
+                Voice2::relative_registered(Rpn::new(U7::of(0), U7::of(0)), 0x100),
+            )),
+        ),
         at(50, range),
         at(60, bend(0, 0x7000_0000)),
-        at(70, channel_pressure(g, c0, 0x3000_0000)),
+        at(70, midi::channel_pressure(Address::new(g, c0), 0x3000_0000)),
         at(80, volume(c1, 0x5000_0000)),
         at(96_000, volume(c0, 0x6000_0000)),
         at(100_000, volume(c0, 0x7000_0000)),
@@ -1002,10 +1001,10 @@ fn a_render_that_starts_mid_clip_starts_from_the_timelines_state() {
     assert_eq!(
         got,
         vec![
-            program_change(g, c0, 5, None),
+            midi::program_change(Address::new(g, c0), 5, None),
             range,
             volume(c0, 0x2000_0000),
-            channel_pressure(g, c0, 0x3000_0000),
+            midi::channel_pressure(Address::new(g, c0), 0x3000_0000),
             bend(0, 0x7000_0000),
             volume(c1, 0x5000_0000),
             volume(c0, 0x6000_0000),
@@ -1035,9 +1034,19 @@ fn a_render_from_the_start_chases_nothing() {
 fn a_chased_program_carries_the_bank_in_force() {
     let c = MidiChannel::FIRST;
     let clip = MidiClipNode::new([
-        at(10, m1_cc(c, CCNumber::BANK_SELECT, U7::of(1))),
-        at(11, from_midi1_bytes(&[0xC0, 5]).unwrap()),
-        at(20, from_midi1_bytes(&[0xC0, 7]).unwrap()),
+        at(10, midi::m1_cc(c, CCNumber::BANK_SELECT, U7::of(1))),
+        at(
+            11,
+            parse_exact(MidiGroup::FIRST, &[0xC0, 5])
+                .map(Ump::from)
+                .unwrap(),
+        ),
+        at(
+            20,
+            parse_exact(MidiGroup::FIRST, &[0xC0, 7])
+                .map(Ump::from)
+                .unwrap(),
+        ),
     ]);
     let (_ed, mut exec, _c, seen) = rig(clip, 512);
     exec.process(512, &rolling(96_000), &[], &mut []);
@@ -1063,16 +1072,25 @@ fn a_chased_program_carries_the_bank_in_force() {
 fn channel_mode_messages_are_not_chased() {
     let (g, c) = (MidiGroup::FIRST, MidiChannel::FIRST);
     let clip = MidiClipNode::new([
-        at(10, cc(g, c, CCNumber::VOLUME, 0x1000_0000)),
-        at(20, cc(g, c, CCNumber::of(121), 0)),
-        at(30, cc(g, c, CCNumber::VOLUME, 0x2000_0000)),
-        at(40, cc(g, c, CCNumber::ALL_SOUND_OFF, 0)),
+        at(
+            10,
+            midi::cc(Address::new(g, c), CCNumber::VOLUME, 0x1000_0000),
+        ),
+        at(20, midi::cc(Address::new(g, c), CCNumber::of(121), 0)),
+        at(
+            30,
+            midi::cc(Address::new(g, c), CCNumber::VOLUME, 0x2000_0000),
+        ),
+        at(40, midi::cc(Address::new(g, c), CCNumber::ALL_SOUND_OFF, 0)),
     ]);
     let (_ed, mut exec, _c, seen) = rig(clip, 512);
     exec.process(512, &rolling(96_000), &[], &mut []);
     assert_eq!(
         *seen.lock().unwrap(),
-        vec![(0, cc(g, c, CCNumber::VOLUME, 0x2000_0000))]
+        vec![(
+            0,
+            midi::cc(Address::new(g, c), CCNumber::VOLUME, 0x2000_0000)
+        )]
     );
 }
 
@@ -1088,7 +1106,11 @@ fn a_chase_larger_than_the_port_is_cut_short_and_counted() {
         (40..70u8).map(move |n| {
             at(
                 u64::from(ch) * 30 + u64::from(n),
-                cc(g, MidiChannel::of(ch), CCNumber::of(n), 0x1000_0000),
+                midi::cc(
+                    Address::new(g, MidiChannel::of(ch)),
+                    CCNumber::of(n),
+                    0x1000_0000,
+                ),
             )
         })
     }));
@@ -1098,7 +1120,11 @@ fn a_chase_larger_than_the_port_is_cut_short_and_counted() {
     assert_eq!(seen.len(), 256);
     assert_eq!(
         seen[0].1,
-        cc(g, MidiChannel::FIRST, CCNumber::of(40), 0x1000_0000),
+        midi::cc(
+            Address::new(g, MidiChannel::FIRST),
+            CCNumber::of(40),
+            0x1000_0000
+        ),
         "channel 0's first"
     );
     let refused: u32 = ed.take_event_losses().map(|l| l.count).sum();

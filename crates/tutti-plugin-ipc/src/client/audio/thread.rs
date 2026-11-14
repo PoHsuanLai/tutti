@@ -324,14 +324,15 @@ mod tests {
     use crate::client::audio::messages::{ProcessPayload, UNSOLICITED_PARAMS};
     use crate::protocol::{Normalized, ParamId};
     use std::sync::Arc;
+    use tutti_fixtures::midi;
     use tutti_plugin_types::ResyncKind;
     use tutti_types::SampleRate;
+    use tutti_ump::MidiChannel;
 
     /// **A crash's drain counts the queued chunks' MIDI.**
     #[test]
     fn a_crash_drain_counts_the_queued_midi() {
         use tutti_plugin_types::WireMidi;
-        use tutti_ump::{MidiChannel, MidiGroup};
 
         let channels = Channels::new(SampleRate::SR_48K);
         for n in [3, 0, 2] {
@@ -339,7 +340,7 @@ mod tests {
             for _ in 0..n {
                 payload.midi_events.push(WireMidi {
                     offset: 0,
-                    ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
+                    ump: midi::note_on(MidiChannel::FIRST, 60, 1),
                 });
             }
             assert!(channels.push_command(Command::Process(payload)));
@@ -360,7 +361,6 @@ mod tests {
     #[test]
     fn a_failed_connect_counts_the_queued_midi() {
         use tutti_plugin_types::WireMidi;
-        use tutti_ump::{MidiChannel, MidiGroup};
 
         let channels = Channels::new(SampleRate::SR_48K);
         let lifecycle = Lifecycle::new();
@@ -368,7 +368,7 @@ mod tests {
         for _ in 0..4 {
             payload.midi_events.push(WireMidi {
                 offset: 0,
-                ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
+                ump: midi::note_on(MidiChannel::FIRST, 60, 1),
             });
         }
         assert!(channels.push_command(Command::Process(payload)));

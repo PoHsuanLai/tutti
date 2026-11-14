@@ -10,7 +10,7 @@ use tutti_graph::Offset;
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{MIDI_STACK_CAPACITY, RT_MIDI_CAPACITY, RtMidiEvents, WireMidi};
 use tutti_types::Samples;
-use tutti_ump::{MidiChannel, MidiGroup, SysexStep};
+use tutti_ump::{Bank, MidiChannel, MidiGroup, Sysex7Packets, SysexStep, U7, Ump};
 use tutti_vst3_ffi::{EventKind, EventList, K_DATA_TYPE_MIDI_SYSEX, SYSEX_OUT_ROOM, TextArena};
 use tutti_vst3_host::{InputEvents, Stager, Utf16Chord, drain_midi};
 use vst3::Steinberg::Vst::{Event, IEventList, IEventListTrait};
@@ -322,7 +322,14 @@ fn sysex_read_by_plugin(list: &EventList) -> Vec<(i32, Vec<u8>)> {
 fn a_banked_program_change_is_not_staged_and_is_counted() {
     let pc = (
         at(5),
-        midi::program_change(MidiGroup::FIRST, MidiChannel::of(1), 9, Some(0x0085)),
+        midi::program_change(
+            MidiChannel::of(1),
+            9,
+            Some(Bank {
+                msb: U7::of(1),
+                lsb: U7::of(5),
+            }),
+        ),
     );
     let list = EventList::input();
     let mut stager = Stager::default();
@@ -332,7 +339,9 @@ fn a_banked_program_change_is_not_staged_and_is_counted() {
 }
 
 fn sysex_packets(payload: &[u8], frame: usize) -> Vec<UmpAt> {
-    midi::sysex7_packets(payload)
+    Sysex7Packets::from_payload(MidiGroup::FIRST, payload)
+        .expect("a payload of 7-bit bytes")
+        .collect::<Vec<Ump>>()
         .into_iter()
         .map(|ump| (at(frame), ump))
         .collect()
@@ -357,7 +366,11 @@ fn a_multi_packet_sysex_reaches_the_plugin_whole() {
         3,
         (
             at(7),
-            midi::note_on(MidiGroup::of(1), MidiChannel::FIRST, 60, midi::MID_VELOCITY),
+            midi::note_on(
+                tutti_ump::Address::new(MidiGroup::of(1), MidiChannel::FIRST),
+                60,
+                0x8000,
+            ),
         ),
     );
     let list = EventList::input();

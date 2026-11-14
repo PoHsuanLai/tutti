@@ -14,11 +14,12 @@ use tutti_graph::{
     Editor, EventEdge, EventIn, EventOut, Executor, ForkMode, ForkTarget, Prepare, Renderer,
     TransportPosition,
 };
+use tutti_midi_protocol::widen_velocity;
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{MidiChannel, U7};
 
 const BLOCK: usize = 256;
 
@@ -41,8 +42,8 @@ fn graph(unit: SoundFontUnit, rate: f64, frame: u64) -> (Editor, Executor) {
         MaxBlock::of(Samples(BLOCK)),
     ));
     let beat = Beat(frame as f64 / (rate / 2.0));
-    let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
-    let on = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity);
+    let velocity = widen_velocity(U7::of(100)).get(); // 7-bit 100, widened (M2-115)
+    let on = midi::note_on(MidiChannel::FIRST, 60, velocity);
     ed.insert(
         NodeKey(1),
         "clip",

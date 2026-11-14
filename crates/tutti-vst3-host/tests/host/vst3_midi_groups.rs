@@ -8,12 +8,13 @@
 
 use tutti_fixtures::midi;
 use tutti_graph::{Offset, UmpAt};
-use tutti_midi_protocol::PitchBendSensitivity;
+use tutti_midi_protocol::{PitchBendSensitivity, widen_value};
 use tutti_types::Samples;
 use tutti_ump::{
     Address, Attribute, Message, MidiChannel, MidiGroup, NoteId, NoteNumber, NoteVelocity, Rpn,
     Ump, Voice2,
 };
+use tutti_ump::{Bank, ControlValue, RegisteredPerNoteController, System, U7};
 use tutti_vst3_ffi::{EventKind, EventList};
 use tutti_vst3_host::{InputEvents, Stager};
 use vst3::Steinberg::Vst::{Event, IEventListTrait};
@@ -142,7 +143,7 @@ fn note_on_pitched(group: MidiGroup, channel: MidiChannel, key: u8, pitch: f64) 
         Address { group, channel },
         Voice2::NoteOn {
             note: NoteNumber::of(key),
-            velocity: NoteVelocity::new(midi::MID_VELOCITY),
+            velocity: NoteVelocity::CENTER,
             attribute: Attribute::Pitch((pitch * 512.0) as u16),
         },
     ))
@@ -159,13 +160,12 @@ fn two_groups_land_on_event_buses_zero_and_one() {
     let seen = block(
         &mut stager,
         &[
-            midi::note_on(group(0), ch(0), 60, midi::MID_VELOCITY),
-            midi::note_on(group(1), ch(0), 60, midi::MID_VELOCITY),
+            midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000),
+            midi::note_on(Address::new(group(1), ch(0)), 60, 0x8000),
             midi::cc(
-                group(1),
-                ch(0),
+                Address::new(group(1), ch(0)),
                 tutti_ump::CCNumber::BRIGHTNESS,
-                midi::wide_value(100),
+                widen_value(U7::of(100)).get(),
             ),
         ],
     );
@@ -204,15 +204,14 @@ fn a_group_without_an_event_bus_is_dropped_and_counted() {
     let seen = block(
         &mut stager,
         &[
-            midi::note_on(group(0), ch(0), 60, midi::MID_VELOCITY),
-            midi::note_on(group(1), ch(0), 61, midi::MID_VELOCITY),
+            midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000),
+            midi::note_on(Address::new(group(1), ch(0)), 61, 0x8000),
             midi::cc(
-                group(2),
-                ch(0),
+                Address::new(group(2), ch(0)),
                 tutti_ump::CCNumber::BRIGHTNESS,
-                midi::wide_value(1),
+                widen_value(U7::of(1)).get(),
             ),
-            midi::timing_clock(group(1)),
+            Ump::from(Message::System(group(1), System::TimingClock)),
         ],
     );
     assert_eq!(seen.len(), 1, "{seen:?}");
@@ -238,10 +237,19 @@ fn a_group_without_an_event_bus_is_dropped_and_counted() {
 #[test]
 fn a_detach_then_a_note_on_is_a_new_note_that_alone_hears_the_controller() {
     let mut stager = Stager::new(1);
-    let first = note_on_id(&block(&mut stager, &[midi::note_on(group(0), ch(0), 60, 0x8000)])[0]);
+    let first = note_on_id(
+        &block(
+            &mut stager,
+            &[midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000)],
+        )[0],
+    );
     let before = block(
         &mut stager,
-        &[midi::poly_pressure(group(0), ch(0), 60, 0x8000_0000)],
+        &[midi::poly_pressure(
+            Address::new(group(0), ch(0)),
+            60,
+            0x8000_0000,
+        )],
     );
     assert!(
         matches!(before[..], [Seen::Pressure { id, .. }] if id == first),
@@ -251,16 +259,32 @@ fn a_detach_then_a_note_on_is_a_new_note_that_alone_hears_the_controller() {
     assert!(
         block(
             &mut stager,
-            &[midi::per_note_management(group(0), ch(0), 60, true, false)]
+            &[Ump::from(Message::midi2(
+                Address::new(group(0), ch(0)),
+                Voice2::PerNoteManagement {
+                    note: NoteNumber::of(60),
+                    detach: true,
+                    reset: false
+                }
+            ))]
         )
         .is_empty()
     );
-    let second = note_on_id(&block(&mut stager, &[midi::note_on(group(0), ch(0), 60, 0x8000)])[0]);
+    let second = note_on_id(
+        &block(
+            &mut stager,
+            &[midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000)],
+        )[0],
+    );
     assert_ne!(second, first);
 
     let after = block(
         &mut stager,
-        &[midi::poly_pressure(group(0), ch(0), 60, 0x4000_0000)],
+        &[midi::poly_pressure(
+            Address::new(group(0), ch(0)),
+            60,
+            0x4000_0000,
+        )],
     );
     assert!(
         matches!(after[..], [Seen::Pressure { id, .. }] if id == second),
@@ -272,8 +296,14 @@ fn a_detach_then_a_note_on_is_a_new_note_that_alone_hears_the_controller() {
 #[test]
 fn a_note_off_names_no_note() {
     let mut stager = Stager::new(1);
-    block(&mut stager, &[midi::note_on(group(0), ch(0), 60, 0x8000)]);
-    let seen = block(&mut stager, &[midi::note_off(group(0), ch(0), 60, 0)]);
+    block(
+        &mut stager,
+        &[midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000)],
+    );
+    let seen = block(
+        &mut stager,
+        &[midi::note_off(Address::new(group(0), ch(0)), 60, 0)],
+    );
     assert_eq!(seen, [Seen::NoteOff { bus: 0, id: -1 }]);
 }
 
@@ -286,13 +316,23 @@ fn values_told_before_a_note_on_are_its_initial_events() {
     let held = block(
         &mut stager,
         &[
-            midi::per_note_controller(group(0), ch(2), 64, 74, 0x8000_0000, true),
-            midi::poly_pressure(group(0), ch(2), 64, 0x4000_0000),
+            Ump::from(Message::midi2(
+                Address::new(group(0), ch(2)),
+                Voice2::RegisteredPerNote {
+                    note: NoteNumber::of(64),
+                    controller: RegisteredPerNoteController::from(74),
+                    value: ControlValue::CENTER,
+                },
+            )),
+            midi::poly_pressure(Address::new(group(0), ch(2)), 64, 0x4000_0000),
         ],
     );
     assert!(held.is_empty(), "no note sounds yet: {held:?}");
 
-    let seen = block(&mut stager, &[midi::note_on(group(0), ch(2), 64, 0x8000)]);
+    let seen = block(
+        &mut stager,
+        &[midi::note_on(Address::new(group(0), ch(2)), 64, 0x8000)],
+    );
     assert_eq!(seen.len(), 3, "{seen:?}");
     let id = note_on_id(&seen[0]);
     let mut brightness = None;
@@ -328,17 +368,20 @@ fn values_told_before_a_note_on_are_its_initial_events() {
 #[test]
 fn per_note_pitch_and_the_pitch_attribute_are_tunings() {
     let mut stager = Stager::new(1);
-    block(&mut stager, &[midi::note_on(group(0), ch(0), 60, 0x8000)]);
+    block(
+        &mut stager,
+        &[midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000)],
+    );
     let seen = block(
         &mut stager,
-        &[midi::per_note_controller(
-            group(0),
-            ch(0),
-            60,
-            3,
-            (60 << 25) | (1 << 23),
-            true,
-        )],
+        &[Ump::from(Message::midi2(
+            Address::new(group(0), ch(0)),
+            Voice2::RegisteredPerNote {
+                note: NoteNumber::of(60),
+                controller: RegisteredPerNoteController::from(3),
+                value: ControlValue::new((60 << 25) | (1 << 23)),
+            },
+        ))],
     );
     let [Seen::Expression { type_id, value, .. }] = seen[..] else {
         panic!("{seen:?}");
@@ -368,11 +411,20 @@ fn per_note_pitch_and_the_pitch_attribute_are_tunings() {
 #[test]
 fn a_per_note_bend_is_scaled_by_the_channels_sensitivity() {
     let mut stager = Stager::new(1);
-    let id = note_on_id(&block(&mut stager, &[midi::note_on(group(0), ch(3), 60, 0x8000)])[0]);
+    let id = note_on_id(
+        &block(
+            &mut stager,
+            &[midi::note_on(Address::new(group(0), ch(3)), 60, 0x8000)],
+        )[0],
+    );
 
     let seen = block(
         &mut stager,
-        &[midi::per_note_pitch_bend(group(0), ch(3), 60, 0xC000_0000)],
+        &[midi::per_note_pitch_bend(
+            Address::new(group(0), ch(3)),
+            60,
+            0xC000_0000,
+        )],
     );
     let [Seen::Expression { value, .. }] = seen[..] else {
         panic!("{seen:?}");
@@ -381,9 +433,8 @@ fn a_per_note_bend_is_scaled_by_the_channels_sensitivity() {
 
     let seen = block(
         &mut stager,
-        &[midi::registered_rpn(
-            group(0),
-            ch(3),
+        &[midi::registered(
+            Address::new(group(0), ch(3)),
             Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
             PitchBendSensitivity::of(12).to_rpn_bits(),
         )],
@@ -409,9 +460,19 @@ fn a_per_note_bend_is_scaled_by_the_channels_sensitivity() {
 fn a_pitch_then_a_bend_is_one_tuning_from_the_key() {
     for bend_first in [false, true] {
         let mut stager = Stager::new(1);
-        block(&mut stager, &[midi::note_on(group(0), ch(0), 60, 0x8000)]);
-        let pitch = midi::per_note_controller(group(0), ch(0), 60, 3, (60 << 25) | (1 << 24), true);
-        let bend = midi::per_note_pitch_bend(group(0), ch(0), 60, 0xC000_0000);
+        block(
+            &mut stager,
+            &[midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000)],
+        );
+        let pitch = Ump::from(Message::midi2(
+            Address::new(group(0), ch(0)),
+            Voice2::RegisteredPerNote {
+                note: NoteNumber::of(60),
+                controller: RegisteredPerNoteController::from(3),
+                value: ControlValue::new((60 << 25) | (1 << 24)),
+            },
+        ));
+        let bend = midi::per_note_pitch_bend(Address::new(group(0), ch(0)), 60, 0xC000_0000);
         let (first, second) = if bend_first {
             (bend, pitch)
         } else {
@@ -431,14 +492,30 @@ fn a_pitch_then_a_bend_is_one_tuning_from_the_key() {
 #[test]
 fn a_reset_returns_the_notes_values_to_their_defaults() {
     let mut stager = Stager::new(1);
-    let id = note_on_id(&block(&mut stager, &[midi::note_on(group(0), ch(0), 60, 0x8000)])[0]);
+    let id = note_on_id(
+        &block(
+            &mut stager,
+            &[midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000)],
+        )[0],
+    );
     block(
         &mut stager,
-        &[midi::poly_pressure(group(0), ch(0), 60, u32::MAX)],
+        &[midi::poly_pressure(
+            Address::new(group(0), ch(0)),
+            60,
+            u32::MAX,
+        )],
     );
     let seen = block(
         &mut stager,
-        &[midi::per_note_management(group(0), ch(0), 60, false, true)],
+        &[Ump::from(Message::midi2(
+            Address::new(group(0), ch(0)),
+            Voice2::PerNoteManagement {
+                note: NoteNumber::of(60),
+                detach: false,
+                reset: true,
+            },
+        ))],
     );
     let tuning = seen.iter().find_map(|e| match e {
         Seen::Expression {
@@ -455,7 +532,10 @@ fn a_reset_returns_the_notes_values_to_their_defaults() {
         "{seen:?}"
     );
     // The held pressure is gone for the next note.
-    let next = block(&mut stager, &[midi::note_on(group(0), ch(0), 60, 0x8000)]);
+    let next = block(
+        &mut stager,
+        &[midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000)],
+    );
     assert_eq!(next.len(), 1, "{next:?}");
 }
 
@@ -465,15 +545,29 @@ fn a_reset_forgets_the_per_note_state() {
     let mut stager = Stager::new(1);
     block(
         &mut stager,
-        &[midi::poly_pressure(group(0), ch(0), 60, 0x8000_0000)],
+        &[midi::poly_pressure(
+            Address::new(group(0), ch(0)),
+            60,
+            0x8000_0000,
+        )],
     );
-    block(&mut stager, &[midi::note_on(group(0), ch(0), 61, 0x8000)]);
+    block(
+        &mut stager,
+        &[midi::note_on(Address::new(group(0), ch(0)), 61, 0x8000)],
+    );
     stager.reset();
-    let seen = block(&mut stager, &[midi::note_on(group(0), ch(0), 60, 0x8000)]);
+    let seen = block(
+        &mut stager,
+        &[midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000)],
+    );
     assert_eq!(seen.len(), 1, "no initial pressure after a reset: {seen:?}");
     let seen = block(
         &mut stager,
-        &[midi::poly_pressure(group(0), ch(0), 61, 0x8000_0000)],
+        &[midi::poly_pressure(
+            Address::new(group(0), ch(0)),
+            61,
+            0x8000_0000,
+        )],
     );
     assert!(seen.is_empty(), "the old note is forgotten: {seen:?}");
 }
@@ -485,12 +579,23 @@ fn a_reset_forgets_the_per_note_state() {
 #[test]
 fn an_rpn_and_a_bank_are_dropped_and_counted() {
     let mut stager = Stager::new(2);
-    let bank = 5 << 7 | 9;
+    let bank = Bank {
+        msb: U7::of(5),
+        lsb: U7::of(9),
+    };
     let messages = [
-        midi::registered_controller(group(0), ch(1), 0, 0, 12 << 25),
-        midi::registered_controller(group(1), ch(1), 0, 0, 12 << 25),
-        midi::program_change(group(0), ch(0), 3, Some(bank)),
-        midi::program_change(group(0), ch(0), 4, None),
+        midi::registered(
+            Address::new(group(0), ch(1)),
+            Rpn::new(U7::of(0), U7::of(0)),
+            12 << 25,
+        ),
+        midi::registered(
+            Address::new(group(1), ch(1)),
+            Rpn::new(U7::of(0), U7::of(0)),
+            12 << 25,
+        ),
+        midi::program_change(Address::new(group(0), ch(0)), 3, Some(bank)),
+        midi::program_change(Address::new(group(0), ch(0)), 4, None),
     ];
     for (i, message) in messages.into_iter().enumerate() {
         let seen = block(&mut stager, &[message]);
@@ -503,6 +608,11 @@ fn an_rpn_and_a_bank_are_dropped_and_counted() {
 #[test]
 fn a_minted_id_is_above_every_channel_and_key_pair() {
     let mut stager = Stager::new(1);
-    let id = note_on_id(&block(&mut stager, &[midi::note_on(group(0), ch(0), 60, 0x8000)])[0]);
+    let id = note_on_id(
+        &block(
+            &mut stager,
+            &[midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000)],
+        )[0],
+    );
     assert!(u32::try_from(id).unwrap() > NoteId::MAX_CHANNEL_NOTE);
 }

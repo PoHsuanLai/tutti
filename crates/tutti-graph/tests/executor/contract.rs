@@ -20,7 +20,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
-use tutti_fixtures::midi::cc;
+use tutti_fixtures::midi;
 use tutti_graph::contract::{
     Detect, Emitter, Excite, Lookahead, MAX_BLOCK, OFFSETS, ParamEcho, Path, Pulse, Row,
     SAMPLE_RATE,
@@ -30,18 +30,13 @@ use tutti_graph::{
     contract_tests,
 };
 use tutti_types::{ChannelLayout, Frame, Latency, Samples, Tail, UnitParam};
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup, Ump};
+use tutti_ump::{CCNumber, MidiChannel, Ump};
 
 /// A MIDI 2.0 volume controller (CC 7): the event every event row is excited
 /// by. It is not a held key, so a recompile that replaces the feeder closes
 /// nothing at the sink.
 fn pulse_kind() -> EventKind {
-    EventKind::Midi(cc(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        CCNumber::VOLUME,
-        0xC800_0000,
-    ))
+    EventKind::Midi(midi::cc(MidiChannel::FIRST, CCNumber::VOLUME, 0xC800_0000))
 }
 
 fn pulse() -> Excite {

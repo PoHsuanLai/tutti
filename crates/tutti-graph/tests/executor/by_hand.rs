@@ -4,24 +4,24 @@
 //! allocating). A node's unit tests and allocation gates lean on them to
 //! play MIDI and read the transport, so each promise is pinned here.
 
-use tutti_fixtures::midi::{m1_note_off, m1_note_on, note_on};
+use tutti_fixtures::midi;
 use tutti_graph::contract::{Direct, Emitter, drive_input};
 use tutti_graph::{
     Cx, Env, Event, EventKind, Io, Node, Offset, Prepare, Shape, Status, TransportChanges,
     TransportPosition,
 };
 use tutti_types::{Beat, Bpm, ChannelLayout, Frame, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, U7, Ump};
+use tutti_ump::{Message, MidiChannel, NoteNumber, U7, Ump, Voice1};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 /// A MIDI 2.0 Note On, key 60, velocity 0xC800, group 0, channel 0.
 fn note() -> EventKind {
-    EventKind::Midi(note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC800))
+    EventKind::Midi(midi::note_on(MidiChannel::FIRST, 60, 0xC800))
 }
 
 /// A MIDI 1.0 Note On, key 60, velocity 100, group 0, channel 0.
 fn m1_note() -> Ump {
-    m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100))
+    midi::m1_note_on(MidiChannel::FIRST, 60, U7::of(100))
 }
 
 /// One event input, two outputs: output 0 is 1.0 on each event's frame,
@@ -71,7 +71,10 @@ fn drive_in_plays_events_under_the_env() {
         Event::midi(at(3, 64), m1_note()),
         Event::midi(
             at(40, 64),
-            m1_note_off(MidiChannel::FIRST, NoteNumber::of(60), U7::of(0)),
+            Message::midi1(
+                MidiChannel::FIRST,
+                Voice1::note_off(NoteNumber::of(60), U7::of(0)),
+            ),
         ),
     ];
     let got = drive_input(&mut Probe, &env, &[], &[], &[&events]);

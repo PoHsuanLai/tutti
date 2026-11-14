@@ -2418,6 +2418,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tutti-buffers"
+version = "0.0.1"
+dependencies = [
+ "libm",
+ "thiserror 2.0.21",
+ "tutti-fixtures",
+ "tutti-types",
+]
+
+[[package]]
 name = "tutti-clap-ffi"
 version = "0.0.1"
 dependencies = [
@@ -2797,6 +2807,7 @@ dependencies = [
  "tutti-export",
  "tutti-fixtures",
  "tutti-graph",
+ "tutti-midi-protocol",
  "tutti-midi-runtime",
  "tutti-modulation",
  "tutti-nodes",
@@ -2826,6 +2837,7 @@ dependencies = [
  "tutti-clap-test-plugin",
  "tutti-fixtures",
  "tutti-graph",
+ "tutti-midi-protocol",
  "tutti-plugin",
  "tutti-plugin-db",
  "tutti-plugin-ipc",
@@ -2865,6 +2877,7 @@ dependencies = [
  "tracing",
  "tutti-fixtures",
  "tutti-graph",
+ "tutti-midi-protocol",
  "tutti-modulation",
  "tutti-nodes",
  "tutti-plugin-ipc-ffi",
@@ -2897,6 +2910,7 @@ dependencies = [
  "tracing",
  "tutti-clap-test-plugin",
  "tutti-fixtures",
+ "tutti-midi-protocol",
  "tutti-plugin-ipc-ffi",
  "tutti-plugin-types",
  "tutti-rt",
@@ -2953,6 +2967,7 @@ dependencies = [
  "tutti-clap-test-plugin",
  "tutti-fixtures",
  "tutti-graph",
+ "tutti-midi-protocol",
  "tutti-plugin-ipc",
  "tutti-plugin-ipc-ffi",
  "tutti-plugin-types",
@@ -3229,6 +3244,7 @@ dependencies = [
  "tutti-fixtures",
  "tutti-graph",
  "tutti-measure",
+ "tutti-midi-protocol",
  "tutti-nodes",
  "tutti-polysynth",
  "tutti-sampler",

@@ -13,12 +13,14 @@ use tutti_graph::{
     Source, Status, TransportPosition, Unforkable,
 };
 use tutti_graph::{NodeKey, Stamp};
+use tutti_midi_protocol::widen_velocity;
 use tutti_polysynth::{PolySynth, SynthConfig};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
-use tutti_ump::BendValue;
-use tutti_ump::{Bank, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice2};
+use tutti_ump::{
+    Address, Bank, BendValue, CCNumber, Message, MidiChannel, MidiGroup, U7, Ump, Voice2,
+};
 
 const BLOCK: usize = 256;
 const RATE: SampleRate = SampleRate::SR_48K;
@@ -36,15 +38,18 @@ fn unit() -> SoundFontUnit {
 
 fn cc(channel: u8, controller: u8, value: u8) -> Ump {
     midi::cc(
-        G,
-        MidiChannel::of(channel),
+        Address::new(G, MidiChannel::of(channel)),
         CCNumber::of(controller),
         u32::from(value) << 25,
     )
 }
 
 fn note_on() -> Ump {
-    midi::note_on(G, MidiChannel::of(0), 60, midi::wide_velocity(100))
+    midi::note_on(
+        Address::new(G, MidiChannel::of(0)),
+        60,
+        widen_velocity(U7::of(100)).get(),
+    )
 }
 
 /// An inlet at key 1 feeding the instrument at key 2, whose two main
@@ -145,10 +150,17 @@ fn decoded(u: Ump) -> (MidiChannel, Voice2) {
 fn the_unit_chases_its_programs_banks_controllers_and_wheels() {
     let mut rig = Rig::new(unit());
     rig.send(&[
-        midi::program_change(G, MidiChannel::of(3), 40, Some(2 << 7)),
+        midi::program_change(
+            Address::new(G, MidiChannel::of(3)),
+            40,
+            Some(Bank {
+                msb: U7::of(2),
+                lsb: U7::of(0),
+            }),
+        ),
         cc(3, 7, 90),
         cc(3, 91, 10),
-        midi::pitch_bend(G, MidiChannel::of(3), 0xC000_0000),
+        midi::pitch_bend(Address::new(G, MidiChannel::of(3)), 0xC000_0000),
         // A Bank Select waiting for the next Program Change on channel 5.
         cc(5, 0, 7),
     ]);

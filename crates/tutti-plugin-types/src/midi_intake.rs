@@ -221,12 +221,7 @@ mod tests {
     }
 
     fn note() -> WireMidi {
-        wire(midi::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            midi::MID_VELOCITY,
-        ))
+        wire(midi::note_on(MidiChannel::FIRST, 60, 0x8000))
     }
 
     /// **Past the cap, events are dropped and reported, without allocating.**
@@ -425,16 +420,11 @@ mod tests {
     }
 
     fn on(key: u8) -> WireMidi {
-        wire(midi::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            key,
-            0xFFFF,
-        ))
+        wire(midi::note_on(MidiChannel::FIRST, key, 0xFFFF))
     }
 
     fn off(key: u8) -> WireMidi {
-        wire(midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, key, 0))
+        wire(midi::note_off(MidiChannel::FIRST, key, 0))
     }
 
     /// A list full of note-ons takes a note-off over the note-on of its own

@@ -7,7 +7,7 @@
 //! The pitch is read off the sine of the built fonts (441 Hz at key 69, one
 //! voice a zone); the level off the summed magnitude of a render.
 
-mod support;
+use crate::support;
 
 use support::font::{Inst, Preset, font, one_preset};
 use support::rig::{Rig, timgm6mb};

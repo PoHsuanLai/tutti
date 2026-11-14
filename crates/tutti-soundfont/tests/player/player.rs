@@ -2,8 +2,8 @@
 //! SoundFont, driven through MIDI 1.0 messages as a keyboard sends them.
 //!
 
+use crate::support;
 use tutti_ump::{BendValue, ControlValue};
-mod support;
 
 use std::sync::Arc;
 use support::rig::{Rig, timgm6mb};

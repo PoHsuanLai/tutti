@@ -4,8 +4,8 @@
 //! filtered by device id (M1 p.40). The font's sample is a looped sine, 441 Hz at
 //! key 69.
 
+use crate::support;
 use tutti_ump::ControlValue;
-mod support;
 
 use std::sync::Arc;
 use support::font::{Inst, Preset, font};

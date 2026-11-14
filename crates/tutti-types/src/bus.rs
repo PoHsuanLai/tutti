@@ -36,23 +36,12 @@ pub struct BusTopology {
 }
 
 /// A topology too wide for one bus, refused by `BusTopology`'s `TryFrom`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{width} channels is wider than a bus ({})", MAX_BUS_CHANNELS)]
 pub struct BusTooWide {
     /// How many channels the refused list has.
     pub width: usize,
 }
-
-impl core::fmt::Display for BusTooWide {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "{} channels is wider than a bus ({MAX_BUS_CHANNELS})",
-            self.width
-        )
-    }
-}
-
-impl std::error::Error for BusTooWide {}
 
 impl BusTopology {
     /// A bus with no channels.

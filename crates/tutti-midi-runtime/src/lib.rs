@@ -31,14 +31,16 @@
 //!   the host's outbound path is its own).
 //! - [`ClockMaster`], [`JrClock`] and [`JrStamper`]: engine-produced MIDI *out*
 //!   (Beat Clock, MTC, JR timestamps).
-//! - [`MidiClockDecoder`], [`MtcDecoder`], [`SmpteTimecode`] and
-//!   [`SmpteFrameRate`]: the inbound half of sync (Beat Clock and MTC decoders),
-//!   beside the master that sends them.
+//! - [`MidiClockDecoder`], [`MtcDecoder`] and [`SmpteTimecode`]: the inbound half of
+//!   sync (Beat Clock and MTC decoders), beside the master that sends them.
+//! - [`ClockFollower`]: what a transport that follows an outside Beat Clock or MTC does
+//!   (tempo, play, stop, locate, lock), as a pure state machine; the session places it.
 //! - [`MpeIngest`]: the inbound state (`live`) that rewrites classic-MPE channel
 //!   spread into native MIDI 2.0 per-note messages.
 //!
 //! The MPE zone types (`MpeMode`, `MpeZoneConfig`, ...) are
 //! `tutti-midi-protocol`'s; `MidiIngestNode::with_mpe` takes a `MpeMode` from there.
+//! So is the `SmpteFrameRate` of [`SmpteTimecode`].
 //!
 //! ## What it does not own
 //!
@@ -246,8 +248,8 @@ pub use schedule::{
     MidiClipNode, TimedHarmony, TimedMidiEvent,
 };
 pub use sync::{
-    ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteFrameRate, SmpteTimecode,
-    UnknownFrameRate,
+    ClockEvent, ClockFollower, ClockKind, ClockPosition, ClockTransportState, MidiClockDecoder,
+    MtcDecoder, SmpteTimecode,
 };
 pub use tempo_follower::{Followed, TempoFollower, TempoSource};
 pub use traits::MidiOut;

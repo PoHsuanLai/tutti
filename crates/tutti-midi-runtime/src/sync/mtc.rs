@@ -8,7 +8,7 @@
 //! and inferred tempo) is [`MidiClockDecoder`](crate::MidiClockDecoder). A device sends one or the
 //! other, and which you decode is decided by the source, not by preference.
 
-use super::SmpteFrameRate;
+use tutti_midi_protocol::{MtcRate, SmpteFrameRate};
 use tutti_types::Seconds;
 use tutti_ump::{Message, System, Ump};
 
@@ -266,12 +266,7 @@ impl MtcDecoder {
         let hours = hours_low | ((hours_high_and_rate & 0x01) << 4);
         let rate_bits = (hours_high_and_rate >> 1) & 0x03;
 
-        let frame_rate = match rate_bits {
-            0 => SmpteFrameRate::Fps24,
-            1 => SmpteFrameRate::Fps25,
-            2 => SmpteFrameRate::Fps2997Df,
-            _ => SmpteFrameRate::Fps30,
-        };
+        let frame_rate = SmpteFrameRate::from(MtcRate::masked(rate_bits));
 
         // A position the wire framed but no clock reads (hour 28, frame 31) is
         // a corrupt frame: it is dropped, and `timecode` keeps its last value.

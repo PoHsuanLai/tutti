@@ -299,6 +299,16 @@ pub enum MidiError {
     #[error("the session is not following a tempo")]
     NotFollowing,
 
+    /// `Midi::unfollow_clock` with no clock being followed.
+    #[error("the session is not following a MIDI clock")]
+    NotFollowingClock,
+
+    /// A tempo has one source: `Midi::follow_tempo` and a Beat Clock
+    /// `Midi::follow_clock` each publish the tempo map, so one is refused while
+    /// the other is followed.
+    #[error("another follower already publishes the tempo; unfollow it first")]
+    TempoSourceTaken,
+
     /// The hardware input's routes have one declarer: the session's own
     /// (`Midi::route`, `Midi::set_route_fallback`) or a host's
     /// (`Midi::set_routes`), not both at once.

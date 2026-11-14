@@ -135,6 +135,7 @@ mod narrow;
 mod narrower;
 mod scale;
 mod sensitivity;
+mod smpte;
 mod translator;
 mod tuning;
 mod unit;
@@ -147,6 +148,7 @@ pub use mpe::{MpeMode, MpeZone, MpeZoneConfig, MpeZones};
 pub use narrow::{narrow_bend, narrow_value, narrow_velocity};
 pub use narrower::Narrower;
 pub use sensitivity::PitchBendSensitivity;
+pub use smpte::{MtcRate, SmpteFrameRate, UnknownFrameRate};
 pub use translator::Translator;
 pub use tuning::{
     ChannelMask, KeyChange, KeyChanges, KeyTable, MAX_KEY_CHANGES, NotFrequencyData, OctaveOffsets,
@@ -157,8 +159,8 @@ pub use unit::{
     unit_f32_to_value, unit_f32_to_velocity, value_to_unit_f32, velocity_to_unit_f32,
 };
 pub use universal::{
-    Addressed, Addressee, BadChecksum, GeneralMidi, Heard, NotSysexDeviceId, Read, Recipient,
-    SysexDeviceId, Universal, UniversalReader, read,
+    Addressed, Addressee, BadChecksum, GeneralMidi, Heard, MtcFullMessage, NotSysexDeviceId, Read,
+    Recipient, SysexDeviceId, Universal, UniversalReader, read,
 };
 pub use voice::{
     channel_voice, widen, widen_bend, widen_bytes, widen_message, widen_value, widen_velocity,

@@ -29,7 +29,7 @@
 use tutti_graph::{Continuity, Cx, Offset, TransportPosition};
 use tutti_tempo::TempoView;
 use tutti_types::Samples;
-use tutti_types::{Beat, Bpm, SampleRate, SegmentOrigin};
+use tutti_types::{Beat, Bpm, SampleRate, SegmentOrigin, first_frame_at_or_after};
 use tutti_types::{Meter, MeterMap};
 
 use std::sync::Arc;
@@ -275,7 +275,12 @@ fn played_between(
         if !beats.is_finite() {
             return None;
         }
-        let frames_at = |tempo: Bpm| (beats * 60.0 / tempo.get() * rate.get()).round();
+        // The engine seats a change on the first frame at or after its time
+        // ([`first_frame_at_or_after`]) with the map's beat there, so a
+        // slowing change's beats at `from`'s tempo fall short of the frames
+        // by under one: the count is that rule's, not a rounding.
+        let frames_at =
+            |tempo: Bpm| first_frame_at_or_after(beats * 60.0 / tempo.get() * rate.get()) as f64;
         let least = frames_at(from.tempo.max(to.tempo));
         let room = gap.saturating_sub(usize::try_from(b.frame.get()).ok()?) as f64;
         // More than the fewest is not capped, so the check below re-seats it.
@@ -1488,6 +1493,39 @@ mod tests {
             read_firsts(&blocks),
             [2_400_000, 2_400_064, 2_400_096, 2_400_160].map(Some)
         );
+    }
+
+    /// **A tempo-map change between two frames reads as continuous playback**:
+    /// the engine seats the change on the first frame at or after its time
+    /// ([`first_frame_at_or_after`](tutti_types::first_frame_at_or_after)) at
+    /// the map's beat there, so two reads a block apart over it are exactly
+    /// the block's frames apart, whatever the fraction of a frame the change
+    /// fell at. Each change here is at `x.fraction` frames into a 64-frame
+    /// block, 120 BPM changing to a slower or a faster tempo.
+    #[test]
+    fn a_tempo_change_between_frames_counts_exactly_the_frames_played() {
+        const LEN: usize = 64;
+        let rate = 48_000.0;
+        for to_bpm in [90.0, 60.0, 40.0, 240.0, 360.0] {
+            for fraction in [0.1, 0.3, 0.5, 0.7, 0.9] {
+                let x = 31.0 + fraction;
+                let (old, new) = (120.0 / 60.0 / rate, to_bpm / 60.0 / rate);
+                let change_beat = 4.0;
+                let mut h = Host::new(true, 120.0, change_beat - x * old);
+                let seated = change_beat + (32.0 - x) * new;
+                let first = h.block(LEN, &[(32, Cmd::Seek(seated)), (32, Cmd::Tempo(to_bpm))]);
+                let blocks = [first, h.block(LEN, &[]), h.block(LEN, &[])];
+                let got = read_firsts(&blocks);
+                let steps: Vec<i64> = got
+                    .windows(2)
+                    .map(|w| w[1].unwrap() - w[0].unwrap())
+                    .collect();
+                assert_eq!(
+                    steps, [LEN as i64; 2],
+                    "120 -> {to_bpm} BPM at frame {x}: {got:?}"
+                );
+            }
+        }
     }
 
     /// **A tempo ramp that speeds up inside one chunk keeps project time**:

@@ -250,8 +250,7 @@ pub enum SessionEvent {
     /// failed to. See [`SamplerEvent`](crate::SamplerEvent).
     #[cfg(feature = "sampler")]
     Sampler(crate::SamplerEvent),
-    /// A hosted plugin's event, by area (design 029 section 3.3, design 030
-    /// convention 1): what the plugin reported (its own edit of a parameter, a
+    /// A hosted plugin's event, by area: what the plugin reported (its own edit of a parameter, a
     /// new tail) and every transition of its life (died, reloading, recovered,
     /// gave up). See [`PluginEvent`](crate::PluginEvent).
     #[cfg(feature = "plugin")]

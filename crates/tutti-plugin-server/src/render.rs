@@ -1,4 +1,4 @@
-//! The render thread (doc 029 section 6.5).
+//! The render thread.
 //!
 //! The server runs two threads once the host has connected its audio and
 //! control connections:
@@ -14,8 +14,8 @@
 //!
 //! What crosses between them:
 //!
-//! - **The Processor** travels through `tutti_rt`'s handoff (doc 016 section
-//!   2.6): the main thread lends it at an activation and recalls it before a
+//! - **The Processor** travels through `tutti_rt`'s handoff: the main thread lends it at an
+//!   activation and recalls it before a
 //!   deactivation, and this thread trades it at its next poll (between blocks,
 //!   and every [`RENDER_WAIT`] while the host is quiet, so a recall is never
 //!   left waiting for a block).
@@ -458,7 +458,7 @@ impl RenderSide {
                 })
                 .map(Some)
             }
-            // The plugin forgets its signal history (design 016 section 6.2),
+            // The plugin forgets its signal history,
             // in order with the blocks on this connection, so a reset is never
             // reordered against a block. The pipeline is left alone, and the
             // host depends on that: clearing it on a seek is entirely the

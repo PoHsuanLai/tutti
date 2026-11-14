@@ -114,7 +114,7 @@ fn a_plugins_latency_is_the_sessions_and_follows_the_plugin() {
 }
 
 /// **The graph holds the tail ceiling the plugin claims** (`clap.tail`), apart
-/// from its latency (doc 023 step 2): the node's shape declares it through
+/// from its latency: the node's shape declares it through
 /// `Processing::ceiling`, an unmeasured plugin's claim, and the session's
 /// phase leaves it alone while the plugin's figure stands.
 #[test]

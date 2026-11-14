@@ -117,7 +117,7 @@ fn au(path: &Path) -> Result<Vec<PluginDescriptor>, String> {
     tutti_au_host::AuLoaded::describe_all(path).map_err(|e| e.to_string())
 }
 
-/// [`describe`], then measure each plugin the file holds (doc 023 section 6):
+/// [`describe`], then measure each plugin the file holds:
 /// the descriptors come back with [`PluginDescriptor::measured`] set where the
 /// plugin could be measured, and `None` where it could not (it would not load
 /// for a render, has no audio output, or failed a block).

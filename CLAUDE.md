@@ -156,6 +156,8 @@ std only. A rule the compiler already enforces is not a gate.
   agreeing with `new`, serde through `try_from`, and named `clamped`/`masked` only where a
   hot path or the wire needs them. No public field, no infallible `From<Raw>`. Test it with
   `tutti_fixtures::check_range_contract`.
+- Write a new range-checked type with `tutti_types::ranged!`, never by hand or with a
+  crate-local macro; a hand-written one moves to it when its file is touched.
 - Make a wrong value unwritable before adding a runtime check for it.
 
 ### Edges and buffers

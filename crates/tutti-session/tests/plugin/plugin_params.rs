@@ -1,4 +1,4 @@
-//! A hosted plugin's parameters through the session's views (design 029 step 3):
+//! A hosted plugin's parameters through the session's views:
 //! `Plugin::params`, `Param`, `TypedParam` and `ParamGesture`, over a fake
 //! backend that declares its parameters and records what the host sets (no
 //! `plugin-server`), hosted at a node with `Graph::host_plugin`.

@@ -155,8 +155,8 @@ pub fn latency_applied<F: Format>() {
     }
 }
 
-/// A reset makes the plugin forget its signal history (design 016 §6.2, case
-/// I1): an impulse in the delay line before the reset never comes out after it.
+/// A reset makes the plugin forget its signal history: an impulse in the delay line before the
+/// reset never comes out after it.
 /// The oracle is the spec's own delay, [`spec::LATENCY`]; the silence after the
 /// reset is longer than it, so a remembered impulse would be heard.
 /// Spec: clap.plugin.reset, vst3.IAudioProcessor.setProcessing, vst2.eff.StopProcess, au.select.AudioUnitReset
@@ -258,7 +258,7 @@ fn assert_reads<F: Format>(got: Option<f64>, want: f64, what: &str) {
 }
 
 /// The conversion between a normalized value and the plugin's plain one is the
-/// format's own (design 029 §6.1), whatever shape the plugin gives it.
+/// format's own, whatever shape the plugin gives it.
 ///
 /// The figures are [`spec::Tone`]'s: VST3 answers the plugin's decreasing
 /// exponential (`20000` at 0, `20` at 1, not the line between them), CLAP the

@@ -199,6 +199,22 @@ pub enum ConnectError {
         /// The root's width.
         root_width: usize,
     },
+    /// A main bus narrower than the root has no placement on the root's
+    /// channels.
+    #[error("{from:?}'s main output has no place on the root: {cause}")]
+    RootFold {
+        /// The source node.
+        from: tutti_graph::NodeKey,
+        /// Why its topology does not fold onto the root's.
+        cause: tutti_types::FoldError,
+    },
+    /// A main bus narrower than the root folds onto it only with weights (a
+    /// centre into a root with none): a weighted fold is a bus edge.
+    #[error("{from:?}'s main output folds onto the root only with weights; that is a bus edge")]
+    RootWeighted {
+        /// The source node.
+        from: tutti_graph::NodeKey,
+    },
     /// A bus edge was refused.
     #[error(transparent)]
     Bus(#[from] tutti_graph::BusError),

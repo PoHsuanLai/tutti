@@ -2,7 +2,7 @@
 //! ([`IpcController`]): the same calls either way, answered by the bridge.
 //!
 //! None of them reads its [`MainThread`] token: the bridge answers from any
-//! thread (design 021 §10.4 (d)), and the token is the in-process trait's
+//! thread, and the token is the in-process trait's
 //! proof, not a hop. A caller with no token uses the bridge directly
 //! ([`Ipc::bridge`]).
 

@@ -347,7 +347,7 @@ fn project_param_info(info: ClapParamInfo) -> tutti_plugin_types::ParameterInfo 
 }
 
 /// What a CLAP parameter's flags say it measures: an enumerated choice, and
-/// nothing else, because `clap.params` carries no unit (doc 023 §5.2).
+/// nothing else, because `clap.params` carries no unit.
 fn declared_measures(flags: ClapParamFlags) -> Option<tutti_plugin_types::ParamUnit> {
     flags
         .contains(ClapParamFlags::IS_ENUM)

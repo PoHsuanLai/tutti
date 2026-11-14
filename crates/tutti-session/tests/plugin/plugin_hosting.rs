@@ -36,8 +36,8 @@ fn set_server(path: impl AsRef<std::ffi::OsStr>) {
     unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", path) };
 }
 
-/// **A blacklisted plugin is refused at load, not at open** (design 029 step
-/// 6): the catalog opens nothing, so the refusal is the load's. A load that
+/// **A blacklisted plugin is refused at load, not at open**: the catalog opens nothing, so the
+/// refusal is the load's. A load that
 /// names a catalog that blacklists the plugin fails with the recorded reason,
 /// before any server is looked for (none can be found here, which would be
 /// `ServerNotFound`); the same ref loaded with no catalog is admitted, and so

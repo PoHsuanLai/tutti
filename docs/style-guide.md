@@ -192,7 +192,7 @@ until it is un-parked. `vendor/` is third-party and never restyled.
 - **D9. Rustdoc is the documentation** (owner, 2026-11-13). What a reader needs
   to use or change an item lives in its rustdoc: the item's doc, its module's
   doc, or its crate's doc. A comment or doc never points elsewhere for it: no
-  "doc 013", "design 021 §5", "as built (T2)", plan item numbers or lane
+  "doc 013", "design 0NN §5", "as built (T2)", plan item numbers or lane
   names, which rustdoc cannot render and a reader cannot follow. A design
   decision a user must know (why a type refuses something, what a guarantee
   costs) is written where the item is, in a sentence. `docs/design/` is being

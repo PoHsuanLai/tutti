@@ -754,8 +754,8 @@ fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
     );
 }
 
-/// **A removal, a commit and an update are any thread's** (design 029 section
-/// 3.2): no path of `Session` frees a plugin, so none asserts the main thread.
+/// **A removal, a commit and an update are any thread's**: no path of `Session` frees a plugin,
+/// so none asserts the main thread.
 /// What a plugin's removal retires waits in the graveyard for `MainSession`
 /// (`tests/plugin/main_view.rs`), and a format hands its in-process release to
 /// the main thread; the session's own paths run wherever the session is.

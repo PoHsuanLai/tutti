@@ -175,7 +175,7 @@ std only. A rule the compiler already enforces is not a gate.
 
 ### Plugins
 
-- A main-thread entry takes `&tutti_plugin_types::MainThread`; holding one is the proof.
+- A main-thread entry takes a `tutti_plugin_types::MainThreadMarker`; holding one is the proof.
 - A format host is a `Loaded` typestate whose `activate` splits a plugin into a realtime
   `Processor` and a main-thread `Controller`.
 - The plugin-server is one `Served<F: OutOfProcess>`; VST2 is not served.

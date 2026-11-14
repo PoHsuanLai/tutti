@@ -23,7 +23,6 @@ use crate::tuning::A4_FREQ;
 use crate::unison::MAX_UNISON_VOICES;
 use crate::{FilterModConfig, FilterType, SynthConfig};
 use crate::{MpeVoiceState, UnisonEngine, UnisonVoiceParams, UnisonVoices};
-use tutti_midi_protocol::MpeMode;
 use tutti_types::{
     Amplitude, Depth, Hz, Pan, Phase, PhaseIncrement, Resonance, SampleRate, Seconds, Semitones,
 };
@@ -221,7 +220,7 @@ impl SynthVoice {
             lfo_phase: Phase::START,
             envelope_level: 0.0,
             active: false,
-            mpe: MpeVoiceState::new(config.mpe != MpeMode::Disabled),
+            mpe: MpeVoiceState::new(),
             base_note_freq: A4_FREQ,
             tuned: None,
             tune: Semitones(0.0),
@@ -539,23 +538,6 @@ impl SynthVoice {
     /// controllers snap back to the note-on baseline.
     pub(crate) fn reset_mpe(&mut self) {
         self.mpe.reset();
-    }
-
-    /// Whether this voice applies its per-note (MPE) state at render time.
-    ///
-    /// Test-only: production code asks [`PolySynth::mpe`], which reads
-    /// the config the voices are built from. This observes that a runtime toggle
-    /// actually reached an already-sounding voice.
-    ///
-    /// [`PolySynth::mpe`]: crate::PolySynth::mpe
-    #[cfg(test)]
-    pub(crate) fn mpe_enabled(&self) -> bool {
-        self.mpe.is_enabled()
-    }
-
-    /// Turns per-note (MPE) response on or off; off also resets it.
-    pub(crate) fn set_mpe_enabled(&mut self, enabled: bool) {
-        self.mpe.set_enabled(enabled);
     }
 
     /// Override this voice's pitch to an absolute frequency: the note's

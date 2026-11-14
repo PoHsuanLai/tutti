@@ -2,7 +2,7 @@
 //! one MPE mode, a take recorded with `s.midi().record`, its placement, and a
 //! saved route rule.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::common::{Seen, Tap, blocks, offline};
 use tutti_fixtures::midi;
@@ -10,12 +10,36 @@ use tutti_graph::{
     Cx, EventCapacity, ForkByClone, Instrument, IntoNode, Io, Node, NodeParts, Prepare, Shape,
     Status,
 };
-use tutti_midi_protocol::MpeMode;
-use tutti_session::{MidiError, Session, SessionInstrument, SessionNode, TakePlacement};
-use tutti_types::{ChannelLayout, Frame, MaxBlock, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity};
+use tutti_midi_runtime::TimedMidiEvent;
+use tutti_session::{MidiError, Session, SessionNode, TakePlacement};
+use tutti_types::{Beat, ChannelLayout, Frame, MaxBlock, SampleRate, Samples};
+use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity, Voice2};
 
 const RATE: f64 = 48_000.0;
+
+/// Plays as an instrument (five outputs and an event input).
+struct Probe(ForkByClone<Five>);
+
+#[derive(Clone)]
+struct Five;
+impl Node for Five {
+    fn shape(&self) -> Shape {
+        Shape::source_unassigned(ChannelLayout::STEREO).with_events(1, 0)
+    }
+    fn prepare(&mut self, _: &Prepare) {}
+    fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
+        Status::Silent
+    }
+    fn reset(&mut self) {}
+}
+impl IntoNode for Probe {
+    type Controls = ();
+    fn into_parts(self) -> NodeParts<()> {
+        self.0.into_parts()
+    }
+}
+impl Instrument for Probe {}
+impl SessionNode for Probe {}
 
 // --- Recording a take --------------------------------------------------------
 
@@ -84,7 +108,7 @@ fn a_take_records_the_live_input_on_its_frames_and_the_target_still_hears_it() {
 fn a_take_of_an_instrument_records_what_its_handle_plays() {
     let mut s = offline();
     let mut synth = s
-        .add_instrument(Probe(ForkByClone(Five), Arc::default()))
+        .add_instrument(Probe(ForkByClone(Five)))
         .expect("an instrument")
         .handle;
     let mut take = s
@@ -118,7 +142,7 @@ fn a_take_of_an_instrument_records_what_its_handle_plays() {
 fn an_instrument_has_its_handles_keys_and_no_second_live_input() {
     let mut s = offline();
     let synth = s
-        .add_instrument(Probe(ForkByClone(Five), Arc::default()))
+        .add_instrument(Probe(ForkByClone(Five)))
         .expect("an instrument")
         .handle;
     let key = synth.node().erase();
@@ -141,7 +165,7 @@ fn an_instrument_has_its_handles_keys_and_no_second_live_input() {
 fn an_instruments_typed_key_takes_a_wire_of_the_callers_own() {
     let mut s = offline();
     let synth = s
-        .add_instrument(Probe(ForkByClone(Five), Arc::default()))
+        .add_instrument(Probe(ForkByClone(Five)))
         .expect("an instrument")
         .handle;
     let (inlet, _writer) = s.graph().open_event_inlet(EventCapacity::of(8));
@@ -196,91 +220,145 @@ fn a_take_is_placed_by_the_documented_figures() {
 
 // --- MPE ---------------------------------------------------------------------
 
-/// Records the MPE mode it is built in; plays as an instrument (five outputs
-/// and an event input).
-struct Probe(ForkByClone<Five>, Arc<Mutex<Vec<MpeMode>>>);
-
-#[derive(Clone)]
-struct Five;
-impl Node for Five {
-    fn shape(&self) -> Shape {
-        Shape::source_unassigned(ChannelLayout::STEREO).with_events(1, 0)
-    }
-    fn prepare(&mut self, _: &Prepare) {}
-    fn process(&mut self, _: &Cx<'_>, _: Io<'_>) -> Status {
-        Status::Silent
-    }
-    fn reset(&mut self) {}
-}
-impl IntoNode for Probe {
-    type Controls = ();
-    fn into_parts(self) -> NodeParts<()> {
-        self.0.into_parts()
-    }
-}
-impl Instrument for Probe {}
-impl SessionNode for Probe {}
-impl SessionInstrument for Probe {
-    fn bind_mpe(self, mode: MpeMode) -> Self {
-        self.1.lock().unwrap().push(mode);
-        self
-    }
+/// A clip of the first Group's events: each `(beat, packet)`.
+fn clip(events: impl IntoIterator<Item = (f64, tutti_ump::Ump)>) -> Vec<TimedMidiEvent> {
+    events
+        .into_iter()
+        .map(|(beat, ump)| TimedMidiEvent::new(Beat(beat), ump).unwrap())
+        .collect()
 }
 
-/// **The session's MPE mode is the ingest node's and the instrument's.** The
-/// builder's is the starting mode; `set_mpe` publishes it to the ingest node
-/// and an instrument added after is built in it, one that was added before is
-/// not touched.
+/// What a tap heard, as `(channel, message)` of MIDI 2.0 channel voice.
+fn voices(seen: &Seen) -> Vec<(u8, Voice2)> {
+    seen.lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(_, e)| {
+            let (address, voice) = tutti_midi_protocol::channel_voice(*e)?;
+            Some((address.channel.get(), voice))
+        })
+        .collect()
+}
+
+/// A member channel's note and bend, then the manager's Damper Pedal, of a
+/// lower zone of three members: what the session's mode makes of a clip.
+fn mpe_clip() -> Vec<TimedMidiEvent> {
+    let (g, member) = (MidiGroup::FIRST, MidiChannel::of(1));
+    clip([
+        (0.0, midi::note_on(g, member, 60, 0x8000)),
+        (0.1, midi::pitch_bend(g, member, 0xC000_0000)),
+        (
+            0.2,
+            midi::cc(
+                g,
+                MidiChannel::FIRST,
+                tutti_ump::CCNumber::SUSTAIN,
+                u32::MAX,
+            ),
+        ),
+    ])
+}
+
+fn play_for(s: &mut Session, blocks: usize) {
+    let _ = s.update();
+    crate::common::play(s);
+    crate::common::blocks(s, blocks);
+}
+
+/// **A clip is transformed in the session's MPE mode**: `Midi::play_clip`
+/// wires the clip through an MPE transform that starts in the session's mode
+/// (the builder's here), so a member channel's bend reaches the target as a
+/// per-note bend on the note that channel holds, and the manager's Damper Pedal
+/// as the pedal of every channel of its zone (M1-100 section 2.3.1).
 #[test]
-fn the_sessions_mpe_mode_reaches_the_ingest_and_the_next_instrument() {
-    let rotation = MpeMode::SingleChannelRotation {
-        channel: MidiChannel::of(3),
-    };
+fn a_clip_plays_through_the_sessions_mpe_mode() {
     let mut s = Session::builder()
-        .mpe_mode(rotation)
+        .mpe_mode(midi::lower_zone(3))
         .build_offline(
-            SampleRate::of(RATE),
+            SampleRate::SR_48K,
             ChannelLayout::STEREO,
             MaxBlock::of(Samples(1_024)),
         )
         .expect("builds");
-    assert_eq!(s.midi().mpe(), rotation, "the builder's mode to begin with");
-
-    let built = Arc::new(Mutex::new(Vec::new()));
-    s.add_instrument(Probe(ForkByClone(Five), Arc::clone(&built)))
-        .expect("an instrument");
-    assert_eq!(*built.lock().unwrap(), [rotation]);
-
-    s.midi().set_mpe(MpeMode::Disabled);
-    assert_eq!(s.midi().mpe(), MpeMode::Disabled);
-    s.add_instrument(Probe(ForkByClone(Five), Arc::clone(&built)))
-        .expect("an instrument");
-    assert_eq!(*built.lock().unwrap(), [rotation, MpeMode::Disabled]);
+    assert_eq!(s.midi().mpe(), midi::lower_zone(3));
+    let (target, seen) = crate::common::tap(&mut s);
+    s.midi().play_clip(target, Beat(0.0), mpe_clip()).unwrap();
+    play_for(&mut s, 40);
+    let got = voices(&seen);
+    assert!(
+        got.iter().any(|(c, v)| *c == 1
+            && matches!(v, Voice2::PerNotePitchBend { note, .. } if note.get() == 60)),
+        "{got:?}"
+    );
+    let pedals: Vec<u8> = got
+        .iter()
+        .filter(|(_, v)| {
+            matches!(v, Voice2::ControlChange { controller, .. }
+                if *controller == tutti_ump::CCNumber::SUSTAIN)
+        })
+        .map(|(c, _)| *c)
+        .collect();
+    assert_eq!(pedals, [0, 1, 2, 3]);
 }
 
-/// **A synth added through the session follows the session's MPE mode over its
-/// own configuration.**
-#[cfg(feature = "synth")]
+/// **`set_mpe` reaches a clip already in the graph**: a session that began with
+/// no MPE plays its clip with the manager's pedal on one channel; after
+/// `set_mpe` the same clip's pedal is the zone's, since the transform the clip
+/// was wired through took the new mode. (The mode used to reach only a synth
+/// added afterwards.)
 #[test]
-fn a_synth_added_through_the_session_takes_the_sessions_mpe_mode() {
-    use tutti_polysynth::{PolySynth, SynthConfig};
-    let rotation = MpeMode::SingleChannelRotation {
-        channel: MidiChannel::of(3),
-    };
-    // The synth's own config says rotation on channel 5; the session says 3.
-    let own = MpeMode::SingleChannelRotation {
-        channel: MidiChannel::of(5),
-    };
-    let synth = PolySynth::new(SynthConfig {
-        mpe: own,
-        ..SynthConfig::default()
-    });
-    assert_eq!(synth.mpe(), &own);
-    assert_eq!(
-        SessionInstrument::bind_mpe(synth, rotation).mpe(),
-        &rotation,
-        "the hook overrides the config"
+fn set_mpe_reaches_a_clip_already_in_the_graph() {
+    let mut s = crate::common::offline();
+    let (target, seen) = crate::common::tap(&mut s);
+    s.midi().play_clip(target, Beat(0.0), mpe_clip()).unwrap();
+    let _ = s.update();
+    s.midi().set_mpe(midi::lower_zone(3));
+    assert_eq!(s.midi().mpe(), midi::lower_zone(3));
+    play_for(&mut s, 40);
+    let got = voices(&seen);
+    let pedals = got
+        .iter()
+        .filter(|(_, v)| {
+            matches!(v, Voice2::ControlChange { controller, .. }
+                if *controller == tutti_ump::CCNumber::SUSTAIN)
+        })
+        .count();
+    assert_eq!(pedals, 4, "{got:?}");
+    assert!(
+        got.iter()
+            .any(|(_, v)| matches!(v, Voice2::PerNotePitchBend { .. })),
+        "{got:?}"
     );
+}
+
+/// **The transform is the clip's wiring**: removing the clip takes its
+/// transform out of the graph, and `retarget` moves both to the new target (the
+/// transform still feeds it).
+#[test]
+fn a_clips_transform_goes_with_the_clip_and_follows_a_retarget() {
+    let mut s = crate::common::offline();
+    let (first, _) = crate::common::tap(&mut s);
+    let (second, seen) = crate::common::tap(&mut s);
+    let before = s.graph().node_count();
+    s.midi().play_clip(first, Beat(0.0), mpe_clip()).unwrap();
+    assert_eq!(
+        s.graph().node_count(),
+        before + 2,
+        "the clip and its transform"
+    );
+    let clip = s.midi().clip(first).expect("the clip").erase();
+    s.midi().retarget(clip, second).unwrap();
+    assert!(s.midi().clip(first).is_none());
+    assert_eq!(s.midi().clip(second).map(|k| k.erase()), Some(clip));
+    s.midi().set_mpe(midi::lower_zone(3));
+    play_for(&mut s, 40);
+    assert!(
+        !voices(&seen).is_empty(),
+        "the second target hears the clip"
+    );
+
+    s.remove(clip).unwrap();
+    assert_eq!(s.graph().node_count(), before, "the transform went too");
 }
 
 // --- A saved route rule ------------------------------------------------------

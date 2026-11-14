@@ -54,7 +54,7 @@
 use std::num::{NonZeroU16, NonZeroUsize};
 
 use tutti_midi_protocol::{
-    GeneralMidi, Heard, KeyTable, MpeZones, Timing, TuningMessage, Universal, bend_to_signed_f32,
+    GeneralMidi, Heard, KeyTable, Timing, TuningMessage, Universal, bend_to_signed_f32,
     narrow_value, value_to_unit_f32,
 };
 use tutti_types::{Amplitude, Seconds, Semitones};
@@ -488,8 +488,7 @@ pub enum Command {
     Retune {
         /// The channel.
         channel: MidiChannel,
-        /// The wheel's position times the sensitivity, plus (in an MPE zone's
-        /// member) the master's.
+        /// The wheel's position times the sensitivity, plus the device's master tuning.
         bend: Semitones,
     },
 }
@@ -556,15 +555,6 @@ impl Held {
     }
 }
 
-/// Whether `channel` is `master` itself or a member of the zone `master`
-/// manages (with no zones, only itself).
-fn in_zone(zones: Option<MpeZones>, master: MidiChannel, channel: MidiChannel) -> bool {
-    channel == master
-        || zones
-            .and_then(|z| z.zone_of(channel).copied())
-            .is_some_and(|zone| zone.is_member_channel(channel) && zone.master_channel() == master)
-}
-
 /// The note logic. See the module docs.
 #[derive(Debug)]
 pub struct Voicing {
@@ -574,7 +564,6 @@ pub struct Voicing {
     sustain: [bool; CHANNELS],
     /// What each channel has been told that outlives its notes.
     channels: [ChannelState; CHANNELS],
-    zones: Option<MpeZones>,
     /// The device's own volume, balance and tuning (Universal Device Control).
     master: Master,
     /// The MIDI Tuning Standard's programs and the channels' octave offsets.
@@ -604,7 +593,6 @@ impl Clone for Voicing {
             notes,
             sustain: self.sustain,
             channels: self.channels,
-            zones: self.zones,
             master: self.master,
             tuning: self.tuning.clone(),
             next: self.next,
@@ -630,7 +618,6 @@ impl Voicing {
             rules,
             sustain: [false; CHANNELS],
             channels: [ChannelState::new(rules.bend_range); CHANNELS],
-            zones: None,
             master: Master::new(),
             tuning: Tunings::new(rules.tuning),
             next: 1,
@@ -641,14 +628,6 @@ impl Voicing {
             retired: Vec::with_capacity(2 * polyphony + MAX_SPECS + 2),
             strike_note: NoteId::from_raw(0),
         }
-    }
-
-    /// Which channels are MPE zones (`None`: no MPE). A zone master's pitch
-    /// bend adds to each of its members' own (RP-053); with no zone every
-    /// channel is its own. No command is returned: the instrument sets this
-    /// when it learns the layout.
-    pub fn set_zones(&mut self, zones: Option<MpeZones>) {
-        self.zones = zones;
     }
 
     /// Forgets every note, pedal, controller, bend, held key and per-note
@@ -713,7 +692,7 @@ impl Voicing {
     pub const CHASE_MESSAGES: usize = CHANNELS * (ChannelState::CHASE_MESSAGES + 1);
 
     /// Where `channel`'s pitch stands now: its wheel over its sensitivity, and
-    /// its zone master's if it is a member. What the last
+    /// the device's master tuning. What the last
     /// [`Command::Retune`] for it said.
     #[must_use]
     pub fn channel_pitch(&self, channel: MidiChannel) -> Semitones {
@@ -1600,14 +1579,12 @@ impl Voicing {
         );
     }
 
-    /// A pedal or a panic on `channel`. On a zone's master it is the whole
-    /// zone's: M1-100 section 2.3.1, certain MIDI messages (for example,
-    /// Damper Pedal) affect all Sounding Notes across the Manager Channel and
-    /// all Member Channels, and are sent only on a Zone's Manager Channel. On a member, or on a channel outside any
-    /// zone, it is that channel's alone.
+    /// A pedal or a panic on `channel`: that channel's alone. A zone's
+    /// Manager Channel messages that M1-100 section 2.3.1 makes zone-wide
+    /// arrive here already sent on each channel of the zone, by the MPE
+    /// transform.
     fn effect(&mut self, channel: MidiChannel, effect: Effect) {
-        let zones = self.zones;
-        let covers = move |c: MidiChannel| in_zone(zones, channel, c);
+        let covers = move |c: MidiChannel| c == channel;
         let on_channel = move |n: &Note| covers(n.channel);
         match effect {
             Effect::Sustain(down) => {
@@ -1692,43 +1669,23 @@ impl Voicing {
         }
     }
 
-    /// The master of the zone `channel` is a member of, if any.
-    fn master_of(&self, channel: usize) -> Option<usize> {
-        let channel = MidiChannel::new(channel as u8)?;
-        let zone = self.zones?.zone_of(channel).copied()?;
-        zone.is_member_channel(channel)
-            .then(|| usize::from(zone.master_channel().get()))
-    }
-
-    /// Where `channel`'s pitch stands: its own wheel, its zone master's, and
-    /// the device's master tuning (CA-025), which the percussion channel does
-    /// not take.
+    /// Where `channel`'s pitch stands: its own wheel, and the device's master
+    /// tuning (CA-025), which the percussion channel does not take.
     fn pitch(&self, channel: usize) -> Semitones {
         let own = self.channels[channel].bend.semitones();
-        let zoned = self
-            .master_of(channel)
-            .map_or(own, |m| own + self.channels[m].bend.semitones());
         if self.rules.percussion.is_some_and(|p| p.index() == channel) {
-            zoned
+            own
         } else {
-            zoned + self.master.tuning()
+            own + self.master.tuning()
         }
     }
 
     /// Changes the wheel or the sensitivity of `channel`, and tells the
-    /// instrument where every channel it moves ended up: its own, and, if it is
-    /// a zone master, each member's.
+    /// instrument where it ended up.
     fn bend(&mut self, channel: MidiChannel, change: impl Fn(&mut Bend)) {
-        let ch = channel.index();
-        change(&mut self.channels[ch].bend);
-        for i in 0..CHANNELS {
-            if (i == ch || self.master_of(i) == Some(ch))
-                && let Some(channel) = MidiChannel::new(i as u8)
-            {
-                let bend = self.pitch(i);
-                self.push(Command::Retune { channel, bend });
-            }
-        }
+        change(&mut self.channels[channel.index()].bend);
+        let bend = self.pitch(channel.index());
+        self.push(Command::Retune { channel, bend });
     }
 
     fn release_where(&mut self, which: impl Fn(&Note) -> bool) {
@@ -1754,7 +1711,6 @@ mod tests {
     use super::*;
     use crate::LIVE_NOTES;
     use tutti_midi_protocol::widen;
-    use tutti_midi_protocol::{MpeZoneConfig, PitchBendSensitivity};
     use tutti_ump::BendValue;
     use tutti_ump::NoteVelocity;
     use tutti_ump::{Attribute, CCNumber, Pitch, RegisteredPerNoteController, U7, Voice1};
@@ -2706,23 +2662,6 @@ mod tests {
         );
     }
 
-    /// The layout of `lower` and `upper` member counts (0: no such zone), the
-    /// tests' shorthand for the protocol's [`MpeZones`].
-    fn zones(lower: u8, upper: u8) -> Option<MpeZones> {
-        MpeZones::new(
-            MpeZoneConfig::lower(
-                lower,
-                PitchBendSensitivity::MPE_MASTER_DEFAULT,
-                PitchBendSensitivity::MPE_MEMBER_DEFAULT,
-            ),
-            MpeZoneConfig::upper(
-                upper,
-                PitchBendSensitivity::MPE_MASTER_DEFAULT,
-                PitchBendSensitivity::MPE_MEMBER_DEFAULT,
-            ),
-        )
-    }
-
     // ---- bends -------------------------------------------------------------
 
     fn bend(v: u32) -> Voice2 {
@@ -2891,69 +2830,18 @@ mod tests {
         assert!((retunes(&again)[0].1 - 12.0).abs() < 1e-3);
     }
 
-    /// Under MPE (RP-053, Est: the text is not in the repo; the repo's
-    /// `MpeZoneConfig` documents the same) a zone master's bend adds to each
-    /// member's own, within the zone, and does not replace it.
+    /// A channel's wheel and sensitivity are its own: whatever the instrument
+    /// sums over them (a zone's manager bend, which the MPE transform copies
+    /// onto each member channel) arrives as that channel's own message.
     #[test]
-    fn a_zone_masters_bend_adds_to_each_members_own() {
+    fn a_bend_and_its_range_move_only_their_own_channel() {
         let mut s = Sim::new(POLY);
-        s.core.set_zones(zones(3, 0));
-        // Member 2 bends its own 1 semitone (half travel at range 2).
+        s.send(0, bend(u32::MAX), &One);
         let c = s.send(2, bend(0xC000_0000), &One);
         assert_eq!(retunes(&c), [(2, 1.0)]);
-        // The master bends 2: member 2 sounds 3, members 1 and 3 sound 2.
-        let c = s.send(0, bend(u32::MAX), &One);
-        let r = retunes(&c);
-        assert_eq!(r.len(), 4, "{r:?}");
-        let at = |ch: u8| r.iter().find(|x| x.0 == ch).unwrap().1;
-        assert!((at(0) - 2.0).abs() < 1e-4 && (at(1) - 2.0).abs() < 1e-4);
-        assert!((at(2) - 3.0).abs() < 1e-4 && (at(3) - 2.0).abs() < 1e-4);
-        // Beyond the zone nothing moves.
-        assert!(!r.iter().any(|x| x.0 == 4));
-    }
-
-    /// The master's sensitivity is its own: RPN 0 on the master retunes the
-    /// zone, a member's moves only that member.
-    #[test]
-    fn rpn_0_on_a_master_retunes_the_zone_and_on_a_member_only_itself() {
-        let mut s = Sim::new(POLY);
-        s.core.set_zones(zones(2, 0));
-        s.send(0, bend(u32::MAX), &One);
         let c = s.send(0, rpn0(12.0), &One);
-        assert_eq!(retunes(&c).len(), 3);
-        assert!(retunes(&c).iter().all(|x| (x.1 - 12.0).abs() < 1e-3));
-        let m = s.send(1, rpn0(48.0), &One);
-        assert_eq!(retunes(&m).len(), 1);
-    }
-
-    /// The upper zone counts down from channel 14 to its master 15.
-    #[test]
-    fn the_upper_zone_counts_down() {
-        let mut s = Sim::new(POLY);
-        s.core.set_zones(zones(0, 2));
-        let c = s.send(15, bend(u32::MAX), &One);
-        let chs: Vec<_> = retunes(&c).iter().map(|x| x.0).collect();
-        assert_eq!(chs, [13, 14, 15]);
-    }
-
-    /// A master's reset centres the zone, a member's only itself.
-    #[test]
-    fn a_masters_reset_centres_the_zone() {
-        let mut s = Sim::new(POLY);
-        s.core.set_zones(zones(2, 0));
-        s.send(0, bend(u32::MAX), &One);
-        s.send(1, bend(u32::MAX), &One);
-        assert_eq!(
-            retunes(&s.cc(2, 121, 0)),
-            [(2, 2.0)],
-            "a member's reset leaves the master's bend"
-        );
-        let r = retunes(&s.cc(0, 121, 0));
-        assert_eq!(
-            r,
-            [(0, 0.0), (1, 2.0), (2, 0.0)],
-            "the member's own wheel stays"
-        );
+        assert_eq!(retunes(&c), [(0, 12.0)]);
+        assert_eq!(retunes(&s.cc(1, 121, 0)), [(1, 0.0)]);
     }
 
     /// `reset` returns the wheels and the sensitivities to the rules' own.
@@ -2967,72 +2855,49 @@ mod tests {
         assert!((retunes(&c)[0].1 - 2.0).abs() < 1e-4);
     }
 
-    // ---- zone-wide messages (M1-100 section 2.3.1) ---------------------------
+    // ---- a pedal or a panic is its channel's ----------------------------------
 
-    /// M1-100 section 2.3.1: certain MIDI messages (for example, Damper
-    /// Pedal) affect all Sounding Notes across the Manager Channel and all
-    /// Member Channels, and are sent only on a Zone's Manager Channel. The pedal on the master holds the notes of every member, the
-    /// ones sounding and the ones that start after it, and its release lets
-    /// them go.
+    /// A pedal holds the notes of its own channel and no other: the zone-wide
+    /// reach of a Manager Channel's pedal (M1-100 section 2.3.1) is the MPE
+    /// transform's, which sends it on every channel of the zone.
     #[test]
-    fn a_zone_masters_pedal_holds_every_members_notes() {
+    fn a_pedal_holds_its_own_channels_notes_only() {
         let mut s = Sim::new(POLY);
-        s.core.set_zones(zones(3, 0));
         s.on(1, 60);
         s.on(2, 64);
         s.cc(0, 64, 127);
-        s.on(3, 67);
-        assert!(s.off(1, 60).is_empty());
-        assert!(s.off(2, 64).is_empty());
-        assert!(s.off(3, 67).is_empty());
-        assert_eq!(s.cc(0, 64, 0), [release(1), release(2), release(3)]);
+        assert_eq!(s.off(1, 60), [release(1)]);
+        s.cc(1, 64, 127);
+        assert!(
+            s.off(2, 64).len() == 1,
+            "channel 1's pedal is not channel 2's"
+        );
     }
 
-    /// The master's pedal is the zone's and no wider: a channel outside the
-    /// zone is not held, and a member's own pedal is its own.
+    /// All Notes Off releases the notes of its own channel.
     #[test]
-    fn a_zone_masters_pedal_stops_at_the_zone() {
+    fn all_notes_off_releases_its_own_channels_notes_only() {
         let mut s = Sim::new(POLY);
-        s.core.set_zones(zones(2, 0));
-        s.on(5, 60);
-        s.cc(0, 64, 127);
-        assert_eq!(s.off(5, 60), [release(1)]);
-        s.cc(0, 64, 0);
-        s.on(1, 62);
-        s.cc(2, 64, 127);
-        assert_eq!(s.off(1, 62), [release(2)], "a member's pedal is its own");
-    }
-
-    /// M1-100 section 2.3.1 as above, for All Notes Off (Table 5, CC 123:
-    /// Optional on the Manager Channel): on the master it releases every
-    /// member's notes; on a member, that member's alone.
-    #[test]
-    fn all_notes_off_on_a_zone_master_releases_every_member() {
-        let mut s = Sim::new(POLY);
-        s.core.set_zones(zones(3, 0));
         s.on(1, 60);
         s.on(2, 64);
         s.on(3, 67);
         assert_eq!(s.cc(2, 123, 0), [release(2)]);
-        assert_eq!(s.cc(0, 123, 0), [release(1), release(3)]);
+        assert_eq!(s.cc(0, 123, 0), []);
     }
 
-    /// Reset All Controllers (Table 5, CC 121: Optional on both) on the master
-    /// puts the zone's pedal up, members' held notes included.
+    /// Reset All Controllers puts its own channel's pedal up and no other's.
     #[test]
-    fn reset_all_controllers_on_a_zone_master_lifts_the_zones_pedal() {
+    fn reset_all_controllers_lifts_its_own_channels_pedal_only() {
         let mut s = Sim::new(POLY);
-        s.core.set_zones(zones(2, 0));
         s.on(1, 60);
-        s.cc(0, 64, 127);
+        s.on(2, 62);
+        s.cc(1, 64, 127);
+        s.cc(2, 64, 127);
         s.off(1, 60);
-        assert_eq!(
-            s.cc(0, 121, 0)
-                .iter()
-                .filter(|c| matches!(c, Command::Release { .. }))
-                .count(),
-            1
-        );
+        s.off(2, 62);
+        let c = s.cc(1, 121, 0);
+        assert!(c.contains(&release(1)), "{c:?}");
+        assert!(!c.contains(&release(2)), "{c:?}");
     }
 
     // ---- liveness and cost -----------------------------------------------
@@ -3764,31 +3629,17 @@ mod tests {
         }
     }
 
-    /// Random streams of pitch bends, RPN 0 and resets, with and without MPE
-    /// zones, against a model that keeps the wheel and the sensitivity of each
-    /// channel and sums a member's with its master's: every `Retune` says the
-    /// model's figure, and a bend always retunes its own channel.
+    /// Random streams of pitch bends, RPN 0 and resets against a model that
+    /// keeps the wheel and the sensitivity of each channel: every `Retune`
+    /// says the model's figure, and a bend always retunes its own channel.
     #[test]
     fn random_bend_streams_match_the_model() {
         for stream in 0..200u64 {
             let mut rng =
                 Rng(0xA5A5_1234_5678_9ABC ^ (stream + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-            let (lo, up) = [(0u8, 0u8), (3, 0), (0, 4), (5, 6)][(stream % 4) as usize];
-            let zones = zones(lo, up);
             let mut s = Sim::new(POLY);
-            s.core.set_zones(zones);
             let mut pos = [0.0f64; 16];
             let mut range = [2.0f64; 16];
-            let master = |c: usize| -> Option<usize> {
-                let (lo, up) = (usize::from(lo), usize::from(up));
-                if (1..=lo).contains(&c) {
-                    Some(0)
-                } else if c < 15 && c >= 15 - up {
-                    Some(15)
-                } else {
-                    None
-                }
-            };
             for _ in 0..40 {
                 let c = rng.below(16) as u8;
                 let cu = usize::from(c);
@@ -3810,8 +3661,7 @@ mod tests {
                 };
                 for (ch, got) in retunes(&cmds) {
                     let chu = usize::from(ch);
-                    let want =
-                        pos[chu] * range[chu] + master(chu).map_or(0.0, |m| pos[m] * range[m]);
+                    let want = pos[chu] * range[chu];
                     assert!(
                         (f64::from(got) - want).abs() < 1e-3,
                         "stream {stream}: channel {ch} retuned to {got}, the model says {want}"

@@ -251,7 +251,9 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
     );
     let mut fed = s.graph_ref().sources(EventInPort::new(new, 0)).unwrap();
     fed.sort_by_key(|e| e.node());
-    let mut want = vec![EventOutPort::new(clip, 0), EventOutPort::new(inlet, 0)];
+    // The clip feeds the target through its MPE transform.
+    let transform = s.graph_ref().feed(new, Feeder::Sequencer)[0];
+    let mut want = vec![transform, EventOutPort::new(inlet, 0)];
     want.sort_by_key(|e| e.node());
     assert_eq!(fed, want);
 
@@ -1035,9 +1037,11 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
         .unwrap();
     let clip = s.midi().clip(synth).expect("the target's clip");
     let _ = s.update();
+    // The clip feeds the target through its MPE transform.
+    let transform = s.graph_ref().feed(synth, Feeder::Sequencer)[0];
     assert_eq!(
         sorted(s.graph_ref().sources(input(synth)).unwrap()),
-        sorted(vec![hand.events_out(), EventOutPort::new(clip, 0)]),
+        sorted(vec![hand.events_out(), transform]),
         "the sequencer's clip joins the hand-wired one"
     );
     roll(&s, 9_000);
@@ -1051,7 +1055,7 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
         .unwrap();
     assert_eq!(
         sorted(s.graph_ref().sources(input(synth)).unwrap()),
-        sorted(vec![hand2.events_out(), EventOutPort::new(clip, 0)]),
+        sorted(vec![hand2.events_out(), transform]),
         "the host's call sets its own edges, beside the feed's"
     );
 

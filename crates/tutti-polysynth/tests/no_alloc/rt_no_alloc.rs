@@ -167,7 +167,6 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
 fn polysynth_every_decoded_message_is_allocation_free() {
     let mut synth = Hand::new(PolySynth::new(SynthConfig {
         polyphony: NonZeroUsize::new(8).unwrap(),
-        mpe: crate::support::lower_zone(),
         ..Default::default()
     }));
     let address = Address {

@@ -36,7 +36,8 @@
 //! - [`ClockFollower`]: what a transport that follows an outside Beat Clock or MTC does
 //!   (tempo, play, stop, locate, lock), as a pure state machine; the session places it.
 //! - [`MpeIngest`]: the inbound state (`live`) that rewrites classic-MPE channel
-//!   spread into native MIDI 2.0 per-note messages.
+//!   spread into native MIDI 2.0 per-note messages, and [`MpeTransformNode`], the same
+//!   as a node of one event stream.
 //!
 //! The MPE zone types (`MpeMode`, `MpeZoneConfig`, ...) are
 //! `tutti-midi-protocol`'s; `MidiIngestNode::with_mpe` takes a `MpeMode` from there.
@@ -58,7 +59,12 @@
 //!
 //! MPE lives here as an *ingestion* transform, not as a per-synth state machine:
 //! per M2-104, MPE is an input-edge concern, and synth voices track per-note
-//! expression themselves.
+//! expression themselves. The transform is the one holder of the MPE zones and
+//! the one receiver of the MPE Configuration Message: it also sends a Manager
+//! Channel's zone-wide messages and its bend on each member channel of its zone,
+//! so an instrument reads one channel at a time and holds no zone.
+//! [`MidiIngestNode`] runs it over a device's wire and [`MpeTransformNode`] over
+//! any other event stream (a clip's).
 //!
 //! ## Routing is wiring
 //!
@@ -161,8 +167,8 @@
 //! let mut ingest = MpeIngest::new(lower_zone(7));
 //!
 //! // A note-on claims member channel 1; the map now resolves that channel.
-//! // Each event becomes none, one, or (a bend range) one per member channel,
-//! // each handed to the closure.
+//! // Each event becomes none, one, or (a bend range, a manager's pedal or bend)
+//! // one per member channel, each handed to the closure.
 //! let member = MidiChannel::of(1);
 //! let mut sent = Vec::new();
 //! let on = note_on(MidiGroup::FIRST, member, 60, wide_velocity(100));
@@ -233,7 +239,8 @@ pub use live::{
     DeviceInput, DeviceSlot, InletChange, LIVE_INLET_CAPACITY, MAILBOX_CAPACITY,
     MIDI_INPUT_DENSITY, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS, MidiIngestControls,
     MidiIngestNode, MidiInputPorts, MidiKeys, MidiMailbox, MidiReceiver, MidiSender, MpeIngest,
-    NoFreeSlot, RouteRule, SlotCountMismatch, compile_routes,
+    MpeTransformControls, MpeTransformNode, NoFreeSlot, RouteRule, SlotCountMismatch,
+    compile_routes,
 };
 pub use outbound::{
     CLOCK_EVENT_CAPACITY, ClockControls, ClockMaster, ClockNode, JR_CLOCK_INTERVAL,

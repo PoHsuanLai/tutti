@@ -36,7 +36,6 @@
 
 use tutti_graph::NodeKey;
 use tutti_graph::{EventInletNode, Instrument, ParamSet};
-use tutti_midi_protocol::MpeMode;
 use tutti_midi_runtime::{LIVE_INLET_CAPACITY, MidiKeys};
 use tutti_nodes::BusStripNode;
 use tutti_types::{Amplitude, UnitParam};
@@ -183,48 +182,16 @@ impl<N: ?Sized> InstrumentHandle<N> {
     }
 }
 
-/// What [`Session::add_instrument`] takes: a graph [`Instrument`] that states
-/// how it is built in the session's MPE mode
-/// ([`Midi::set_mpe`](crate::Midi::set_mpe)). `add_instrument` is the one
-/// place the session's mode applies: a node added with `Graph::add` keeps its
-/// own configuration.
-pub trait SessionInstrument: Instrument + SessionNode {
-    /// `self`, built to play in `mode`. Required, with no default, so an
-    /// instrument says whether it reads MPE: one that does not returns itself
-    /// unchanged and says so in its impl.
-    #[must_use]
-    fn bind_mpe(self, mode: MpeMode) -> Self;
-}
-
-/// The synth plays per-note pitch and expression in the session's zones: the
-/// session's mode replaces its `SynthConfig::mpe`.
-#[cfg(feature = "synth")]
-impl SessionInstrument for tutti_polysynth::PolySynth {
-    fn bind_mpe(mut self, mode: MpeMode) -> Self {
-        self.set_mpe(mode);
-        self
-    }
-}
-
-/// The SoundFont player reads no MPE: its voices follow channel controllers
-/// (SF2 has no per-note expression), so the mode leaves it as it is.
-#[cfg(feature = "soundfont")]
-impl SessionInstrument for tutti_soundfont::SoundFontUnit {
-    fn bind_mpe(self, _mode: MpeMode) -> Self {
-        self
-    }
-}
-
 /// What [`Session::add_instrument`] hands back: the instrument's handle and
 /// the controls its node was added with.
-pub struct AddedInstrument<I: SessionInstrument> {
+pub struct AddedInstrument<I: Instrument + SessionNode> {
     /// The instrument, playable, and wired to the master.
     pub handle: InstrumentHandle<I>,
     /// The node's controls (`SessionNode::Controls`).
     pub controls: I::Controls,
 }
 
-impl<I: SessionInstrument> std::fmt::Debug for AddedInstrument<I>
+impl<I: Instrument + SessionNode> std::fmt::Debug for AddedInstrument<I>
 where
     I::Controls: std::fmt::Debug,
 {
@@ -238,11 +205,9 @@ where
 
 impl Session {
     /// Adds `instrument` to the graph, makes it playable and wires its strip
-    /// to the master, so a note sent through its keys is heard. It is built in
-    /// the session's MPE mode ([`Midi::set_mpe`](crate::Midi::set_mpe)) through
-    /// [`SessionInstrument::bind_mpe`], which wins over its own configuration.
-    /// This is the one place the session's mode applies: a node added with
-    /// `Graph::add` keeps what it was built with.
+    /// to the master, so a note sent through its keys is heard. It holds no MPE
+    /// zones: classic MPE reaches it already rewritten as per-note messages, by the
+    /// session's transforms ([`Midi::set_mpe`](crate::Midi::set_mpe)).
     ///
     /// A strip is a stereo pair, so a master of another width refuses the wire
     /// ([`ConnectError::Width`](crate::ConnectError::Width)): add the instrument
@@ -255,7 +220,7 @@ impl Session {
     /// no event input or lacks the output its main pair names, or the wire's
     /// [`ConnectError`](crate::ConnectError) (the instrument is removed again in
     /// both cases).
-    pub fn add_instrument<I: SessionInstrument>(
+    pub fn add_instrument<I: Instrument + SessionNode>(
         &mut self,
         instrument: I,
     ) -> Result<AddedInstrument<I>, crate::Error> {
@@ -280,13 +245,11 @@ impl Session {
     /// [`Error::NotInstrument`](crate::Error::NotInstrument) when its shape has
     /// no event input or lacks the output its main pair names (the node is
     /// removed again).
-    pub fn add_instrument_unwired<I: SessionInstrument>(
+    pub fn add_instrument_unwired<I: Instrument + SessionNode>(
         &mut self,
         instrument: I,
     ) -> Result<AddedInstrument<I>, crate::Error> {
         let main = instrument.main_outputs();
-        // The session's MPE mode, over whatever the instrument was configured with.
-        let instrument = instrument.bind_mpe(*self.midi_state.mpe());
         let (node, controls) = self.graph().add(instrument);
         match self.instrument_at(node, main) {
             Ok(handle) => Ok(AddedInstrument { handle, controls }),

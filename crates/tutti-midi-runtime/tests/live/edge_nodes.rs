@@ -26,10 +26,12 @@ use tutti_graph::{IntoNode as _, NodeKey};
 use tutti_midi_protocol::{MpeZoneConfig, MpeZones, PitchBendSensitivity, channel_voice};
 use tutti_midi_runtime::{
     CHANNELLESS_PORT, ClockNode, DeviceInlets, MIDI_INPUT_EVENT_CAPACITY, MIDI_INPUT_PORTS,
-    MidiIngestNode, MidiInputPorts, SlotCountMismatch,
+    MidiIngestNode, MidiInputPorts, MpeTransformNode, SlotCountMismatch,
 };
 use tutti_types::{Beat, Bpm, Frame, SampleRate, Samples};
-use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, U7, Ump, Voice2};
+use tutti_ump::{
+    CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber, U7, U14, Ump, Voice2,
+};
 
 /// The note a channel voice message addresses, either protocol.
 fn note_of(ump: Ump) -> Option<u8> {
@@ -664,8 +666,9 @@ fn two_devices_notes_merge_on_the_channels_port() {
 /// requested, a note on member channel 1 binds it; a channel bend there in
 /// each of the next two blocks folds into a per-note bend on the note. The
 /// request latches, so it is read every block. Adopting it sends the zone's
-/// default bend ranges once, in the first block (master and six members:
-/// seven registered controllers), after the All Sound Off and Reset All
+/// default bend ranges once, in the first block (thirteen registered
+/// controllers: the master's range, and on each of six members the channel's
+/// and the per-note one), after the All Sound Off and Reset All
 /// Controllers of the seven channels that entered MPE control (M1-100
 /// section 2.2.3).
 #[test]
@@ -707,7 +710,11 @@ fn a_requested_mpe_mode_is_adopted_once() {
         )
     };
     let resets: Vec<u64> = seen.iter().filter(|s| is_rpn(&s.2)).map(|s| s.1).collect();
-    assert_eq!(resets, vec![0; 7], "the ranges, once, at frame 0: {seen:?}");
+    assert_eq!(
+        resets,
+        vec![0; 13],
+        "the ranges, once, at frame 0: {seen:?}"
+    );
     let stops: Vec<u64> = seen.iter().filter(|s| is_stop(&s.2)).map(|s| s.1).collect();
     assert_eq!(stops, vec![0; 14], "the stops, once, at frame 0: {seen:?}");
     let music: Vec<_> = seen
@@ -1243,4 +1250,141 @@ fn a_clock_node_holds_its_group_and_rate_from_construction() {
     let master = node.into_parts().controls;
     assert_eq!(master.group(), group);
     assert_eq!(master.sample_rate(), SampleRate::SR_44K1);
+}
+
+/// The MPE transform node over a script: one batch of MIDI 1.0 or 2.0 events a
+/// block, pushed through an event inlet into the node's input, and a sink that
+/// logs what the node sends.
+fn transform(
+    mode: tutti_midi_protocol::MpeMode,
+    script: Script,
+) -> (
+    Editor,
+    Executor,
+    tutti_midi_runtime::MpeTransformControls,
+    Seen,
+) {
+    let (inlet, mut writer) = EventInletNode::pair(EventCapacity::of(4096));
+    for (block, batch) in script.0.iter().enumerate() {
+        for &(offset, ump) in batch {
+            let frame = Frame::new(512 * block as u64 + u64::from(offset.get()));
+            writer.push(Stamp::Frame(frame), ump).expect("room");
+        }
+    }
+    rig_with(MpeTransformNode::new(mode), 1, 512, |ed| {
+        ed.insert(NodeKey(3), "inlet", inlet);
+        ed.spec_mut().connect_events(
+            EventIn {
+                node: NodeKey(1),
+                port: 0,
+            },
+            EventEdge::Direct(EventOut {
+                node: NodeKey(3),
+                port: 0,
+            }),
+        );
+    })
+}
+
+/// What a sink saw, as `(channel, message)`.
+fn voices(seen: &Seen) -> Vec<(u8, Voice2)> {
+    seen.lock()
+        .unwrap()
+        .iter()
+        .map(|s| match s.2.decode() {
+            Ok(Message::Midi2(address, voice)) => (address.channel.get(), voice),
+            other => panic!("{other:?} is not MIDI 2.0 channel voice"),
+        })
+        .collect()
+}
+
+/// **A clip's stream gets the transform**: a note on member channel 1 and a bend
+/// there (both MIDI 1.0, as a file's are) come out as the note and a per-note
+/// bend on it; the manager's Damper Pedal comes out on the manager and on each
+/// of the zone's member channels (M1-100 section 2.3.1).
+#[test]
+fn the_transform_node_folds_a_member_and_fans_out_a_managers_pedal() {
+    let member = MidiChannel::of(1);
+    let wire = Script::new(vec![vec![
+        at(
+            0,
+            tutti_fixtures::midi::m1_note_on(member, NoteNumber::of(60), U7::of(100)),
+        ),
+        at(
+            10,
+            tutti_fixtures::midi::m1(
+                member,
+                tutti_ump::Voice1::PitchBend(U14::new(0x3FFF).unwrap()),
+            ),
+        ),
+        cc_at(20, 0, CCNumber::SUSTAIN, 127),
+    ]]);
+    let (_ed, mut exec, _c, seen) = transform(tutti_fixtures::midi::lower_zone(3), wire);
+    block(&mut exec, 512);
+    // The zone's default bend ranges go first, ahead of the Group's first event:
+    // the master's, and on each of three members the channel's and the per-note one.
+    let all = voices(&seen);
+    let ranges = all
+        .iter()
+        .take_while(|(_, v)| matches!(v, Voice2::Registered { .. }))
+        .count();
+    assert_eq!(ranges, 7, "{all:?}");
+    let got: Vec<_> = all
+        .into_iter()
+        .filter(|(_, v)| !matches!(v, Voice2::Registered { .. }))
+        .collect();
+    assert!(matches!(got[0], (1, Voice2::NoteOn { .. })), "{got:?}");
+    assert!(
+        matches!(got[1], (1, Voice2::PerNotePitchBend { note, .. }) if note.get() == 60),
+        "{got:?}"
+    );
+    let pedals: Vec<u8> = got
+        .iter()
+        .filter(|(_, v)| matches!(v, Voice2::ControlChange { controller, .. } if *controller == CCNumber::SUSTAIN))
+        .map(|(c, _)| *c)
+        .collect();
+    assert_eq!(pedals, [0, 1, 2, 3]);
+}
+
+/// **A mode set through the controls is adopted at the next block, once**: the
+/// transform starts disabled, so a member's bend passes as a channel bend; the
+/// lower zone then set, the zone's reset ranges go first (thirteen registered
+/// controllers, as the ingest node sends), once however many blocks follow, and
+/// the member's bend then folds per-note.
+#[test]
+fn a_mode_set_through_the_transforms_controls_is_adopted_once() {
+    let member = MidiChannel::of(1);
+    let bend = at(0, pitch_bend(MidiGroup::FIRST, member, 0xC000_0000));
+    let note = at(
+        0,
+        note_on(
+            MidiGroup::FIRST,
+            member,
+            60,
+            tutti_fixtures::midi::wide_velocity(100),
+        ),
+    );
+    let (_ed, mut exec, controls, seen) = transform(
+        tutti_midi_protocol::MpeMode::Disabled,
+        Script::new(vec![vec![bend], vec![note, bend], vec![bend]]),
+    );
+    block(&mut exec, 512);
+    assert!(matches!(voices(&seen)[..], [(1, Voice2::PitchBend(_))]));
+    seen.lock().unwrap().clear();
+    controls.set_mode(tutti_fixtures::midi::lower_zone(6));
+    assert_eq!(controls.mode(), tutti_fixtures::midi::lower_zone(6));
+    block(&mut exec, 512);
+    block(&mut exec, 512);
+    let got = voices(&seen);
+    let registered = got
+        .iter()
+        .filter(|(_, v)| matches!(v, Voice2::Registered { .. }))
+        .count();
+    assert_eq!(registered, 13, "{got:?}");
+    let per_note: Vec<u8> = got
+        .iter()
+        .filter(|(_, v)| matches!(v, Voice2::PerNotePitchBend { .. }))
+        .map(|(c, _)| *c)
+        .collect();
+    assert_eq!(per_note, [1, 1], "{got:?}");
 }

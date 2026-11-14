@@ -13,7 +13,7 @@ use tutti_graph::{
 use tutti_graph::{NodeKey, Stamp};
 use tutti_midi_runtime::{
     ClockNode, HarmonyNode, LIVE_INLET_CAPACITY, MidiClipNode, MidiIngestNode, MidiKeys,
-    MidiMailbox, TimedHarmony, TimedMidiEvent,
+    MidiMailbox, MpeTransformNode, TimedHarmony, TimedMidiEvent,
 };
 use tutti_types::MaxBlock;
 use tutti_types::{Beat, Bpm, Frame, FrameClock, Moment, SampleRate, Samples};
@@ -578,4 +578,57 @@ fn the_event_inlet_with_a_full_list_processes_without_allocating() {
         "dropped only {}",
         tx.counts().losses().evicted
     );
+}
+
+/// The MPE transform node folds a member's gesture, fans a manager's pedal and
+/// bend out over its zone and adopts a host-set mode (a publish outside the
+/// gate: it is control-side) without allocating, block after block.
+#[test]
+fn the_mpe_transform_node_processes_without_allocating() {
+    let (mut ed, mut exec) =
+        Editor::new(Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512))));
+    let controls = ed.insert(
+        NodeKey(1),
+        "mpe",
+        MpeTransformNode::new(tutti_fixtures::midi::lower_zone(15)),
+    );
+    let mut dev = device(&mut ed, 4);
+    let mut out = common::sink(&mut ed, 0, &[(1, 0)]);
+    ed.commit().unwrap();
+    let t = TransportPosition::default();
+    let mut drain = [(0, Ump([0; 4])); 256];
+    let manager = |device: &mut EventInletWriter, block: u64| {
+        let (g, ch) = (MidiGroup::FIRST, MidiChannel::FIRST);
+        device
+            .push(frame_of(block, 0), midi::pitch_bend(g, ch, 0xC000_0000))
+            .unwrap();
+        device
+            .push(
+                frame_of(block, 0),
+                midi::cc(g, ch, tutti_ump::CCNumber::SUSTAIN, u32::MAX),
+            )
+            .unwrap();
+    };
+    gesture(&mut dev, 0);
+    manager(&mut dev, 0);
+    exec.process(512, &t, &[], &mut []);
+    let _ = out.poll_into(&mut drain);
+
+    let modes = [
+        tutti_fixtures::midi::lower_zone(15),
+        tutti_fixtures::midi::lower_zone(7),
+    ];
+    let mut reached = 0;
+    for b in 1..=50u64 {
+        controls.set_mode(modes[(b % 2) as usize]);
+        gesture(&mut dev, b);
+        manager(&mut dev, b);
+        assert_no_alloc::assert_no_alloc(|| {
+            exec.process(512, &t, &[], &mut []);
+            reached += out.poll_into(&mut drain);
+        });
+        tutti_rt::Reclaim::reclaim(&controls);
+    }
+    assert!(reached > 50 * 16, "the fan-out reached the port: {reached}");
+    assert_eq!(out.dropped(), 0);
 }

@@ -848,7 +848,8 @@ impl Session {
     /// The session's own declarations on `node` go with it: its modulation
     /// ranges, automation and the routes into it (`mods`, feature
     /// `modulation`), and, when it is a clip or live input of the
-    /// session's (`midi`, feature `midi`), that. A clip or live input
+    /// session's (`midi`, feature `midi`), that; a clip's MPE transform goes
+    /// with the clip. A clip or live input
     /// feeding `node` stays, to be re-aimed (`Midi::retarget`) or removed.
     ///
     /// # Errors
@@ -862,7 +863,11 @@ impl Session {
         #[cfg(feature = "modulation")]
         self.mods.own.forget_node(node);
         #[cfg(feature = "midi")]
-        self.midi_state.forget_node(node);
+        if let Some(pair) = self.midi_state.forget_node(node) {
+            // A clip and its transform are one wiring: the other goes too (it
+            // is in the graph unless the caller removed it first).
+            let _ = self.graph.remove(pair);
+        }
         Ok(())
     }
 

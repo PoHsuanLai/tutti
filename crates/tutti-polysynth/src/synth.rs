@@ -6,7 +6,7 @@ use core::fmt;
 use std::num::NonZeroUsize;
 
 use crate::{AllocationStrategy, PortamentoConfig, Tuning, UnisonConfig, VoiceMode};
-use tutti_midi_protocol::{MpeMode, PitchBendSensitivity, SysexDeviceId};
+use tutti_midi_protocol::SysexDeviceId;
 use tutti_types::Adsr;
 use tutti_types::{Depth, Hz, Q, Resonance, Semitones};
 use tutti_ump::MidiGroup;
@@ -245,16 +245,6 @@ pub struct SynthConfig {
     /// Cutoff modulation sources. All depths default to zero, which skips the
     /// per-sample modulation work entirely.
     pub filter_mod: FilterModConfig,
-    /// How the sixteen channels are occupied by MPE (RP-053) or MIDI 2.0
-    /// per-note expression: [`MpeMode::Disabled`] (the default), one or two
-    /// zones, or single-channel note rotation. Per-note messages are
-    /// *accepted* either way; this decides whether the accumulated per-note
-    /// bend, pressure, slide and gain reach the audio. The per-note pitch-bend
-    /// range of a zone is its member range (`MpeZoneConfig::pitch_bend_range_for` a member channel,
-    /// 48 semitones by default); without zones it is 48 semitones. A channel's
-    /// own per-note pitch-bend sensitivity RPN (00/07, M2-104 section 7.4.13)
-    /// replaces it for that channel alone.
-    pub mpe: MpeMode,
     /// The Group whose sixteen channels this synth plays; a message in
     /// another Group is not read. A Group is a channel space of its own (M2-104
     /// section 2.1.2, Appendix B.1), so its channels' notes, wheels, pedals and
@@ -271,24 +261,6 @@ pub struct SynthConfig {
 impl SynthConfig {
     /// The polyphony of [`Default`]: 8 voices.
     pub const DEFAULT_POLYPHONY: NonZeroUsize = NonZeroUsize::new(8).unwrap();
-
-    /// What a full per-note pitch bend sweeps until a channel's own RPN 0/7
-    /// says otherwise: a zone's member range ([`mpe`](Self::mpe)), else the MPE
-    /// convention of 48 semitones.
-    pub(crate) fn per_note_bend_range(&self) -> Semitones {
-        let default = PitchBendSensitivity::MPE_MEMBER_DEFAULT.semitones();
-        match &self.mpe {
-            MpeMode::Zones(zones) => zones
-                .zones()
-                .next()
-                .and_then(|z| {
-                    let member = z.member_channels().next()?;
-                    Some(z.pitch_bend_range_for(member).semitones())
-                })
-                .unwrap_or(default),
-            _ => default,
-        }
-    }
 }
 
 impl Default for SynthConfig {
@@ -305,7 +277,6 @@ impl Default for SynthConfig {
             tuning: Tuning::equal_temperament(),
             pitch_bend_range: Semitones(2.0),
             filter_mod: FilterModConfig::default(),
-            mpe: MpeMode::Disabled,
             group: MidiGroup::FIRST,
             device: SysexDeviceId::DEFAULT,
         }

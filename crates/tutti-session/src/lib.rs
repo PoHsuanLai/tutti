@@ -140,9 +140,7 @@ pub use graph::{
 #[cfg(all(feature = "device", feature = "audio-io"))]
 pub use input::{Input, InputConfig, InputOpener, OpenedInput, Trim};
 #[cfg(feature = "midi")]
-pub use instrument::{
-    AddedInstrument, AnyNode, InstrumentHandle, NotInstrument, SessionInstrument,
-};
+pub use instrument::{AddedInstrument, AnyNode, InstrumentHandle, NotInstrument};
 pub use jobs::{Job, JobFailed};
 pub use key::{
     Bus, BusSink, Channel, Connection, Edge, Event, EventInPort, EventOutPort, EventTapPort, Fanin,

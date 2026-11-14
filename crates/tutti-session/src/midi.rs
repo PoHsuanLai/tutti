@@ -23,9 +23,9 @@ use std::sync::Arc;
 use tutti_graph::{EventTapId, EventTapReader, NodeKey, Offset, TapEvent};
 use tutti_midi_protocol::MpeMode;
 use tutti_midi_runtime::{
-    ClockMap, MidiClipControls, MidiClipNode, MidiInputPorts, MidiKeys, MidiReceiver, Outgoing,
-    OutputLatency, OutputPlan, OutputTerms, Placement, RouteRule, SendAt, TimedMidiEvent,
-    compile_routes,
+    ClockMap, MidiClipControls, MidiClipNode, MidiInputPorts, MidiKeys, MidiReceiver,
+    MpeTransformControls, MpeTransformNode, Outgoing, OutputLatency, OutputPlan, OutputTerms,
+    Placement, RouteRule, SendAt, TimedMidiEvent, compile_routes,
 };
 use tutti_tempo::TempoMap;
 use tutti_types::{Beat, BeatDuration, Frame, MeterMap, Samples};
@@ -686,10 +686,16 @@ impl<T> MidiRouteRule<T> {
     }
 }
 
-/// One clip: its controls and the target it feeds.
+/// One clip: its controls, the MPE transform between it and its target, and
+/// the target it feeds. The target is fed by the transform, which the clip
+/// feeds.
 #[derive(Debug)]
 struct Clip {
     controls: MidiClipControls,
+    /// The transform node, which is part of the clip's wiring: it goes with
+    /// the clip.
+    transform: NodeKey,
+    mpe: MpeTransformControls,
     target: NodeKey,
 }
 
@@ -836,11 +842,21 @@ impl MidiState {
 
     /// `node` left the graph: a clip or live input of the session's own is
     /// forgotten (the graph took it out of every feed), and a routed sink
-    /// is no longer one.
-    pub(crate) fn forget_node(&mut self, node: NodeKey) {
-        self.clips.remove(&node);
+    /// is no longer one. A clip and its transform go together: the other node
+    /// of the pair, which the caller takes out of the graph too.
+    #[must_use = "the clip's other node is still in the graph"]
+    pub(crate) fn forget_node(&mut self, node: NodeKey) -> Option<NodeKey> {
         self.live.remove(&node);
         self.routed.remove(&node);
+        if let Some(clip) = self.clips.remove(&node) {
+            return Some(clip.transform);
+        }
+        let clip = self
+            .clips
+            .iter()
+            .find_map(|(&clip, c)| (c.transform == node).then_some(clip))?;
+        self.clips.remove(&clip);
+        Some(clip)
     }
 
     /// `Phase::Poll`: steps the UMP Stream negotiation and the MIDI-CI of each
@@ -1468,14 +1484,35 @@ impl Midi<'_> {
             None => {
                 let (clip, controls) = self.graph.add(MidiClipNode::new(events));
                 let clip = clip.erase();
-                self.state.clips.insert(clip, Clip { controls, target });
+                // The clip's MIDI is classic MPE until the transform says
+                // otherwise: it is the one holder of the zones.
+                let (transform, mpe) = self.graph.add(MpeTransformNode::new(self.state.mpe));
+                let transform = transform.erase();
+                self.graph.set_feed(
+                    transform,
+                    Feeder::Sequencer,
+                    vec![EventOutPort::new(clip, 0)],
+                );
+                self.state.clips.insert(
+                    clip,
+                    Clip {
+                        controls,
+                        transform,
+                        mpe,
+                        target,
+                    },
+                );
                 clip
             }
         };
         // Set on every call: `set_feed` leaves an unchanged feed (and the
         // edit flag) alone.
-        self.graph
-            .set_feed(target, Feeder::Sequencer, vec![EventOutPort::new(clip, 0)]);
+        let transform = self.state.clips[&clip].transform;
+        self.graph.set_feed(
+            target,
+            Feeder::Sequencer,
+            vec![EventOutPort::new(transform, 0)],
+        );
         Ok(())
     }
 
@@ -1529,8 +1566,16 @@ impl Midi<'_> {
     #[must_use]
     pub fn clip(&self, target: impl Into<NodeKey>) -> Option<Key<MidiClipNode>> {
         let target = target.into();
-        self.fed_by(target, Feeder::Sequencer, &self.state.clips)
-            .map(|(clip, _)| Key::new(clip))
+        self.graph
+            .feed(target, Feeder::Sequencer)
+            .iter()
+            .find_map(|s| {
+                self.state
+                    .clips
+                    .iter()
+                    .find_map(|(&clip, c)| (c.transform == s.node()).then_some(clip))
+            })
+            .map(Key::new)
     }
 
     /// The node of `ours` that `feeder` feeds `target` with: the feed is
@@ -1567,7 +1612,8 @@ impl Midi<'_> {
             return Err(MidiError::NotSessionMidi(node));
         };
         let old = std::mem::replace(&mut clip.target, target);
-        self.refeed(node, old, target, Feeder::Sequencer);
+        let transform = clip.transform;
+        self.refeed(transform, old, target, Feeder::Sequencer);
         Ok(())
     }
 
@@ -1774,9 +1820,8 @@ impl Midi<'_> {
 
     // --- MPE ---
 
-    /// The session's one MPE mode: how the hardware input is ingested and how a
-    /// synth added through [`Session::add_instrument`](crate::Session::add_instrument)
-    /// occupies the channels. Begins as the builder's
+    /// The session's one MPE mode: how the hardware input is ingested and how
+    /// the clips' MIDI is. Begins as the builder's
     /// ([`SessionBuilder::mpe_mode`](crate::SessionBuilder::mpe_mode)),
     /// `Disabled` by default.
     #[must_use]
@@ -1789,26 +1834,28 @@ impl Midi<'_> {
     /// - The hardware input ingests classic MPE in `mode` from the next block
     ///   ([`MidiIngestControls::set_mpe_mode`](tutti_midi_runtime::MidiIngestControls::set_mpe_mode)),
     ///   on a session that has the input node.
-    /// - A synth added after this through
-    ///   [`Session::add_instrument`](crate::Session::add_instrument) is built
-    ///   in `mode`: **the session's mode wins over the synth's own
-    ///   `SynthConfig::mpe`**, so the ingest and the voices cannot disagree.
-    ///   A synth already in the graph keeps the mode it was added with (a
-    ///   node in a graph cannot be reached from here); add it again to move
-    ///   it. A synth inserted with `Graph::add` is the caller's own and keeps
-    ///   its config.
+    /// - Every clip's transform (the MPE transform [`play_clip`](Self::play_clip)
+    ///   wires between the clip and its target) takes `mode` from its next block,
+    ///   and a clip played after this starts in it.
+    ///
+    /// The transforms are the one holder of the zones: an instrument, whenever
+    /// it was added, reads per-note and per-channel messages and no zone, so
+    /// nothing else needs the mode. A MIDI source played into an instrument by
+    /// hand (`InstrumentHandle::keys_mut`) is not classic MPE and is not
+    /// transformed.
     ///
     /// A device that enables the MIDI-CI MPE Profile (M2-120) is not under this
     /// mode: its input follows the Profile's zones and rules, in the Groups it
     /// enabled them on, until it disables the Profile or goes. The session
     /// does that from the peer's Profile reports
-    /// (`MidiEvent::CiProfiles`); the voices of a synth keep the mode they
-    /// were added with, which can name a Profile's zones as well as MPE 1.1's
-    /// (`MpeZones` holds either).
+    /// (`MidiEvent::CiProfiles`).
     pub fn set_mpe(&mut self, mode: MpeMode) {
         self.state.mpe = mode;
         if let Some(nodes) = self.nodes {
             nodes.input_controls.set_mpe_mode(mode);
+        }
+        for clip in self.state.clips.values() {
+            clip.mpe.set_mode(mode);
         }
     }
 

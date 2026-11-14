@@ -20,7 +20,7 @@ use crate::tuning::{A4_FREQ, key_freq};
 use crate::voice::Gate;
 use crate::{UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use tutti_graph::{EventKind, SubBlocks};
-use tutti_midi_protocol::{MpeMode, MpeZones, UniversalReader};
+use tutti_midi_protocol::{PitchBendSensitivity, UniversalReader};
 use tutti_midi_protocol::{channel_voice, narrow_value};
 use tutti_midi_protocol::{value_to_unit_f32, velocity_to_unit_f32};
 use tutti_types::{Amplitude, Hz, Param, SampleRate, Semitones, Tail};
@@ -42,8 +42,9 @@ use tutti_voicing::{Controller, Effect, Glide, MasterGain, NoteControl, Stop};
 /// `Detune` (cents) and `StereoSpread` (0..1).
 ///
 /// The event input accepts MIDI 1.0 and MIDI 2.0 (UMP) channel-voice
-/// messages, including MPE and MIDI 2.0 per-note controllers when
-/// [`SynthConfig::mpe`] is not [`MpeMode::Disabled`]. Up to 512 events per block are
+/// messages, including MIDI 2.0 per-note controllers. MPE zones are not its
+/// business: classic MPE arrives already rewritten as per-note messages
+/// (`tutti-midi-runtime`'s `MpeIngest`). Up to 512 events per block are
 /// applied; any beyond that are dropped.
 ///
 /// Rendering allocates nothing and takes no lock. Construction, forking and
@@ -129,10 +130,9 @@ impl PolySynth {
             mode: config.voice_mode,
             strategy: config.allocation_strategy,
             bend_range: config.pitch_bend_range,
-            per_note_bend_range: config.per_note_bend_range(),
+            per_note_bend_range: PitchBendSensitivity::MPE_MEMBER_DEFAULT.semitones(),
         };
         let mut allocator = VoiceAllocator::new(allocator_config);
-        allocator.set_zones(mpe_zones(&config.mpe));
         allocator.store_initial_tuning(config.tuning.table());
 
         let unison = config.unison.as_ref().map(|u| UnisonEngine::new(u.clone()));
@@ -191,41 +191,6 @@ impl PolySynth {
     /// a synth up before insertion or driving it by hand.
     pub fn apply_midi(&mut self, ump: Ump) {
         self.process_midi_event(ump);
-    }
-
-    /// Returns how the channels are occupied by MPE: what the config said, or
-    /// what [`set_mpe`](Self::set_mpe) last set.
-    ///
-    /// The per-note controllers and the bend-sensitivity RPN are accepted
-    /// either way, so a host cannot tell from their effect whether MPE is on.
-    pub fn mpe(&self) -> &MpeMode {
-        &self.config.mpe
-    }
-
-    /// Sets how the channels are occupied by MPE, for sounding notes as well
-    /// as future ones. Disabling resets each voice's per-note state (its
-    /// sounding pitch returns to the key's), so nothing received while off
-    /// snaps into effect when it is re-enabled. A zone's member bend range is
-    /// the per-note default of a synth *built* with it
-    /// ([`SynthConfig::mpe`]); changing zones here does not move a range a
-    /// channel already has.
-    ///
-    /// Takes `&mut self`, so it cannot reach a synth that is already in a
-    /// graph: set it before insertion.
-    pub fn set_mpe(&mut self, mpe: MpeMode) {
-        let enabled = mpe != MpeMode::Disabled;
-        self.allocator.set_zones(mpe_zones(&mpe));
-        self.config.mpe = mpe;
-        for voice in &mut self.voices {
-            voice.set_mpe_enabled(enabled);
-            if !enabled {
-                // The note's sounding pitch (its per-note bend in it) goes too.
-                voice.clear_tuning();
-            }
-        }
-        if !enabled {
-            self.apply_pitch_bend();
-        }
     }
 
     /// A master volume as [`set_volume`](Self::set_volume) stores it:
@@ -812,12 +777,3 @@ impl PolySynth {
 }
 
 mod node;
-
-/// The zones an MPE mode names; single-channel rotation has none (M2-104
-/// Appendix C.3: a receiver keeps that channel's messages and needs no zone).
-fn mpe_zones(mpe: &MpeMode) -> Option<MpeZones> {
-    match mpe {
-        MpeMode::Zones(zones) => Some(*zones),
-        MpeMode::Disabled | MpeMode::SingleChannelRotation { .. } => None,
-    }
-}

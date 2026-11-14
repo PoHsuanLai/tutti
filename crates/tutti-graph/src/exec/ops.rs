@@ -67,8 +67,7 @@ pub(crate) fn delay_op<A: AudioSlots, F: SlotFlags + ?Sized>(
 
 /// [`Op::Sum`](crate::Op::Sum) or [`Op::WeightedSum`](crate::Op::WeightedSum) of the slots `list` into `dst`: the left
 /// fold `((+0.0 + w_0 * a_0) + w_1 * a_1) + ..` in `f32`, one rounding per
-/// multiply and per add, never fused (doc 013, "Audio fan-in sums", points 1,
-/// 2 and 4, and "Edge gain"). `lanes` is empty for a plain sum, else one per
+/// multiply and per add, never fused. `lanes` is empty for a plain sum, else one per
 /// addend; an addend's weight is exactly `1.0` unless its lane says otherwise,
 /// and a `1.0` weight is the plain add, no multiply (`crate::gain`).
 ///

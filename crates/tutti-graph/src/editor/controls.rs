@@ -87,7 +87,7 @@ impl Editor {
     /// A read-only view of `at`'s live range cell, the very cell its port
     /// clamps to and [`set_param_range`](Self::set_param_range) stores into:
     /// for a reader outside the graph (a control lane loads it once per
-    /// block, doc 014 §4.2). Control side. Writes go through
+    /// block). Control side. Writes go through
     /// `set_param_range`, which keeps the spec and the cell together (a
     /// commit rewrites every cell from the spec).
     ///
@@ -104,7 +104,7 @@ impl Editor {
     }
 
     /// Moves edge `id`'s weight to `base` from the next block on, without a
-    /// new plan: the control of a mixer's fader (doc 013, "Edge gain"). It
+    /// new plan: the control of a mixer's fader. It
     /// stores into the lane's cell and the spec and **marks nothing for
     /// commit**: the executor reads the cell once at the start of a block and
     /// ramps from the weight the last block was given to this one's across
@@ -463,8 +463,7 @@ impl Editor {
     }
 
     /// Sets `key`'s [`Mix`] **without a commit**: the blend of the node's output
-    /// with its aligned input, `out = y * m + x̂ * (1 - m)` per channel (doc 013,
-    /// "Bypass and mute are graph state", M4). The spec records it and the
+    /// with its aligned input, `out = y * m + x̂ * (1 - m)` per channel. The spec records it and the
     /// running unit reads it once per block, from the next block on; the plan
     /// is the same `Arc` and a host may call this for every move of a knob.
     ///

@@ -178,18 +178,12 @@
 //!
 //! ## Examples
 //!
-//! The loopback examples drive real hardware, so they need a device present:
-//!
-//! ```bash
-//! cargo run --example list_devices          # list, then watch hot-plug for ten seconds
-//! cargo run --example iac_loopback_test     # macOS, needs the IAC Driver enabled
-//! cargo run --example alsa_loopback_test    # Linux, uses `Midi Through`
-//! ```
-//!
-//! Two things the Linux example documents that are easy to get wrong: **VirMIDI does
+//! `cargo run --example list_devices` lists the devices, then watches hot-plug
+//! for ten seconds. The ALSA loopback suite (`sequencer-tests`) sends UMP out
+//! through the kernel's `Midi Through` client and reads it back. **VirMIDI does
 //! not echo** (writing to it feeds the raw-MIDI device, not that port's own
-//! subscribers, so a send/receive pair on one virmidi port receives nothing), and
-//! `Midi Through` is the kernel's actual loopback.
+//! subscribers, so a send/receive pair on one virmidi port receives nothing),
+//! and `Midi Through` is the kernel's actual loopback.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 

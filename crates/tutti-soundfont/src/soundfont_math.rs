@@ -79,6 +79,7 @@ mod tests {
 
     /// 9.3, absolute timecents: zero is one second, and a timecent is the 1200th
     /// root of two in time, so 1200 doubles it and -1200 halves it.
+    /// Spec: sf2.units.timecent.absolute, sf2.synth.lfo.delay-example
     #[test]
     fn timecents_are_one_second_at_zero_and_double_every_1200() {
         assert_eq!(SoundFontMath::timecents_to_seconds(0.0), 1.0);
@@ -101,6 +102,7 @@ mod tests {
     }
 
     /// 9.3, absolute cents: 6900 is 440 Hz (A-440), and 1200 cents is an octave.
+    /// Spec: sf2.units.cent.absolute
     #[test]
     fn absolute_cents_6900_is_440_hz_and_an_octave_is_1200() {
         assert!(close(SoundFontMath::cents_to_hertz(6900.0), 440.0, 1e-3));
@@ -112,6 +114,7 @@ mod tests {
     }
 
     /// 9.3, relative cents: a ratio of the 1200th root of two each.
+    /// Spec: sf2.units.cent.relative
     #[test]
     fn relative_cents_multiply_by_a_1200th_root_of_two() {
         assert_eq!(SoundFontMath::cents_to_multiplying_factor(0.0), 1.0);
@@ -126,6 +129,7 @@ mod tests {
     /// root of ten; so 200 centibels (20 dB) is a tenth in amplitude, and 60
     /// dB a thousandth. (The generators convert centibels to decibels with a
     /// factor of 0.1, tested at `RegionPair`.)
+    /// Spec: sf2.units.centibel
     #[test]
     fn decibels_are_twenty_log_amplitude() {
         assert!(close(SoundFontMath::decibels_to_linear(-20.0), 0.1, 1e-5));
@@ -138,6 +142,7 @@ mod tests {
     /// track the keyboard (an octave up halves it). The spec's own worked
     /// example: a hold of -7973 timecents (10 ms) with a key-number-to-hold of
     /// 50, played at key 36, is 20 ms.
+    /// Spec: sf2.synth.env.keynum-tracking, sf2.synth.env.keynum-example
     #[test]
     fn key_number_scaling_follows_the_spec_example() {
         let base = SoundFontMath::timecents_to_seconds(-7973.0);

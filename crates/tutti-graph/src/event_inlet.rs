@@ -629,25 +629,9 @@ impl IntoNode for EventInletNode {
 
 #[cfg(test)]
 mod tests {
-    use serde::{Deserialize, Serialize};
     use tutti_fixtures::{RangeContract, check_range_contract};
 
     use super::*;
-
-    // The shape `check_range_contract` checks is serde's; `EventCapacity` has
-    // none in the library (nothing persists one), so the check runs on the same
-    // `try_from` shape written here.
-    impl Serialize for EventCapacity {
-        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-            self.get().serialize(s)
-        }
-    }
-
-    impl<'de> Deserialize<'de> for EventCapacity {
-        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-            Self::try_from(u32::deserialize(d)?).map_err(serde::de::Error::custom)
-        }
-    }
 
     /// `EventCapacity` keeps the range-checked shape of CLAUDE.md: `new` refuses
     /// 0 and never clamps, `TryFrom` agrees and carries the refused raw, `of`

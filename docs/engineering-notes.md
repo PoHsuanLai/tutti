@@ -98,7 +98,6 @@ crates/             everything shipped, directory name = package name
                     #   Bevy-mandatory member.
   tutti-session     # Bevy-free API layer: the cross-crate composition both
                     #   umbrellas use (design 015). Not an umbrella itself.
-  arc-lend          # The publish cell. No dependencies.
   tutti-types       # Engine value vocabulary + io::{Source, Sink, Pull}.
                     #   No workspace dependency; forbids `unsafe`.
   tutti-rt          # Real-time-safe shared-memory primitives: the lock-free and
@@ -129,7 +128,6 @@ testing/            never shipped
   tutti-shm-model   # Test-only loom model of tutti-plugin's shm header
                     #   protocol. A separate crate because `--cfg loom` is
                     #   global and reaches every dep of tutti-plugin.
-  arc-lend-compare  # arc-lend's comparison benchmark
 vendor/             third-party code we never edit
   vst3-sdk          # The three Steinberg submodules
 ```
@@ -189,7 +187,8 @@ same behaviour is not a type.
 
 Non-scalar state handed from a control thread to the audio thread — a routing
 table, a `MeterMap`, a coefficient set — goes through
-`tutti_rt::{ArcLend, Loan}`, re-exported from the `arc-lend` crate. Scalars
+`tutti_rt::{ArcLend, Loan}`, re-exported from the `arc-lend` crate
+(github.com/tutti-audio/arc-lend, <https://docs.rs/arc-lend>). Scalars
 keep using `Param<U>`. (It was `RtPublish`/`RtRef` in `tutti-types` until it
 moved into its own crate.)
 
@@ -225,7 +224,7 @@ Rules:
   reader's own cache line but the load. Measured at 20-30 ns p50 per block
   from one to 31 readers on a Ryzen 9 9950X, on a 20 ns timer floor
   (arc-swap 30 ns; 20 ns through a `Cache`, which skips the fence while
-  the value is unchanged) — `arc-lend`'s `BENCHMARKS.md`.
+  the value is unchanged) — `BENCHMARKS.md` in the arc-lend repository.
 - **Never park a `Loan`** in a struct field or hold one across blocks. A
   parked loan pins one value per reader, the one it holds. A reader
   preempted mid-lend pins what is retired meanwhile, until the next scan
@@ -290,12 +289,11 @@ thread never touches. A reader stores a generation-tagged claim in its slot,
 fences, loads, and announces what it loaded; a publisher swaps, fences, scans
 the slots once, and frees only what no slot announces and no outstanding claim
 could still load. The soundness argument, in C++20 terms, is in `arc-lend`'s
-`docs::design` (`crates/arc-lend/src/docs/design.md`), §5. The `SeqCst` fence
+`docs::design`
+(<https://docs.rs/arc-lend/latest/arc_lend/docs/design/index.html>), §5. The `SeqCst` fence
 pair is the whole argument, and both halves are load-bearing: the loom model
-(`arc-lend/tests/loom.rs`, run against the shipped code: nine models:
-eight exhaustive, and `registering_and_dropping_readers` at a preemption bound
-of 4 in CI and 5 under `cargo xtask loom-full`) fails with either removed, and so does miri on the
-concurrent stress test. A plain x86 run does not, which is why neither check
+(arc-lend's `tests/loom.rs`, run against the shipped code by arc-lend's own
+CI) fails with either removed, and so does miri on the concurrent stress test. A plain x86 run does not, which is why neither check
 can be replaced by more iterations.
 
 ### `with_no_denormals`, and why not `no_denormals`
@@ -327,8 +325,7 @@ the engine owns every caller and the audit above, and it stays a module in
 `tutti-rt`. That crate holds the engine's runtime primitives, not this function
 alone, and is `publish = false`: it is reachable only by workspace
 crates and consumers that take the repository as a git dependency, no more
-than when it sat in `tutti-types` (which depended on unpublished `arc-lend`,
-so could not be published either). Publishing
+than when it sat in `tutti-types`. Publishing
 `tutti-rt` would raise the question again.
 
 ## Two buffer vocabularies — edges vs graph nodes

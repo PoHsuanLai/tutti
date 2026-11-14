@@ -66,7 +66,7 @@ fn blocks(total: usize) -> Vec<usize> {
 
 /// The beat of each frame of its block's `Env` (`Env::for_each_beat`), on
 /// two outputs: whole beats, then the fraction, so a position far into a
-/// session keeps its precision through `f32`. What `EnvClock` emitted.
+/// session keeps its precision through `f32`.
 struct BeatPorts;
 
 impl Node for BeatPorts {

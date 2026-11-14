@@ -292,7 +292,7 @@ impl ProcessInitiator {
             }
             CiMessage::Ack { ack, .. } => {
                 if let Some(wait) = TimeoutWait::from_ack(ack) {
-                    self.on_wait(address, ack.ack_sub_id2.get(), wait, now);
+                    self.on_wait(address, ack.ack_sub_id2.get(), wait);
                 }
             }
             CiMessage::Nak { nak, .. } => self.on_nak(address, nak, &mut actions),
@@ -303,11 +303,11 @@ impl ProcessInitiator {
 
     /// A Timeout Wait: the transaction it names waits until `now` plus the time
     /// asked, when that is later than it already would.
-    fn on_wait(&mut self, address: CiDeviceId, original: u8, wait: TimeoutWait, now: Instant) {
+    fn on_wait(&mut self, address: CiDeviceId, original: u8, wait: TimeoutWait) {
         match original {
             SUB_ID2_PROCESS_CAPABILITIES_INQUIRY if address == CiDeviceId::FunctionBlock => {
                 if let Some(deadline) = self.capabilities_deadline.as_mut() {
-                    wait.extend(deadline, now);
+                    wait.extend(deadline);
                 }
             }
             SUB_ID2_MESSAGE_REPORT_INQUIRY => {
@@ -316,7 +316,7 @@ impl ProcessInitiator {
                     .as_mut()
                     .filter(|report| report.request.scope.address() == address)
                 {
-                    wait.extend(&mut report.deadline, now);
+                    wait.extend(&mut report.deadline);
                 }
             }
             _ => {}

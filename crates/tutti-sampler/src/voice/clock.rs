@@ -561,7 +561,7 @@ mod tests {
     fn env(transport: TransportPosition, changes: &[(usize, TransportPosition)]) -> Env {
         let mut c = TransportChanges::NONE;
         for &(at, to) in changes {
-            c.push(Offset::new(at, Samples(BLOCK)).expect("inside"), to)
+            c.push(Offset::of(Samples(at), Samples(BLOCK)), to)
                 .expect("room");
         }
         Env {

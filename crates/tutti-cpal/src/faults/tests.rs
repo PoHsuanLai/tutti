@@ -33,7 +33,7 @@ fn pollerr() -> cpal::Error {
 /// **A device lost on ALSA is detected though cpal never says
 /// `DeviceNotAvailable` there.**
 ///
-/// cpal's ALSA worker reports a lost device as `BackendSpecific`
+/// cpal's ALSA worker reports a lost device as `cpal::StreamError::BackendSpecific`
 /// "returned POLLERR", repeated at spin rate with no data. This feeds that
 /// stream of errors, one per millisecond, and expects a disconnect once
 /// `STALL_GRACE` has passed, counted once at the start of the run and once at

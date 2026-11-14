@@ -170,7 +170,7 @@ impl OutputBlock {
     /// # Real-time
     ///
     /// Runs on the audio thread. Must not allocate, lock, or block — see
-    /// `tests/rt_no_alloc.rs`.
+    /// `tests/device/rt_no_alloc.rs`.
     #[inline]
     pub fn render<T>(&mut self, data: &mut [T])
     where

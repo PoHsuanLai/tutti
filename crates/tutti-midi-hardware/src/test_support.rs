@@ -26,7 +26,8 @@ use std::thread::JoinHandle;
 use tutti_graph::UmpAt;
 
 use crate::capability::{EndpointInfo, UmpCapability};
-use crate::devices::{ChangeSink, os_devices};
+use crate::devices::ChangeSink;
+use crate::devices::reporter::os_devices;
 use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
 use crate::{InputProducerHandle, Pushed};

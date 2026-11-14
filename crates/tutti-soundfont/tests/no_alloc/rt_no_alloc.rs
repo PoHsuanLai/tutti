@@ -56,11 +56,11 @@ fn unit() -> Hand {
 }
 
 /// `offset` frames into a block of [`Hand`]'s length.
-fn at(offset: u32) -> Offset {
-    Offset::new(offset as usize, Samples(64)).expect("inside the block")
+fn at(offset: usize) -> Offset {
+    Offset::of(Samples(offset), Samples(64))
 }
 
-fn note_on(key: u8, offset: u32) -> UmpAt {
+fn note_on(key: u8, offset: usize) -> UmpAt {
     let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
     (
         at(offset),
@@ -68,7 +68,7 @@ fn note_on(key: u8, offset: u32) -> UmpAt {
     )
 }
 
-fn note_off(key: u8, offset: u32) -> UmpAt {
+fn note_off(key: u8, offset: usize) -> UmpAt {
     (
         at(offset),
         midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, key, 0),
@@ -152,10 +152,10 @@ fn soundfont_process_with_an_event_every_frame_is_allocation_free() {
 
     // One event per frame of the block, alternating on and off across keys so
     // the voice collection churns rather than retriggering one slot.
-    let on: Vec<UmpAt> = (0..64u32)
+    let on: Vec<UmpAt> = (0..64usize)
         .map(|f| note_on(36 + (f % 24) as u8, f))
         .collect();
-    let off: Vec<UmpAt> = (0..64u32)
+    let off: Vec<UmpAt> = (0..64usize)
         .map(|f| note_off(36 + (f % 24) as u8, f))
         .collect();
 
@@ -380,7 +380,7 @@ fn cc(channel: u8, controller: CCNumber, value: u8) -> Ump {
     midi::m1_cc(MidiChannel::of(channel), controller, U7::of(value))
 }
 
-fn drum(key: u8, offset: u32) -> UmpAt {
+fn drum(key: u8, offset: usize) -> UmpAt {
     let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
     (
         at(offset),
@@ -401,8 +401,10 @@ fn soundfont_note_logic_is_allocation_free() {
     let settings = Settings::new().with_polyphony(Polyphony::of(8));
     let mut unit = Hand::new(SoundFontUnit::new(font, settings).expect("create SoundFontUnit"));
 
-    let ons: Vec<UmpAt> = (0..24u32).map(|f| note_on(36 + f as u8, f * 2)).collect();
-    let offs: Vec<UmpAt> = (0..24u32).map(|f| note_off(36 + f as u8, f * 2)).collect();
+    let ons: Vec<UmpAt> = (0..24usize).map(|f| note_on(36 + f as u8, f * 2)).collect();
+    let offs: Vec<UmpAt> = (0..24usize)
+        .map(|f| note_off(36 + f as u8, f * 2))
+        .collect();
     let round = |unit: &mut Hand| {
         // Every key struck over a full pool, and one of them again.
         unit.queue_midi_at(&ons);

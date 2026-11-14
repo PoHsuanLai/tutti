@@ -50,7 +50,6 @@ fn skipped(dir: &str) -> bool {
 /// Lowest first. A normal or build dependency must land in a strictly lower layer.
 pub(super) const LAYERS: &[&[&str]] = &[
     &[
-        "arc-lend",
         "tutti-alsa-ffi",
         "tutti-coremidi-ffi",
         "tutti-ump",
@@ -106,7 +105,6 @@ pub(super) const LAYERS: &[&[&str]] = &[
 
 /// The crates whose normal and build dependencies on workspace crates are exactly these.
 const ONLY: &[(&str, &[&str])] = &[
-    ("tutti-rt", &["arc-lend"]),
     ("tutti-midi-protocol", &["tutti-ump", "tutti-types"]),
     ("tutti-midi-device", &["tutti-ump"]),
     ("tutti-metering", &["tutti-types"]),
@@ -188,7 +186,7 @@ const ONLY: &[(&str, &[&str])] = &[
 ];
 
 /// Depend on no workspace crate, of any kind (a dev-dependency too).
-const ALONE: &[&str] = &["arc-lend", "tutti-ump"];
+const ALONE: &[&str] = &["tutti-rt", "tutti-ump"];
 
 const CODEC_LIBS: &[&str] = &["symphonia", "flacenc", "aifc", "vorbis_rs"];
 const ENCODERS: &[&str] = &["flacenc", "aifc", "vorbis_rs", "md-5"];
@@ -204,7 +202,10 @@ pub(super) const WINNOW_HOMES: &[(&str, &[&str])] = &[
     ),
     (
         "tutti-midi-protocol",
-        &["crates/tutti-midi-protocol/src/universal/read.rs"],
+        &[
+            "crates/tutti-midi-protocol/src/universal/read.rs",
+            "crates/tutti-midi-protocol/src/universal/machine_control/read.rs",
+        ],
     ),
     (
         "tutti-midi-device",
@@ -629,12 +630,7 @@ mod tests {
             ("xtask", "xtask", "[dependencies]\n"),
             ("crates/tutti-types", "tutti-types", ""),
             ("crates/tutti-ump", "tutti-ump", ""),
-            (
-                "crates/tutti-rt",
-                "tutti-rt",
-                "[dependencies]\narc-lend = { path = \"../arc-lend\" }\n",
-            ),
-            ("crates/arc-lend", "arc-lend", ""),
+            ("crates/tutti-rt", "tutti-rt", ""),
             (
                 "crates/tutti-graph",
                 "tutti-graph",
@@ -659,7 +655,7 @@ mod tests {
     fn a_layered_workspace_passes() {
         let r = run(&base());
         assert!(r.passed(), "{:?}", r.findings);
-        assert_eq!(r.out[0], "check-layout: ok (7 members, 47 ranked)");
+        assert_eq!(r.out[0], "check-layout: ok (6 members, 46 ranked)");
     }
 
     #[test]
@@ -774,7 +770,7 @@ mod tests {
         let r = with((
             "xtask",
             "xtask",
-            "[dependencies]\narc-lend = { path = \"../crates/arc-lend\" }\n",
+            "[dependencies]\ntutti-ump = { path = \"../crates/tutti-ump\" }\n",
         ));
         assert!(
             r.findings
@@ -784,7 +780,7 @@ mod tests {
         assert!(
             r.findings
                 .iter()
-                .any(|l| l.contains("xtask: normal dependency on arc-lend"))
+                .any(|l| l.contains("xtask: normal dependency on tutti-ump"))
         );
         let r = with((
             "crates/tutti-ump",
@@ -811,15 +807,14 @@ mod tests {
             r.findings
         );
         let mut v = base();
-        v.retain(|m| m.1 != "tutti-rt");
         v.push((
-            "crates/tutti-rt",
-            "tutti-rt",
-            "[dependencies]\narc-lend = { path = \"x\" }\ntutti-types = { path = \"x\" }\n",
+            "crates/tutti-metering",
+            "tutti-metering",
+            "[dependencies]\ntutti-types = { path = \"x\" }\ntutti-ump = { path = \"x\" }\n",
         ));
         let r = run(&v);
         assert!(r.findings.iter().any(|l| l.contains(
-            "tutti-rt may depend on [\"arc-lend\"] only; it depends on {\"tutti-types\"}"
+            "tutti-metering may depend on [\"tutti-types\"] only; it depends on {\"tutti-ump\"}"
         )));
     }
 

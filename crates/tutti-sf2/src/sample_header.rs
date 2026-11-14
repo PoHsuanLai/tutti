@@ -28,6 +28,20 @@ impl Side {
     }
 }
 
+/// The rate a sample whose header states 0 plays at: 400 Hz, the lowest rate
+/// section 7.10 calls practical, which is the practical rate nearest to 0
+/// (a stated rate of 0 is illegal, and the nearest practical value stands in
+/// for an illegal one). A rate the file states above 0 is kept as stated,
+/// whatever its size: replacing a 96 kHz sample's rate would play it at the
+/// wrong pitch.
+pub const NEAREST_PRACTICAL_RATE: SampleRate = SampleRate::of(400.0);
+
+/// The rate a header stating `hz` plays at: `hz`, or
+/// [`NEAREST_PRACTICAL_RATE`] when `hz` is 0.
+pub(crate) fn playing_rate(hz: u32) -> SampleRate {
+    SampleRate::from_hz(hz).unwrap_or(NEAREST_PRACTICAL_RATE)
+}
+
 /// Represents a sample in the SoundFont.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -122,10 +136,12 @@ impl SampleHeader {
         Samples(self.end_loop as usize)
     }
 
-    /// The rate the sample was recorded at, or `None` when the file states 0.
+    /// The rate the sample plays at: the rate the file states, or
+    /// [`NEAREST_PRACTICAL_RATE`] when it states 0, which is illegal
+    /// (section 7.10).
     #[must_use]
-    pub fn sample_rate(&self) -> Option<SampleRate> {
-        SampleRate::new(f64::from(self.sample_rate))
+    pub fn sample_rate(&self) -> SampleRate {
+        playing_rate(self.sample_rate)
     }
 
     /// The key number of the recorded pitch of the sample: 0 to 127, or 255

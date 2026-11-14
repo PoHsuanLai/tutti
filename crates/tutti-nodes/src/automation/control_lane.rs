@@ -586,7 +586,7 @@ impl Block<'_> {
         if out.len() >= SOURCE_EVENT_CAPACITY as usize {
             return Err(Overflow::Full);
         }
-        if let Some(at) = Offset::new(p, self.cx.env.block_len) {
+        if let Some(at) = Offset::new(Samples(p), self.cx.env.block_len) {
             out.push(Event::segment(at, seg));
         }
         Ok(())
@@ -602,7 +602,7 @@ impl Block<'_> {
         glide: bool,
     ) -> Result<(), Overflow> {
         let env = self.cx.env;
-        let off = Offset::new(p, env.block_len).unwrap_or(Offset::ZERO);
+        let off = Offset::new(Samples(p), env.block_len).unwrap_or(Offset::ZERO);
         let t = self.cx.transport_at(off);
         let play = self.cx.play_at(off);
         let rate = env.sample_rate;
@@ -1060,7 +1060,7 @@ impl Node for ControlLaneNode {
             // Within the declared capacity: never refused.
             let _ = out.push(*e);
         }
-        let last = Offset::new(len - 1, env.block_len).unwrap_or(Offset::ZERO);
+        let last = Offset::new(Samples(len - 1), env.block_len).unwrap_or(Offset::ZERO);
         self.seen = Seen {
             generation,
             knob: knob.map(f32::to_bits),

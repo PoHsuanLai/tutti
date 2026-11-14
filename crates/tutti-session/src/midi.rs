@@ -36,9 +36,10 @@ use crate::graph::{Feeder, Graph};
 use crate::instrument::open_keys;
 use crate::midi_follow::{
     CLOCK_TAP_CAPACITY, ClockAction, ClockFollow, FOLLOW_TAP_CAPACITY, Follow, FollowCx,
+    MACHINE_TAP_CAPACITY, MachineFollow,
 };
 use crate::{EventOutPort, Key, MidiError, MidiEvent, MidiNodes};
-use crate::{FollowClock, FollowTempo};
+use crate::{FollowClock, FollowMachineControl, FollowTempo, SendMachineControl};
 
 /// What a [`Midi`] call returns: the area's one error.
 type Result<T> = std::result::Result<T, MidiError>;
@@ -357,7 +358,8 @@ impl UmpOut {
     /// latency, less the device's, plus the offset), and the sink schedules it;
     /// without, every event goes at once. An event whose time is more than
     /// [`MAX_OUTPUT_AHEAD`](tutti_midi_runtime::MAX_OUTPUT_AHEAD) ahead is not
-    /// sent, and the call returns how many were refused. The JR stamps keep the
+    /// sent, and the call returns how many were refused; a batch whose span no
+    /// block on this target can hold is refused whole. The JR stamps keep the
     /// events' spacing whether or not they are scheduled.
     pub fn send_frames(&mut self, events: &[(Frame, Ump)], timing: Option<&OutputTiming>) -> usize {
         let (Some(first), Some(last)) = (
@@ -366,7 +368,10 @@ impl UmpOut {
         ) else {
             return 0;
         };
-        let span = Samples((last.get() - first.get()) as usize + 1);
+        // `None` only for a span no block on this target can hold.
+        let Some(span) = last.since(first).map(|d| d + Samples(1)) else {
+            return events.len();
+        };
         let plan = timing.map(|t| OutputPlan::new(t.terms));
         let mut batch = core::mem::take(&mut self.rebased);
         let mut sends = core::mem::take(&mut self.sends);
@@ -385,7 +390,7 @@ impl UmpOut {
                 _ => SendAt::Now,
             };
             // Always `Some`: every rebased frame is below the span.
-            if let Some(at) = Offset::new((frame.get() - first.get()) as usize, span) {
+            if let Some(at) = frame.since(first).and_then(|d| Offset::new(d, span)) {
                 batch.push((at, ump));
                 sends.push((at, send));
             }
@@ -722,6 +727,13 @@ pub(crate) struct MidiState {
     follow: Option<Follow>,
     /// The MIDI clock the session follows, if it does ([`Midi::follow_clock`]).
     clock: Option<ClockFollow>,
+    /// The Machine Control the session follows, if it does
+    /// ([`Midi::follow_machine_control`]).
+    machine: Option<MachineFollow>,
+    /// The Machine Control the session sends, if it does
+    /// ([`Midi::send_machine_control`]): the Group it goes out on and what
+    /// turns the transport's changes into commands.
+    machine_out: Option<(MidiGroup, tutti_midi_runtime::MachineControlSender)>,
     /// Events [`Midi::unfollow_tempo`] and [`Midi::unfollow_clock`] queued for the next `Poll` phase, which
     /// reports them.
     follow_events: Vec<MidiEvent>,
@@ -879,6 +891,7 @@ impl MidiState {
         }
         // The devices' UMP Stream negotiations take their step at `now`: the
         // session's control tick is their timer.
+        let mut profile_peers: Vec<tutti_midi_hardware::DeviceId> = Vec::new();
         for polled in io.poll(now) {
             // The output follows what its device settled, at once: the
             // `MidiOut` phase that drains next stamps by it.
@@ -898,6 +911,9 @@ impl MidiState {
                         MidiEvent::CiPeer { device, change }
                     }
                     tutti_midi_hardware::Polled::Profile(device, change) => {
+                        if !profile_peers.contains(&device) {
+                            profile_peers.push(device.clone());
+                        }
                         MidiEvent::CiProfiles { device, change }
                     }
                     tutti_midi_hardware::Polled::Process(device, change) => {
@@ -908,6 +924,9 @@ impl MidiState {
                 }
                 .into(),
             );
+        }
+        for device in &profile_peers {
+            sync_mpe_profiles(io, nodes, device);
         }
         let wired = wire_inlets(&mut self.inlet_keys, io.ports().inlets(), nodes, graph);
         if !self.watch_failure_reported
@@ -996,6 +1015,30 @@ impl MidiState {
         (actions, edited)
     }
 
+    /// `Phase::Poll`, for the Machine Control the session follows: reads its
+    /// tap, reports what it did not act on into `out`. What it asks of the
+    /// transport, in order, for the caller to send; and whether the graph was
+    /// edited, which the caller commits.
+    pub(crate) fn machine_phase(
+        &mut self,
+        cx: &FollowCx<'_>,
+        graph: &mut Graph,
+        out: &mut Vec<crate::SessionEvent>,
+    ) -> (Vec<ClockAction>, bool) {
+        let Some(machine) = self.machine.as_mut() else {
+            return (Vec::new(), false);
+        };
+        let actions = machine.heard(cx, out);
+        let mut edited = false;
+        if machine.tap_rate() != graph.prepared().sample_rate() {
+            edited = true;
+            if let Some(tap) = graph.taps().reopen_event(machine.tap_id()) {
+                machine.set_tap(tap);
+            }
+        }
+        (actions, edited)
+    }
+
     /// `Phase::Poll`, for the tempo the session follows: reports what
     /// `unfollow_tempo` queued, reads the follower's tap and applies what it
     /// heard (the project's tempo map and meter, overlaid at the next block
@@ -1025,6 +1068,41 @@ impl MidiState {
         edited
     }
 
+    /// Sends the Machine Control the transport's change since the last update
+    /// calls for, to the output, at once and on the playhead's frame.
+    fn send_machine_control(&mut self, playhead: &tutti_engine::Playhead) {
+        let Some((group, sender)) = self.machine_out.as_mut() else {
+            return;
+        };
+        let Some(message) = sender.observe(
+            playhead.playing(),
+            playhead.seconds(),
+            playhead.frame(),
+            playhead.rate(),
+        ) else {
+            return;
+        };
+        let frame = playhead.frame();
+        // The payload is seven-bit by construction, so it always packs.
+        let Ok(packets) = tutti_ump::Sysex7Packets::from_payload(*group, &message) else {
+            return;
+        };
+        let batch: Vec<(Frame, Ump)> = packets.map(|ump| (frame, ump)).collect();
+        #[cfg(feature = "device")]
+        let timing = self
+            .output_clock
+            .as_ref()
+            .map(|source| source.timing(self.output_latency));
+        #[cfg(not(feature = "device"))]
+        let timing: Option<OutputTiming> = None;
+        MidiOutRouter {
+            out: self.out.as_mut(),
+            drops: Some(&self.drops),
+            timing: timing.as_ref(),
+        }
+        .route(&batch);
+    }
+
     /// The hardware out's tap is on one scale of frames, the rate it was
     /// opened at: when the graph has been re-prepared at another, drains the
     /// old reader, reopens that one tap (and no other: a caller's own are the
@@ -1049,6 +1127,7 @@ impl MidiState {
     pub(crate) fn midi_out_phase(
         &mut self,
         graph: &mut Graph,
+        playhead: &tutti_engine::Playhead,
         now: Instant,
         out: &mut Vec<crate::SessionEvent>,
     ) {
@@ -1056,6 +1135,7 @@ impl MidiState {
         // is followed here, before this update's events are read.
         self.follow_rate(graph);
         self.drain_tap();
+        self.send_machine_control(playhead);
         let count = self.drops.count();
         let due = self
             .reported_at
@@ -1093,6 +1173,44 @@ pub struct Midi<'a> {
     pub(crate) io: Option<&'a mut tutti_midi_hardware::MidiSession>,
 }
 
+/// Takes the MPE Profile zones `device`'s peers have enabled (M2-120) as what its
+/// ingest slot follows: the zones of every peer on a Group together, or none
+/// where no peer has the Profile enabled. A device that is not open has no
+/// slot to set; closing one clears its zones with its inlet
+/// (`wire_inlets`).
+#[cfg(feature = "midi-hardware")]
+fn sync_mpe_profiles(
+    io: &tutti_midi_hardware::MidiSession,
+    nodes: Option<&MidiNodes>,
+    device: &tutti_midi_hardware::DeviceId,
+) {
+    let (Some(nodes), Some(slot)) = (nodes, io.slot(device)) else {
+        return;
+    };
+    let mut zones = [None; tutti_ump::MidiGroup::COUNT as usize];
+    for peer in io.profiles(device).iter() {
+        let Some(enabled) = peer.mpe_zones() else {
+            continue;
+        };
+        let held: &mut Option<tutti_midi_protocol::MpeZones> = &mut zones[peer.group().index()];
+        *held = match *held {
+            None => Some(enabled),
+            // A zone that shares a Channel with one held is left out (M2-120
+            // section 3.4).
+            Some(held) => Some(
+                enabled
+                    .zones()
+                    .fold(held, |all, zone| all.with(*zone).unwrap_or(all)),
+            ),
+        };
+    }
+    for group in tutti_ump::MidiGroup::all() {
+        nodes
+            .input_controls
+            .set_mpe_profile(slot, group, zones[group.index()]);
+    }
+}
+
 /// Applies the devices' inlet changes: an inlet added to the graph and
 /// wired to its slot's event input of the ingest node (which starts the
 /// slot over by itself when a new device takes it, so the device before it
@@ -1117,6 +1235,7 @@ fn wire_inlets(
         edited = true;
         match change {
             InletChange::Attach { slot, node } => {
+                let slot = slot.index();
                 let key = graph.add_event_inlet(node).erase();
                 if let Err(e) = graph.set_sources(
                     crate::EventInPort::new(nodes.input, slot),
@@ -1130,6 +1249,10 @@ fn wire_inlets(
                 inlet_keys[slot] = Some(key);
             }
             InletChange::Detach { slot } => {
+                // The device's Profiles went with it: the next to take the slot
+                // has enabled none.
+                nodes.input_controls.clear_mpe_profiles(slot);
+                let slot = slot.index();
                 if let Some(key) = inlet_keys.get_mut(slot).and_then(Option::take) {
                     let _ = graph.set_sources(crate::EventInPort::new(nodes.input, slot), []); // a slot with no port has no source to take out
                     let _ = graph.remove(key); // a host that removed the inlet itself leaves nothing to take
@@ -1674,6 +1797,14 @@ impl Midi<'_> {
     ///   node in a graph cannot be reached from here); add it again to move
     ///   it. A synth inserted with `Graph::add` is the caller's own and keeps
     ///   its config.
+    ///
+    /// A device that enables the MIDI-CI MPE Profile (M2-120) is not under this
+    /// mode: its input follows the Profile's zones and rules, in the Groups it
+    /// enabled them on, until it disables the Profile or goes. The session
+    /// does that from the peer's Profile reports
+    /// (`MidiEvent::CiProfiles`); the voices of a synth keep the mode they
+    /// were added with, which can name a Profile's zones as well as MPE 1.1's
+    /// (`MpeZones` holds either).
     pub fn set_mpe(&mut self, mode: MpeMode) {
         self.state.mpe = mode;
         if let Some(nodes) = self.nodes {
@@ -1938,6 +2069,113 @@ impl Midi<'_> {
         }
     }
 
+    // --- Machine Control ---
+
+    /// Follows the MIDI Machine Control (RP-013) commands the session's MIDI
+    /// input's `follow.group` sends to `follow.device`, to a group it was
+    /// assigned to or to the all-call, and drives the transport with them. The
+    /// session reads them from an event tap on that Group's channelless port in
+    /// each [`Poll`](crate::Phase::Poll) phase. **Off by default**: until this
+    /// is called, a Machine Control command changes nothing.
+    ///
+    /// **A separate follower from [`follow_clock`](Self::follow_clock)**, not a
+    /// kind of clock: MMC says what to do and carries neither a tempo nor a
+    /// running position, so it owns no part of the tempo map and composes with
+    /// an MTC or Beat Clock follower (MTC for the position, MMC for the
+    /// buttons, as RP-013 p.76 describes). Each reads its own tap.
+    ///
+    /// STOP and PAUSE stop the transport, PLAY and DEFERRED PLAY play it, and
+    /// LOCATE locates to its time code (`00:00:00:00` is beat 0 on the tempo map
+    /// in force, as for MTC, and a drop-frame label is counted as SMPTE counts
+    /// it). A LOCATE and a play in one message locate and then play. Every
+    /// command is placed at the next block (`At::NextBlock`). A command the
+    /// transport has no counterpart for is reported as
+    /// [`MidiEvent::MachineControlIgnored`]; no response is sent.
+    ///
+    /// **One at a time**: following again replaces the first, forgetting the
+    /// groups it was assigned to.
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NoMidiInput`] when the session has no MIDI input node and
+    /// [`MidiError::GroupNotHeard`] for a Group the input does not hear.
+    /// Nothing changes.
+    pub fn follow_machine_control(&mut self, follow: FollowMachineControl) -> Result<()> {
+        let nodes = self.nodes.ok_or(MidiError::NoMidiInput)?;
+        let port = nodes
+            .input_ports
+            .channelless(follow.group)
+            .ok_or(MidiError::GroupNotHeard(follow.group))?;
+        let tap = self
+            .graph
+            .taps()
+            .open_event(
+                EventOutPort::new(nodes.input, port),
+                tutti_graph::TapAlign::Raw,
+                MACHINE_TAP_CAPACITY,
+            )
+            // The Group's port was just found on the input: a refusal is a port it lacks.
+            .map_err(|_| MidiError::GroupNotHeard(follow.group))?;
+        self.state.machine = Some(MachineFollow::new(
+            tutti_midi_runtime::MachineControlFollower::new(follow.device),
+            tap,
+        ));
+        Ok(())
+    }
+
+    /// Stops following Machine Control ([`follow_machine_control`](Self::follow_machine_control)):
+    /// the transport keeps the motion it had. Reported as
+    /// [`MidiEvent::MachineControlUnfollowed`] by the next update.
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NotFollowingMachineControl`] when nothing is followed.
+    pub fn unfollow_machine_control(&mut self) -> Result<()> {
+        self.state
+            .machine
+            .take()
+            .ok_or(MidiError::NotFollowingMachineControl)?;
+        self.state
+            .follow_events
+            .push(MidiEvent::MachineControlUnfollowed);
+        Ok(())
+    }
+
+    /// Sends the transport's play, stop and locate as MIDI Machine Control
+    /// commands (RP-013) to the hardware out ([`set_hardware_out`](Self::set_hardware_out)),
+    /// for a host that drives a tape machine or another DAW. **Off by default.**
+    ///
+    /// Each update looks at the playhead and sends what changed since the last:
+    /// PLAY when the transport started, STOP when it stopped, and a LOCATE to the
+    /// position's time code (with DEFERRED PLAY after it while rolling) when
+    /// the position is not where rolling would have left it, a loop wrap
+    /// included. The first update after the call sends nothing. A change is
+    /// sent at the update that sees it, not on its frame: MMC carries no time
+    /// of its own. A transport that starts and stops again between two updates
+    /// sends neither; a followed source's commands are sent on like any other
+    /// motion, so do not follow and send to the same machine.
+    ///
+    /// A second call replaces the first.
+    pub fn send_machine_control(&mut self, send: SendMachineControl) {
+        self.state.machine_out = Some((
+            send.group,
+            tutti_midi_runtime::MachineControlSender::new(send.to, send.rate),
+        ));
+    }
+
+    /// Stops sending Machine Control ([`send_machine_control`](Self::send_machine_control)).
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NotSendingMachineControl`] when none is sent.
+    pub fn stop_sending_machine_control(&mut self) -> Result<()> {
+        self.state
+            .machine_out
+            .take()
+            .map(|_| ())
+            .ok_or(MidiError::NotSendingMachineControl)
+    }
+
     // --- Hardware out ---
 
     /// The output the hardware out (an event tap on the clock, aligned to the
@@ -2066,9 +2304,9 @@ mod tests {
         (out, count)
     }
 
-    fn note(offset: u32) -> UmpAt {
+    fn note(offset: usize) -> UmpAt {
         (
-            Offset::new(offset as usize, Samples(512)).unwrap(),
+            Offset::of(Samples(offset), Samples(512)),
             tutti_fixtures::midi::note_on(
                 MidiGroup::FIRST,
                 MidiChannel::FIRST,
@@ -2189,7 +2427,7 @@ mod tests {
         let offsets: Vec<_> = sent.iter().map(|e| e.0).collect();
         assert_eq!(
             offsets,
-            [250, 0, 999].map(|o| Offset::new(o, span).unwrap()),
+            [250, 0, 999].map(|o| Offset::of(Samples(o), span)),
             "each event's spacing from the earliest"
         );
         out.set_stamping(true);
@@ -2222,7 +2460,7 @@ mod tests {
         let span = Samples(11);
         assert_eq!(
             sent.iter().map(|e| e.0).collect::<Vec<_>>(),
-            [0, 10].map(|o| Offset::new(o, span).unwrap())
+            [0, 10].map(|o| Offset::of(Samples(o), span))
         );
     }
 

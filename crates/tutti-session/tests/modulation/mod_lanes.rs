@@ -21,9 +21,7 @@ use tutti_fixtures::midi::m1_note_on;
 use tutti_ump::{MidiChannel, NoteNumber, U7};
 
 use tutti_graph::NodeKey;
-use tutti_graph::{
-    CrossfadeCurve, Cx, Event, ForkByClone, Io, Node, Offset, Prepare, Shape, Status,
-};
+use tutti_graph::{CrossfadeCurve, Cx, Event, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_modulation::{
     Adsr, CompileError, Curve, Declarations, Follower, Lfo, NoteEnvelope, RouteDecl, RouteKey,
     RouteTarget, Source, SourceKey, TargetKey,
@@ -36,7 +34,8 @@ use tutti_session::{
     Session, SessionEvent, TargetName, declare_targets,
 };
 use tutti_types::{
-    Amplitude, Beat, Bpm, ChannelLayout, Depth, Drive, Hz, SampleRate, Samples, Seconds, UnitParam,
+    Amplitude, Beat, Bpm, ChannelLayout, Depth, Drive, Frame, Hz, SampleRate, Samples, Seconds,
+    UnitParam,
 };
 
 use common::probe::{ProbeUnit, Pulse};
@@ -130,12 +129,7 @@ impl Node for Held {
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let (base, n) = (cx.env.frame.get(), cx.env.block_len);
-        if let Some(o) = self
-            .on
-            .checked_sub(base)
-            .and_then(|o| Offset::new(o as usize, n))
-        {
+        if let Some(o) = cx.env.offset_of(Frame::new(self.on)) {
             io.event_out(0)
                 .push(Event::midi(
                     o,

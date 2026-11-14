@@ -2,7 +2,7 @@ use super::*;
 use crate::test_support::at;
 use tutti_fixtures::midi;
 use tutti_graph::UmpAt;
-use tutti_midi_protocol::MpeZoneConfig;
+use tutti_midi_protocol::{MpeZoneConfig, MpeZones};
 use tutti_ump::{Address, CCNumber, KeyEvent, Message, Voice2};
 
 /// What the ingest sends, collected: the tests read it as a list.
@@ -183,7 +183,16 @@ fn mcm_from_the_wire_configures_the_lower_zone() {
     // Start disabled; an MCM on the master channel (0) declaring 7 members
     // must enable the lower zone from the wire (M2-104 §7.4.7).
     let mut ingest = MpeIngest::new(MpeMode::Disabled);
-    let mcm = at(0, MpeZoneConfig::lower(7).unwrap().to_mcm());
+    let mcm = at(
+        0,
+        MpeZoneConfig::lower(
+            7,
+            PitchBendSensitivity::MPE_MASTER_DEFAULT,
+            PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+        )
+        .unwrap()
+        .to_mcm(),
+    );
 
     // The MCM itself is absorbed (configuration, not a musical event);
     // what goes on is the zone's reset ranges, all registered controllers
@@ -215,7 +224,16 @@ fn mcm_from_the_wire_configures_the_lower_zone() {
 fn an_mcm_that_would_overlap_the_zones_is_ignored() {
     let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(10));
     // 10 members up from channel 1 leave 4: an upper zone of 5 would share channel 10.
-    let overlapping = at(0, MpeZoneConfig::upper(5).unwrap().to_mcm());
+    let overlapping = at(
+        0,
+        MpeZoneConfig::upper(
+            5,
+            PitchBendSensitivity::MPE_MASTER_DEFAULT,
+            PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+        )
+        .unwrap()
+        .to_mcm(),
+    );
     assert_eq!(
         ingest.translated(&overlapping).count(),
         0,
@@ -226,7 +244,16 @@ fn an_mcm_that_would_overlap_the_zones_is_ignored() {
         tutti_fixtures::midi::lower_zone(10)
     );
     // One that fits is taken.
-    let fits = at(0, MpeZoneConfig::upper(4).unwrap().to_mcm());
+    let fits = at(
+        0,
+        MpeZoneConfig::upper(
+            4,
+            PitchBendSensitivity::MPE_MASTER_DEFAULT,
+            PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+        )
+        .unwrap()
+        .to_mcm(),
+    );
     assert!(ingest.translated(&fits).count() > 0);
     assert_eq!(
         *ingest.mode_of(MidiGroup::FIRST),
@@ -330,7 +357,16 @@ fn an_mcm_resets_its_zones_bend_ranges() {
     for ev in ingest.translated(&bend_sensitivity(1, 12)) {
         receiver.observe(&ev.1);
     }
-    let mcm = at(9, MpeZoneConfig::upper(3).unwrap().to_mcm());
+    let mcm = at(
+        9,
+        MpeZoneConfig::upper(
+            3,
+            PitchBendSensitivity::MPE_MASTER_DEFAULT,
+            PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+        )
+        .unwrap()
+        .to_mcm(),
+    );
     let reset: Vec<UmpAt> = ingest.translated(&mcm).collect();
     assert!(matches!(
         ingest.mode_of(MidiGroup::FIRST),
@@ -343,7 +379,16 @@ fn an_mcm_resets_its_zones_bend_ranges() {
     );
     // An upper member set to ±12, then the upper MCM again: the upper
     // members are back at ±48, the lower zone's ±12 stands.
-    let mcm = at(0, MpeZoneConfig::upper(3).unwrap().to_mcm());
+    let mcm = at(
+        0,
+        MpeZoneConfig::upper(
+            3,
+            PitchBendSensitivity::MPE_MASTER_DEFAULT,
+            PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+        )
+        .unwrap()
+        .to_mcm(),
+    );
     for ev in ingest.translated(&bend_sensitivity(13, 12)) {
         receiver.observe(&ev.1);
     }
@@ -785,6 +830,29 @@ fn program_change_on_a_member_follows_the_zones_midi_mode() {
     assert_eq!(ingest.translated(&program(3)).count(), 0, "Mode 3 again");
 }
 
+/// **An MPE 1.1 zone starts in the mode its response names**: a Monophonic
+/// zone is in MIDI Mode 4, so its members' Program Changes pass without a Mono
+/// Mode On, and Poly Mode On from the wire still takes them away (M1-100
+/// section 2.2.4.3).
+#[test]
+fn an_mpe_1_1_zone_starts_in_the_mode_its_response_names() {
+    let zone = MpeZoneConfig::lower(
+        5,
+        PitchBendSensitivity::MPE_MASTER_DEFAULT,
+        PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+    )
+    .unwrap()
+    .with_channel_response(ChannelResponse::Monophonic);
+    let mut ingest = MpeIngest::new(MpeMode::Zones(MpeZones::single(zone)));
+    let program = at(
+        0,
+        midi::program_change(MidiGroup::FIRST, MidiChannel::of(3), 5, None),
+    );
+    assert_eq!(ingest.translated(&program).count(), 1, "Mode 4");
+    ingest.translated(&cc(1, CCNumber::of(127), 0));
+    assert_eq!(ingest.translated(&program).count(), 0, "Mode 3 again");
+}
+
 /// **A channel in no zone is for conventional use** (M1-100 section 2.2.1:
 /// a Channel in no Zone remains available for conventional use): notes, bends, pressure and CC 74 there pass as they
 /// came, whatever the zones are.
@@ -821,7 +889,16 @@ fn an_mcm_stops_only_the_channels_it_moves() {
     ingest.translated(&note_on(4, 62, 100));
     ingest.translated(&pitch_bend14(4, 9000));
 
-    let grow = at(0, MpeZoneConfig::lower(5).unwrap().to_mcm());
+    let grow = at(
+        0,
+        MpeZoneConfig::lower(
+            5,
+            PitchBendSensitivity::MPE_MASTER_DEFAULT,
+            PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+        )
+        .unwrap()
+        .to_mcm(),
+    );
     let out: Vec<UmpAt> = ingest.translated(&grow).collect();
     assert_eq!(stopped(out.iter().copied()), [4, 5]);
     assert_eq!(ranges_only(out).len(), 6, "and the zone's ranges");
@@ -856,8 +933,26 @@ fn a_channel_that_left_the_zone_forgets_its_note_and_its_bend() {
         let mut ingest = MpeIngest::new(tutti_fixtures::midi::lower_zone(5));
         ingest.translated(&note_on(4, 62, 100));
         ingest.translated(&pitch_bend14(4, 9000));
-        ingest.translated(&at(0, MpeZoneConfig::lower(3).unwrap().to_mcm()));
-        ingest.translated(&at(0, MpeZoneConfig::lower(5).unwrap().to_mcm()));
+        ingest.translated(&at(
+            0,
+            MpeZoneConfig::lower(
+                3,
+                PitchBendSensitivity::MPE_MASTER_DEFAULT,
+                PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+            )
+            .unwrap()
+            .to_mcm(),
+        ));
+        ingest.translated(&at(
+            0,
+            MpeZoneConfig::lower(
+                5,
+                PitchBendSensitivity::MPE_MASTER_DEFAULT,
+                PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+            )
+            .unwrap()
+            .to_mcm(),
+        ));
         ingest
     };
     // No stale note to fold a bend onto.
@@ -922,4 +1017,364 @@ fn the_mode_in_force_stops_nothing() {
         stopped(ingest.defaults(MidiGroup::FIRST, Offset::ZERO)),
         Vec::<u8>::new()
     );
+}
+
+// --- The MIDI-CI MPE Profile (M2-120) ---
+
+fn zone(manager: u8, channels: u8) -> MpeZoneConfig {
+    MpeZoneConfig::profile(
+        MidiChannel::of(manager),
+        channels,
+        PitchBendSensitivity::MPE_PROFILE_DEFAULT,
+    )
+    .expect("a zone that fits")
+}
+
+fn enable(ingest: &mut MpeIngest, zones: MpeZones) -> Vec<UmpAt> {
+    let mut out = Vec::new();
+    ingest.set_profile(MidiGroup::FIRST, Some(zones), Offset::ZERO, |e| out.push(e));
+    out
+}
+
+fn disable(ingest: &mut MpeIngest) -> Vec<UmpAt> {
+    let mut out = Vec::new();
+    ingest.set_profile(MidiGroup::FIRST, None, Offset::ZERO, |e| out.push(e));
+    out
+}
+
+/// An ingest of no MPE 1.1 zones with the Profile zone enabled.
+fn profiled(manager: u8, channels: u8) -> MpeIngest {
+    let mut ingest = MpeIngest::new(MpeMode::Disabled);
+    enable(&mut ingest, MpeZones::single(zone(manager, channels)));
+    ingest
+}
+
+/// The registered controllers among `events` at `rpn`, as `(channel, data)`.
+fn rpns(events: impl IntoIterator<Item = UmpAt>, rpn: Rpn) -> Vec<(u8, u32)> {
+    events
+        .into_iter()
+        .filter_map(|ev| match ev.1.decode() {
+            Ok(Message::Midi2(address, Voice2::Registered { bank, index, value }))
+                if Rpn::new(bank, index) == rpn =>
+            {
+                Some((address.channel.get(), value.get()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// **Enabling the Profile starts the manager and every member at 48** (M2-120
+/// section 3.5, where MPE 1.1's manager starts at 2): RPN #00/00 = 48 on the
+/// manager, which passes as its own range, and RPN #00/07 = 48 on each
+/// member, whose bends are per-note.
+#[test]
+fn enabling_the_profile_starts_every_channel_at_48_semitones() {
+    let mut ingest = MpeIngest::new(MpeMode::Disabled);
+    let out = enable(&mut ingest, MpeZones::single(zone(2, 4)));
+    let forty_eight = PitchBendSensitivity::of(48).to_rpn_bits();
+    assert_eq!(
+        rpns(out.iter().copied(), Rpn::PITCH_BEND_SENSITIVITY),
+        [(2, forty_eight)]
+    );
+    assert_eq!(
+        rpns(out.iter().copied(), Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY),
+        [(3, forty_eight), (4, forty_eight), (5, forty_eight)]
+    );
+
+    // MPE 1.1, by contrast, starts the manager at 2.
+    let mpe11 = MpeIngest::new(midi::lower_zone(3));
+    let out: Vec<UmpAt> = mpe11.defaults(MidiGroup::FIRST, Offset::ZERO).collect();
+    assert_eq!(
+        rpns(out, Rpn::PITCH_BEND_SENSITIVITY),
+        [(0, PitchBendSensitivity::of(2).to_rpn_bits())]
+    );
+}
+
+/// **A receiver stops the sounding notes and resets the controls of each
+/// channel that enters or leaves MPE control** (M2-120 section 3.3): the
+/// zone's channels on enabling, and on disabling the same.
+#[test]
+fn entering_and_leaving_the_profile_stops_and_resets_the_zones_channels() {
+    let mut ingest = MpeIngest::new(MpeMode::Disabled);
+    let entering = enable(&mut ingest, MpeZones::single(zone(5, 3)));
+    assert_eq!(stopped(entering), [5, 6, 7]);
+    let leaving = disable(&mut ingest);
+    assert_eq!(stopped(leaving), [5, 6, 7]);
+    assert_eq!(disable(&mut ingest).len(), 0, "nothing more to leave");
+}
+
+/// The same zones again are no change, and a second zone elsewhere stops
+/// only its own channels.
+#[test]
+fn only_the_channels_a_change_moves_are_stopped() {
+    let mut ingest = MpeIngest::new(MpeMode::Disabled);
+    let low = MpeZones::single(zone(0, 4));
+    enable(&mut ingest, low);
+    assert_eq!(enable(&mut ingest, low).len(), 0, "the same zones");
+    let both = low.with(zone(8, 4)).expect("disjoint");
+    assert_eq!(stopped(enable(&mut ingest, both)), [8, 9, 10, 11]);
+    assert_eq!(ingest.profile(MidiGroup::FIRST), Some(&both));
+}
+
+/// **Table 15, the Rx columns, for the Channel Mode rows**: All Sounds Off is
+/// taken on both roles; Reset All Controllers and All Notes Off are the
+/// Manager's alone; Omni Off, Omni On, Mono Mode On and Poly Mode On are
+/// prohibited on both. A channel in no zone is conventional.
+#[test]
+fn the_profile_receive_table_for_channel_mode_messages() {
+    let mut ingest = profiled(0, 5);
+    let number = CCNumber::of;
+    for (channel, controller, passes) in [
+        (0, 120, true),
+        (0, 121, true),
+        (0, 123, true),
+        (0, 124, false),
+        (0, 125, false),
+        (0, 126, false),
+        (0, 127, false),
+        (2, 120, true),
+        (2, 121, false),
+        (2, 123, false),
+        (2, 124, false),
+        (2, 125, false),
+        (2, 126, false),
+        (2, 127, false),
+        (9, 120, true),
+        (9, 121, true),
+        (9, 123, true),
+        (9, 124, true),
+        (9, 125, true),
+        (9, 126, true),
+        (9, 127, true),
+    ] {
+        let out = ingest
+            .translated(&cc(channel, number(controller), 0))
+            .count();
+        assert_eq!(out == 1, passes, "CC {controller} on channel {channel}");
+    }
+}
+
+/// MPE 1.1 and the Profile disagree on All Sounds Off on the Manager Channel
+/// (prohibited under Table 5, taken under Table 15) and on Reset All
+/// Controllers on a Member Channel (optional, then prohibited): one ingest,
+/// each rule set in turn.
+#[test]
+fn the_two_specifications_receive_different_tables() {
+    let mut ingest = MpeIngest::new(midi::lower_zone(5));
+    let sound_off = cc(0, CCNumber::ALL_SOUND_OFF, 0);
+    let reset = cc(2, CCNumber::RESET_ALL, 0);
+    assert_eq!(ingest.translated(&sound_off).count(), 0, "MPE 1.1");
+    assert_eq!(ingest.translated(&reset).count(), 1, "MPE 1.1");
+    enable(&mut ingest, MpeZones::single(zone(0, 6)));
+    assert_eq!(ingest.translated(&sound_off).count(), 1, "the Profile");
+    assert_eq!(ingest.translated(&reset).count(), 0, "the Profile");
+    disable(&mut ingest);
+    assert_eq!(ingest.translated(&sound_off).count(), 0, "MPE 1.1 again");
+    assert_eq!(ingest.translated(&reset).count(), 1, "MPE 1.1 again");
+}
+
+/// **The sensitivity is set on the Manager and is every channel's** (M2-120
+/// section 3.5, Table 15): the Manager's RPN 0 goes on as its own and reaches
+/// every Member as a per-note sensitivity; a Member's is prohibited, so it
+/// is ignored and moves nobody. MPE 1.1 does the opposite: the Member's
+/// reaches the members and the Manager's moves no member.
+#[test]
+fn the_pitch_bend_sensitivity_is_the_managers() {
+    let sensitivity = |channel: u8, semitones: u8| {
+        at(
+            0,
+            midi::registered_rpn(
+                MidiGroup::FIRST,
+                MidiChannel::of(channel),
+                Rpn::PITCH_BEND_SENSITIVITY,
+                PitchBendSensitivity::of(semitones).to_rpn_bits(),
+            ),
+        )
+    };
+    let twelve = PitchBendSensitivity::of(12).to_rpn_bits();
+    let mut ingest = profiled(0, 4);
+    let out: Vec<UmpAt> = ingest.translated(&sensitivity(0, 12)).collect();
+    assert_eq!(
+        rpns(out.iter().copied(), Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY),
+        [(1, twelve), (2, twelve), (3, twelve)]
+    );
+    assert_eq!(
+        rpns(out, Rpn::PITCH_BEND_SENSITIVITY),
+        [(0, twelve)],
+        "and the manager's own passes"
+    );
+    assert_eq!(ingest.translated(&sensitivity(2, 7)).count(), 0);
+
+    let mut mpe11 = MpeIngest::new(midi::lower_zone(3));
+    let out: Vec<UmpAt> = mpe11.translated(&sensitivity(2, 12)).collect();
+    assert_eq!(
+        rpns(out, Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY).len(),
+        3,
+        "MPE 1.1: the member's is the members'"
+    );
+    assert_eq!(
+        rpns(
+            mpe11.translated(&sensitivity(0, 12)),
+            Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY
+        )
+        .len(),
+        0,
+        "MPE 1.1: the manager's is the manager's"
+    );
+}
+
+/// **Program Change and Bank Select follow the Channel Response** (M2-120
+/// section 4.6, Table 15): the Manager's is always taken; a Member's is
+/// ignored in Polyphonic Channel Response and may be taken in Monophonic.
+/// Mono Mode On on the lowest Member Channel, MPE 1.1's switch, is prohibited
+/// and does nothing.
+#[test]
+fn program_change_on_a_member_follows_the_channel_response() {
+    let program = |channel: u8| {
+        at(
+            0,
+            midi::program_change(MidiGroup::FIRST, MidiChannel::of(channel), 5, None),
+        )
+    };
+    let mut poly = profiled(0, 4);
+    assert_eq!(poly.translated(&program(0)).count(), 1, "the manager's");
+    assert_eq!(poly.translated(&program(2)).count(), 0, "polyphonic");
+    poly.translated(&cc(1, CCNumber::of(126), 0));
+    assert_eq!(poly.translated(&program(2)).count(), 0, "no Mode switch");
+
+    let mut mono = MpeIngest::new(MpeMode::Disabled);
+    enable(
+        &mut mono,
+        MpeZones::single(zone(0, 4).with_channel_response(ChannelResponse::Monophonic)),
+    );
+    assert_eq!(mono.translated(&program(0)).count(), 1, "the manager's");
+    assert_eq!(mono.translated(&program(2)).count(), 1, "monophonic");
+}
+
+/// **The Manager is the zone's lowest channel, wherever that is** (M2-120
+/// section 2.2): a zone managed from channel 5 folds its Members' expression
+/// into per-note messages and passes its Manager's, and the channels below
+/// it are conventional.
+#[test]
+fn a_zone_managed_from_any_channel_folds_its_members() {
+    let mut ingest = profiled(5, 4);
+    ingest.translated(&note_on(7, 60, 100));
+    let out = ingest
+        .translated(&pitch_bend14(7, 16383))
+        .next()
+        .expect("a per-note bend");
+    assert_cv2!(out, Address { channel, .. }, Voice2::PerNotePitchBend { note, .. }
+        if channel.get() == 7 && note.get() == 60);
+    let out = ingest
+        .translated(&pitch_bend14(5, 12288))
+        .next()
+        .expect("the manager's passes");
+    assert_cv2!(out, _, Voice2::PitchBend(_));
+    // Channel 2 is in no zone, and 9 is past the zone's last channel (8).
+    for channel in [2, 9] {
+        let out = ingest
+            .translated(&pitch_bend14(channel, 16383))
+            .next()
+            .expect("passes");
+        assert_cv2!(out, _, Voice2::PitchBend(_));
+    }
+}
+
+/// **The controls a Member was told before its note go ahead of the Note On**
+/// (M2-120 sections 4.3 to 4.5, as MPE 1.1's 2.2.6 to 2.2.8): Pitch Bend,
+/// Channel Pressure and Control Change #74, tracked with no note sounding and
+/// combined with the Manager's.
+#[test]
+fn what_a_member_was_told_goes_ahead_of_its_note_on() {
+    let mut ingest = profiled(0, 4);
+    assert_eq!(ingest.translated(&pitch_bend14(2, 12000)).count(), 0);
+    ingest.translated(&cc(2, CCNumber::BRIGHTNESS, 40));
+    ingest.translated(&at(
+        0,
+        midi::channel_pressure(MidiGroup::FIRST, MidiChannel::of(0), 0x4000_0000),
+    ));
+    let out: Vec<UmpAt> = ingest.translated(&note_on(2, 60, 100)).collect();
+    assert_eq!(out.len(), 4, "bend, pressure, CC 74, then the note");
+    assert_cv2!(out[0], _, Voice2::PerNotePitchBend { note, .. } if note.get() == 60);
+    assert_cv2!(out[1], _, Voice2::PolyPressure { note, .. } if note.get() == 60);
+    assert_cv2!(out[2], _, Voice2::AssignablePerNote { note, controller: 74, .. }
+        if note.get() == 60);
+    assert!(matches!(out[3].1.key_event(), Some(KeyEvent::On(_))));
+}
+
+/// **MPE 1.1's Configuration Message has no part in the Profile** (M2-120
+/// section 2.2): in a Group with Profile zones RPN #6 is ordinary traffic and
+/// reconfigures nothing; once they are disabled it configures as before.
+#[test]
+fn a_configuration_message_does_nothing_while_the_profile_is_enabled() {
+    let mut ingest = profiled(0, 4);
+    let mcm = at(
+        0,
+        MpeZoneConfig::lower(
+            7,
+            PitchBendSensitivity::MPE_MASTER_DEFAULT,
+            PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+        )
+        .unwrap()
+        .to_mcm(),
+    );
+    assert_eq!(ingest.translated(&mcm).count(), 1, "passes, not absorbed");
+    assert!(matches!(
+        ingest.mode_of(MidiGroup::FIRST),
+        MpeMode::Disabled
+    ));
+    disable(&mut ingest);
+    assert_eq!(ranges_only(ingest.translated(&mcm)).len(), 8, "absorbed");
+    assert!(matches!(
+        ingest.mode_of(MidiGroup::FIRST),
+        MpeMode::Zones(_)
+    ));
+}
+
+/// **Disabling goes back to the layout MPE 1.1 had**, and starts its zones
+/// at its ranges again (manager 2, members 48).
+#[test]
+fn disabling_the_profile_restores_the_mpe_11_zones_at_their_ranges() {
+    let mut ingest = MpeIngest::new(midi::lower_zone(3));
+    enable(&mut ingest, MpeZones::single(zone(4, 4)));
+    let out = disable(&mut ingest);
+    assert_eq!(
+        rpns(out.iter().copied(), Rpn::PITCH_BEND_SENSITIVITY),
+        [(0, PitchBendSensitivity::of(2).to_rpn_bits())]
+    );
+    assert_eq!(
+        rpns(out.iter().copied(), Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY).len(),
+        3
+    );
+    assert_eq!(stopped(out), [0, 1, 2, 3, 4, 5, 6, 7]);
+    ingest.translated(&note_on(2, 60, 100));
+    let out = ingest
+        .translated(&pitch_bend14(2, 16383))
+        .next()
+        .expect("emits");
+    assert_cv2!(out, _, Voice2::PerNotePitchBend { .. });
+}
+
+/// A Group is a channel space of its own: the Profile on one is not on another.
+#[test]
+fn a_group_has_its_own_profile_zones() {
+    let mut ingest = profiled(0, 4);
+    let other = MidiGroup::of(1);
+    assert_eq!(ingest.profile(other), None);
+    let bend = at(0, midi::pitch_bend(other, MidiChannel::of(2), 0xFFFF_FFFF));
+    let out = ingest.translated(&bend).next().expect("passes");
+    assert_cv2!(out, _, Voice2::PitchBend(_));
+}
+
+/// Notes on the Manager Channel are undefined by the Profile (Table 15, U), so
+/// they pass as for any channel and bind no member.
+#[test]
+fn a_note_on_the_manager_channel_passes() {
+    let mut ingest = profiled(0, 4);
+    let out = ingest
+        .translated(&note_on(0, 60, 100))
+        .next()
+        .expect("passes");
+    assert!(matches!(out.1.key_event(), Some(KeyEvent::On(_))));
 }

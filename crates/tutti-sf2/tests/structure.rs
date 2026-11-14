@@ -7,7 +7,6 @@ use std::io::Cursor;
 
 use tutti_fixtures::sf2::{Inst, Preset, bytes};
 use tutti_sf2::{Error, InstrumentGenerator, SoundFont};
-use tutti_types::SampleRate;
 
 fn preset(name: &'static str, program: u16, zones: usize) -> Preset {
     Preset {
@@ -49,6 +48,7 @@ const SHDR_RECORD: usize = 46;
 /// 7.2: the preset bag indices only grow, and the terminal one is the number
 /// of zones. A file where they do not is structurally defective: an `Err`,
 /// where reading it would slice past the zone list.
+/// Spec: sf2.pdta.phdr.bag-index.monotonic, sf2.pdta.phdr.bag-index.terminal
 #[test]
 fn a_preset_bag_index_that_is_wrong_is_a_clean_error() {
     let file = bytes(&[preset("a", 0, 1), preset("b", 1, 1)], &[inst(1)]);
@@ -73,6 +73,7 @@ fn a_preset_bag_index_that_is_wrong_is_a_clean_error() {
 }
 
 /// 7.6: the same for the instrument bag indices.
+/// Spec: sf2.pdta.inst.bag-index.monotonic, sf2.pdta.inst.bag-index.terminal
 #[test]
 fn an_instrument_bag_index_that_is_wrong_is_a_clean_error() {
     let file = bytes(&[preset("a", 0, 1)], &[inst(1), inst(1)]);
@@ -92,6 +93,7 @@ fn an_instrument_bag_index_that_is_wrong_is_a_clean_error() {
 
 /// 7.3: the generator indices of the bags only grow and end at the number of
 /// generators.
+/// Spec: sf2.pdta.ibag.index.terminal
 #[test]
 fn a_generator_index_past_the_generators_is_a_clean_error() {
     let mut file = bytes(&[preset("a", 0, 1)], &[inst(1)]);
@@ -104,6 +106,7 @@ fn a_generator_index_past_the_generators_is_a_clean_error() {
 
 /// 7.2: a preset with no zones is ignored. It is not in the font and
 /// not an error; the presets after it keep their own.
+/// Spec: sf2.pdta.phdr.zoneless.ignored
 #[test]
 fn a_preset_with_no_zone_is_ignored() {
     let file = bytes(
@@ -121,6 +124,7 @@ fn a_preset_with_no_zone_is_ignored() {
 
 /// An instrument with no zone stays in the list (so the indices presets name
 /// keep their meaning) and plays nothing.
+/// Spec: sf2.pdta.inst.zoneless
 #[test]
 fn an_instrument_with_no_zone_plays_nothing() {
     let file = bytes(
@@ -141,6 +145,7 @@ fn an_instrument_with_no_zone_plays_nothing() {
 /// 7.10: a header's `dwStart`, `dwEnd`, `dwStartloop`, `dwEndloop` and
 /// `dwSampleRate` are DWORDs. An address of 2^31 or more is past the sample
 /// data and refused cleanly, and a rate of 2^31 or more reads as positive.
+/// Spec: sf2.pdta.shdr.dwords.unsigned, sf2.pdta.shdr.addresses.in-range
 #[test]
 fn the_dwords_of_a_header_are_unsigned() {
     let file = bytes(&[preset("a", 0, 1)], &[inst(1)]);
@@ -167,10 +172,9 @@ fn the_dwords_of_a_header_are_unsigned() {
     put(&mut file, shdr + 36, 0x8000_0000 + 44_100, 4);
     let font = load(file).expect("the rate is not a range");
     assert_eq!(
-        font.sample_headers()[0].sample_rate().map(SampleRate::get),
-        Some(f64::from(0x8000_0000_u32 + 44_100))
+        font.sample_headers()[0].sample_rate().get(),
+        f64::from(0x8000_0000_u32 + 44_100)
     );
-    assert!(font.instruments()[0].regions()[0].sample_rate().is_some());
     let _ = SHDR_RECORD;
 }
 
@@ -179,6 +183,7 @@ fn the_dwords_of_a_header_are_unsigned() {
 /// The one zone here is `pan 4, sampleID 0`, then number 14: it is local and plays,
 /// where reading the raw last record would make it a global zone and leave the
 /// instrument with no region.
+/// Spec: sf2.pdta.igen.after-sampleid.ignored, sf2.gen.unused1
 #[test]
 fn an_unused_number_after_the_sample_id_leaves_the_zone_local() {
     let mut file = bytes(
@@ -198,4 +203,46 @@ fn an_unused_number_after_the_sample_id_leaves_the_zone_local() {
     let regions = font.instruments()[0].regions();
     assert_eq!(regions.len(), 1, "the zone is local");
     assert_eq!(regions[0].generator(InstrumentGenerator::Pan), 4);
+}
+
+/// 7.10: a rate of 0 is illegal and the nearest practical rate is used in its
+/// place: 400 Hz, the low end of the practical range 400 to 50 000 Hz, on the
+/// header and on the region that names it.
+/// Spec: sf2.pdta.shdr.rate.zero
+#[test]
+fn a_header_rate_of_zero_reads_as_the_nearest_practical_rate() {
+    let file = bytes(&[preset("a", 0, 1)], &[inst(1)]);
+    let shdr = chunk(&file, b"shdr");
+    for (stated, played) in [(0, 400.0), (44_100, 44_100.0)] {
+        let mut file = file.clone();
+        put(&mut file, shdr + 36, stated, 4);
+        let font = load(file).unwrap();
+        assert_eq!(font.sample_headers()[0].sample_rate().get(), played);
+        assert_eq!(
+            font.instruments()[0].regions()[0].sample_rate().get(),
+            played
+        );
+    }
+    assert_eq!(tutti_sf2::NEAREST_PRACTICAL_RATE.get(), 400.0);
+}
+
+/// 7.10: a rate outside 400 to 50 000 Hz other than 0 may be replaced by the
+/// nearest practical one; it is kept as stated, so a sample plays at the pitch
+/// it was recorded for, on the header and on the region that names it.
+/// Spec: sf2.pdta.shdr.rate.impractical
+#[test]
+fn a_rate_outside_the_practical_range_is_kept_as_stated() {
+    let file = bytes(&[preset("a", 0, 1)], &[inst(1)]);
+    let shdr = chunk(&file, b"shdr");
+    for stated in [1, 200, 399, 50_001, 96_000, 192_000] {
+        let mut file = file.clone();
+        put(&mut file, shdr + 36, stated, 4);
+        let font = load(file).unwrap();
+        let played = f64::from(stated);
+        assert_eq!(font.sample_headers()[0].sample_rate().get(), played);
+        assert_eq!(
+            font.instruments()[0].regions()[0].sample_rate().get(),
+            played
+        );
+    }
 }

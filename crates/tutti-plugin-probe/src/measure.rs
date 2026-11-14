@@ -192,7 +192,7 @@ fn note(on: bool, offset: usize, block: usize) -> UmpAt {
             attribute,
         }
     };
-    let offset = Offset::new(offset, Samples(block)).expect("an offset inside its block");
+    let offset = Offset::new(Samples(offset), Samples(block)).expect("an offset inside its block");
     (offset, Ump::from(Message::Midi2(address, voice)))
 }
 

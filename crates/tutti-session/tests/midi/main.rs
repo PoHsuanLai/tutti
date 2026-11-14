@@ -40,3 +40,6 @@ mod follow_late_publish;
 // The session follows a MIDI Beat Clock or MIDI Time Code from the input.
 #[cfg(feature = "midi-hardware")]
 mod midi_clock_follow;
+// The session follows MIDI Machine Control from the input and sends it from the transport.
+#[cfg(feature = "midi-hardware")]
+mod midi_machine_control;

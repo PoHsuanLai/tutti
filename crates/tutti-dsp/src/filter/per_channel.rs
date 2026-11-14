@@ -111,7 +111,7 @@ impl<R: ChannelRecurrence> Family for Filter<R> {
         self.recurrence.member_into(controls, rate, out);
     }
 
-    fn recurrence(&self) -> PerChannel<R> {
+    fn recurrence(&self, _: SampleRate) -> PerChannel<R> {
         let width = usize::from(self.layout().count()).max(1);
         PerChannel {
             recurrence: self.recurrence.clone(),

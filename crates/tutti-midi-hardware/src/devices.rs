@@ -9,14 +9,14 @@
 //! A subscriber's queue is unbounded, and exists only while its
 //! [`DeviceEvents`] does: an app that wants no events subscribes to none.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 use tutti_graph::UmpAt;
 
 use tutti_midi_device::{
-    DeviceEvent, DeviceId, DeviceInfo, DeviceTable, EndpointId, Identity, OsChange, OsDevice,
-    PortDirection, Resolved,
+    DeviceEvent, DeviceId, DeviceInfo, DeviceTable, EndpointId, OsChange, OsDevice, PortDirection,
+    Resolved,
 };
 use tutti_midi_runtime::{DeviceSlot, Outgoing};
 use tutti_ump::StreamConfig;
@@ -27,6 +27,16 @@ use crate::capability::UmpCapability;
 use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
 use crate::wire::Wire;
+
+// Only a native backend reports through it; the stub has none.
+#[cfg_attr(
+    midi_backend = "none",
+    allow(
+        dead_code,
+        reason = "only the OS backends with a thread report through it"
+    )
+)]
+pub(crate) mod reporter;
 
 /// Why a device watch ended on its own.
 #[derive(Clone, Debug, thiserror::Error)]
@@ -192,95 +202,6 @@ impl ChangeSink {
 impl core::fmt::Debug for ChangeSink {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ChangeSink").finish_non_exhaustive()
-    }
-}
-
-/// What a backend's thread keeps between looks at the OS: the handles it has
-/// reported, so a handle that has dropped out of a fresh enumeration is
-/// reported gone.
-///
-/// An OS reuses a handle: ALSA hands a new client the number of one that just
-/// exited, so two looks that straddle both see one handle. A handle that now
-/// names another identity is a different device, and so is one the OS says
-/// departed (`departed`): each is reported gone before it is reported present
-/// again. A report is applied under one hold of the state. Where the identity is
-/// the name (ALSA), a rename is therefore a removal and an addition, and closes a port held on the device; where it
-/// survives a rename (CoreMIDI's unique id), the device is `Changed`.
-#[cfg_attr(
-    not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
-    allow(
-        dead_code,
-        reason = "only the OS backends with a thread report through it"
-    )
-)]
-#[derive(Debug)]
-pub(crate) struct Reporter {
-    sink: ChangeSink,
-    known: BTreeMap<EndpointId, Identity>,
-}
-
-#[cfg_attr(
-    not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
-    allow(
-        dead_code,
-        reason = "only the OS backends with a thread report through it"
-    )
-)]
-impl Reporter {
-    pub(crate) fn new(sink: ChangeSink) -> Self {
-        Self {
-            sink,
-            known: BTreeMap::new(),
-        }
-    }
-
-    /// Lists `present` as the devices there already were.
-    pub(crate) fn seed(&mut self, present: Vec<OsDevice>) -> std::result::Result<(), SeedError> {
-        let known = present
-            .iter()
-            .map(|d| (d.handle, d.identity.clone()))
-            .collect();
-        self.sink.seed(present)?;
-        self.known = known;
-        Ok(())
-    }
-
-    /// The handles of `present` that are known under another identity. Only the
-    /// ALSA watcher reuses a handle for another device, so only it asks.
-    #[cfg(all(target_os = "linux", alsa_ump))]
-    pub(crate) fn changed_in(
-        &self,
-        present: &[OsDevice],
-    ) -> std::collections::BTreeSet<EndpointId> {
-        present
-            .iter()
-            .filter(|d| {
-                self.known
-                    .get(&d.handle)
-                    .is_some_and(|known| *known != d.identity)
-            })
-            .map(|d| d.handle)
-            .collect()
-    }
-
-    /// Reports `present` as the whole device list: every device in it, and the
-    /// departure of each known one that is not, that has another identity now,
-    /// or that `departed` names. The table drops what repeats.
-    pub(crate) fn report(&mut self, present: Vec<OsDevice>, departed: impl Fn(EndpointId) -> bool) {
-        let now: BTreeMap<EndpointId, Identity> = present
-            .iter()
-            .map(|d| (d.handle, d.identity.clone()))
-            .collect();
-        let gone = self
-            .known
-            .iter()
-            .filter(|&(handle, identity)| now.get(handle) != Some(identity) || departed(*handle))
-            .map(|(handle, _)| OsChange::Gone(*handle));
-        let changes: Vec<_> = gone
-            .chain(present.into_iter().map(OsChange::Present))
-            .collect();
-        self.sink.send_all(changes);
-        self.known = now;
     }
 }
 
@@ -746,37 +667,6 @@ impl Drop for OpenInput {
         drop(self.connection.take());
         self.ports.remove_input_port(self.port);
     }
-}
-
-/// The devices of an enumeration, one per handle: an endpoint listed both ways
-/// is [`Duplex`](PortDirection::Duplex).
-#[cfg(any(
-    target_os = "macos",
-    all(target_os = "linux", alsa_ump),
-    test,
-    feature = "testing"
-))]
-pub(crate) fn os_devices(
-    inputs: &[crate::capability::EndpointInfo],
-    outputs: &[crate::capability::EndpointInfo],
-) -> Vec<OsDevice> {
-    let mut devices: BTreeMap<EndpointId, OsDevice> = BTreeMap::new();
-    let as_device = |e: &crate::capability::EndpointInfo, direction| OsDevice {
-        handle: e.id,
-        identity: e.identity.clone(),
-        name: e.name.clone(),
-        direction,
-    };
-    for e in inputs {
-        devices.insert(e.id, as_device(e, PortDirection::Input));
-    }
-    for e in outputs {
-        devices
-            .entry(e.id)
-            .and_modify(|d| d.direction = PortDirection::Duplex)
-            .or_insert_with(|| as_device(e, PortDirection::Output));
-    }
-    devices.into_values().collect()
 }
 
 #[cfg(test)]

@@ -27,14 +27,7 @@ pub(crate) fn in_offset_order<T: Ord + Copy>(events: &mut [(T, Ump)]) {
 
 /// `e`'s offset in a block of `block_len` frames, clamped into it.
 pub(crate) fn offset_of(e: &UmpAt, block_len: Samples) -> Offset {
-    clamp_stamp(e.0.get(), block_len)
-}
-
-/// A raw frame stamp (a mailbox's) as an offset in a block of `block_len`
-/// frames, clamped onto its last frame.
-pub(crate) fn clamp_stamp(stamp: u32, block_len: Samples) -> Offset {
-    let last = block_len.get().saturating_sub(1);
-    Offset::new((stamp as usize).min(last), block_len).unwrap_or(Offset::ZERO)
+    Offset::clamped(e.0.get(), block_len)
 }
 
 #[cfg(test)]

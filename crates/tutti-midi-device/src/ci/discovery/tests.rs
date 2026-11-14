@@ -17,7 +17,7 @@ fn sample_discovery() -> DiscoveryData {
         },
         categories: CiCategories::PROFILE_CONFIGURATION | CiCategories::PROPERTY_EXCHANGE,
         max_sysex_size: MaxSysexSize::of(512),
-        output_path_id: U7::of(0x05),
+        output_path_id: Some(U7::of(0x05)),
         function_block: FunctionBlockId::new(3),
     }
 }
@@ -69,32 +69,97 @@ fn discovery_and_reply_have_the_version_2_trailers() {
         DiscoveryData::decode_body(false, &discovery)
             .expect("discovery decodes")
             .output_path_id,
-        U7::of(0x05)
+        Some(U7::of(0x05))
     );
 }
 
+// M2-101 Tables 6 and 8 mark the Output Path ID and the Function Block as added
+// in Message Format Version 2, and §5.3, §5.4 have a receiver read a lower
+// version with the fields of that version: a 1.1 body ends after the Receivable
+// Maximum SysEx Message Size (16 bytes), and the fields it lacks are absent, not
+// path 0 and not block 0.
 #[test]
-fn a_version_1_body_still_decodes() {
-    // §5.3: a receiver processes only the fields, values and bits of
-    // the received version when it is lower than its own. A v1 peer sends
-    // the body with no Version-2 trailer at all.
+fn a_version_1_body_has_no_output_path_and_no_function_block() {
     let d = sample_discovery();
-    let mut body = Vec::new();
-    d.encode_body(true, &mut body);
-    body.truncate(16); // strip the v2 trailer
+    for is_reply in [false, true] {
+        let mut body = Vec::new();
+        d.encode_body(is_reply, &mut body);
+        body.truncate(16);
+        let back = DiscoveryData::decode_body(is_reply, &body).expect("v1 body decodes");
+        assert_eq!(back.identity, d.identity);
+        assert_eq!(back.max_sysex_size, d.max_sysex_size);
+        assert_eq!(back.output_path_id, None, "reply {is_reply}");
+        assert_eq!(back.function_block, None, "reply {is_reply}");
+    }
+}
 
-    let back = DiscoveryData::decode_body(true, &body).expect("v1 body decodes");
-    assert_eq!(back.identity, d.identity);
-    assert_eq!(back.max_sysex_size, d.max_sysex_size);
-    assert_eq!(
-        back.output_path_id,
-        U7::of(0),
-        "absent path id defaults to 0"
-    );
-    assert_eq!(
-        back.function_block, None,
-        "an absent Function Block must not read as block 0"
-    );
+// A body written with no Output Path ID is the Version 1 body: 16 bytes, with no
+// Function Block after it either.
+#[test]
+fn a_body_with_no_output_path_encodes_as_version_1() {
+    let d = DiscoveryData {
+        output_path_id: None,
+        ..sample_discovery()
+    };
+    for is_reply in [false, true] {
+        let mut body = Vec::new();
+        d.encode_body(is_reply, &mut body);
+        assert_eq!(body.len(), 16, "reply {is_reply}");
+    }
+}
+
+// The Reply of a device that sends Message Format Version 1 is a whole message
+// that decodes, and the path 0 the Version 2 field names is not what it holds.
+#[test]
+fn a_version_1_discovery_reply_message_is_read() {
+    let d = sample_discovery();
+    let mut bytes = CiMessage::DiscoveryReply {
+        header: CiHeader {
+            ci_version: CiVersion::of(0x01),
+            ..header()
+        },
+        to: Muid::of(DST),
+        data: d,
+    }
+    .encode();
+    bytes.truncate(13 + 16);
+    match decoded(&bytes) {
+        CiMessage::DiscoveryReply { header, to, data } => {
+            assert_eq!(header.ci_version, CiVersion::of(0x01));
+            assert_eq!(to, Muid::of(DST));
+            assert_eq!(data.output_path_id, None);
+            assert_eq!(data.function_block, None);
+            assert_eq!(data.categories, d.categories);
+        }
+        other => panic!("expected a Discovery Reply, got {other:?}"),
+    }
+}
+
+// A body shorter than Version 1's has no Receivable Maximum SysEx Message Size
+// or categories, which no version omits: it is malformed.
+#[test]
+fn a_reply_shorter_than_version_1_is_malformed() {
+    let mut body = Vec::new();
+    sample_discovery().encode_body(true, &mut body);
+    for len in [0, 11, 12, 15] {
+        assert!(is_malformed(&body[..len], true), "{len} bytes");
+        assert!(is_malformed(&body[..len], false), "{len} bytes");
+    }
+    assert!(!is_malformed(&body[..16], true));
+    let mut bytes = CiMessage::DiscoveryReply {
+        header: header(),
+        to: Muid::of(DST),
+        data: sample_discovery(),
+    }
+    .encode();
+    bytes.truncate(13 + 15);
+    assert!(matches!(
+        CiMessage::decode(&bytes),
+        Decoded::Unread(Unread {
+            reason: UnreadReason::Malformed,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -203,14 +268,16 @@ fn a_byte_with_its_top_bit_set_is_malformed() {
 #[cfg(feature = "serde")]
 #[test]
 fn the_receivable_size_is_a_range_checked_value() {
-    use tutti_fixtures::{RangeContract, check_range_contract};
-    check_range_contract(&RangeContract {
+    use tutti_fixtures::{RangeContract, check_range_contract, check_range_serde};
+    let c = RangeContract {
         new: MaxSysexSize::new,
         get: MaxSysexSize::get,
         of: Some(MaxSysexSize::of),
         valid: &[128, 512, 0x0FFF_FFFF],
         invalid: &[0, 127, 0x1000_0000, u32::MAX],
-    });
+    };
+    check_range_contract(&c);
+    check_range_serde(&c);
 }
 
 // M2-101 Table 6: after the 13-byte preamble come the manufacturer's three

@@ -2,7 +2,6 @@
 "area: core":
   - changed-files:
       - any-glob-to-any-file:
-          - crates/arc-lend/**
           - crates/tutti-rt/**
           - crates/tutti-graph/**
           - crates/tutti-engine/**
@@ -11,7 +10,6 @@
           - crates/tutti-tempo/**
           - crates/tutti-curve/**
           - crates/tutti-metering/**
-          - testing/arc-lend-compare/**
           - testing/tutti-shm-model/**
 "area: session":
   - changed-files:

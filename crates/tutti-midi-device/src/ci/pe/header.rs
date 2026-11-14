@@ -4,6 +4,7 @@
 
 use std::num::NonZeroU32;
 
+use super::PeFlowControl;
 use super::json;
 use super::limits::{MediaType, PeMessage, PropertyName, ResourceId, ResourceName, SubscribeId};
 use super::value::{PeExtra, PeValue};
@@ -147,6 +148,42 @@ impl PeStatus {
     pub fn new(code: u16) -> Option<Self> {
         Self::ALL.into_iter().find(|s| s.code() == code)
     }
+
+    /// What the spec says to do about the status (Table 15).
+    #[must_use]
+    pub const fn class(self) -> PeStatusClass {
+        match self {
+            Self::Ok | Self::Accepted => PeStatusClass::Success,
+            Self::Unavailable | Self::BadData | Self::TooManyRequests => PeStatusClass::Retry,
+            Self::InternalError => PeStatusClass::ServerError,
+            Self::TimeoutWait | Self::Terminate | Self::TimedOut => PeStatusClass::Notify,
+            Self::BadRequest
+            | Self::Forbidden
+            | Self::NotFound
+            | Self::NotAllowed
+            | Self::FlowControlUnsupported
+            | Self::FlowControlRequired
+            | Self::PayloadTooLarge
+            | Self::UnsupportedMedia
+            | Self::InvalidVersion => PeStatusClass::ClientError,
+        }
+    }
+}
+
+/// The class of a [`PeStatus`]: Table 15 groups the codes by what the sender of
+/// the inquiry does next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PeStatusClass {
+    /// 200 to 299: do not retry.
+    Success,
+    /// 300 to 399: the inquiry should be retried.
+    Retry,
+    /// 400 to 499: the inquiry failed; do not retry.
+    ClientError,
+    /// 500 to 599: a major error.
+    ServerError,
+    /// A code a Notify message uses (§12), which no Reply does (§7.4.1).
+    Notify,
 }
 
 /// The pagination of a List Resource inquiry (§8.6.2): the spec has both
@@ -159,6 +196,15 @@ pub struct PePage {
     pub limit: NonZeroU32,
 }
 
+/// What a Set Property Data replaces (§10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PeSetScope {
+    /// The whole Property Data.
+    Whole,
+    /// The properties a Partial Set names (`setPartial`).
+    Partial,
+}
+
 /// An Inquiry: Get Property Data or Set Property Data header, or the body of a
 /// Start Subscription (§7.2, Table 13).
 #[derive(Clone, Debug, PartialEq)]
@@ -169,12 +215,13 @@ pub struct PeRequest {
     pub res_id: Option<ResourceId>,
     /// The encoding wanted of a reply, or that of the Property Data sent.
     pub mutual_encoding: Option<PeEncoding>,
-    /// Whether a Get uses Flow Control (default `false`).
-    pub flow_control: bool,
+    /// Whether a Get uses Flow Control (`flowControl`; absent is off).
+    pub flow_control: PeFlowControl,
     /// The pagination of a List Resource.
     pub page: Option<PePage>,
-    /// Whether a Set is a Partial Set (§10).
-    pub set_partial: bool,
+    /// Whether a Set replaces the whole Property Data or is a Partial Set
+    /// (`setPartial`, §10; absent is whole).
+    pub set_scope: PeSetScope,
     /// The media type of Property Data that is not JSON (§7.5).
     pub media_type: Option<MediaType>,
     /// The properties this type does not name.
@@ -189,9 +236,9 @@ impl PeRequest {
             resource,
             res_id: None,
             mutual_encoding: None,
-            flow_control: false,
+            flow_control: PeFlowControl::Off,
             page: None,
-            set_partial: false,
+            set_scope: PeSetScope::Whole,
             media_type: None,
             extra: PeExtra::default(),
         }
@@ -216,9 +263,15 @@ impl PeRequest {
             resource,
             res_id: props.string("resId", ResourceId::new)?,
             mutual_encoding: props.string("mutualEncoding", PeEncoding::new)?,
-            flow_control: props.boolean("flowControl")?.unwrap_or(false),
+            flow_control: match props.boolean("flowControl")? {
+                Some(true) => PeFlowControl::On,
+                Some(false) | None => PeFlowControl::Off,
+            },
             page,
-            set_partial: props.boolean("setPartial")?.unwrap_or(false),
+            set_scope: match props.boolean("setPartial")? {
+                Some(true) => PeSetScope::Partial,
+                Some(false) | None => PeSetScope::Whole,
+            },
             media_type: props.string("mediaType", MediaType::new)?,
             extra: PeExtra::default(),
         })
@@ -230,14 +283,14 @@ impl PeRequest {
             out.text("resId", id.as_str());
         }
         write_encoding(out, self.mutual_encoding);
-        if self.flow_control {
+        if self.flow_control == PeFlowControl::On {
             out.boolean("flowControl", true);
         }
         if let Some(page) = self.page {
             out.integer("offset", page.offset.into());
             out.integer("limit", page.limit.get().into());
         }
-        if self.set_partial {
+        if self.set_scope == PeSetScope::Partial {
             out.boolean("setPartial", true);
         }
         write_media_type(out, self.media_type.as_ref());

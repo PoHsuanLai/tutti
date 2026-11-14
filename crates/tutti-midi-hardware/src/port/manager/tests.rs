@@ -300,7 +300,7 @@ fn a_dropped_handle_queues_its_inlets_removal() {
     let first: Vec<_> = manager.inlets().take_changes().collect();
     assert!(matches!(
         first.as_slice(),
-        [InletChange::Attach { slot: 0, .. }]
+        [InletChange::Attach { slot: attached, .. }] if *attached == slot
     ));
     assert!(manager.remove_input_port(slot));
     assert_eq!(
@@ -312,7 +312,7 @@ fn a_dropped_handle_queues_its_inlets_removal() {
     let after: Vec<_> = manager.inlets().take_changes().collect();
     assert!(matches!(
         after.as_slice(),
-        [InletChange::Detach { slot: 0 }]
+        [InletChange::Detach { slot: detached }] if *detached == slot
     ));
 }
 

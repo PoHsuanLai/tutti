@@ -98,6 +98,7 @@ mod tests {
 
     /// SF2 2.04 section 8.1.2: `instrument` is the one generator an instrument zone
     /// cannot hold; the other 51 convert, each back to itself.
+    /// Spec: sf2.pdta.igen.instrument.illegal
     #[test]
     fn the_instrument_generator_cannot_be_an_instrument_level_generator() {
         let mut instrument_level = 0;

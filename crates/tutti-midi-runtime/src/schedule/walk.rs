@@ -69,7 +69,7 @@ impl Walk {
     ) {
         let t = seg.transport;
         let len = seg.block_len.get();
-        let at = |k: usize| Offset::new(start.index() + k, block.block_len);
+        let at = |k: usize| Offset::new(Samples(start.index() + k), block.block_len);
         let Some(fpb) = frames_per_beat(seg).filter(|_| t.playing) else {
             v.stop(at(0));
             self.expected = None;

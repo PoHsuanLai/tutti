@@ -38,7 +38,7 @@ fn set_word(file: &mut [u8], at: usize, value: u32) {
 /// A chunk's bytes: id, size, data, and the pad byte an odd size takes.
 fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
     let mut bytes = id.to_vec();
-    bytes.extend((data.len() as u32).to_le_bytes());
+    bytes.extend(u32::try_from(data.len()).unwrap().to_le_bytes());
     bytes.extend(data);
     if data.len() % 2 == 1 {
         bytes.push(0);
@@ -50,36 +50,61 @@ fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
 fn insert_first(mut file: Vec<u8>, kind: &[u8; 4], chunk: &[u8]) -> Vec<u8> {
     let mut at = 12;
     while &file[at + 8..at + 12] != kind {
-        at += 8 + word(&file, at + 4) as usize;
+        at += 8 + usize::try_from(word(&file, at + 4)).unwrap();
     }
+    let grow = u32::try_from(chunk.len()).unwrap();
     let size = word(&file, at + 4);
-    set_word(&mut file, at + 4, size + chunk.len() as u32);
+    set_word(&mut file, at + 4, size.checked_add(grow).unwrap());
     let riff = word(&file, 4);
-    set_word(&mut file, 4, riff + chunk.len() as u32);
+    set_word(&mut file, 4, riff.checked_add(grow).unwrap());
     file.splice(at + 12..at + 12, chunk.iter().copied());
     file
 }
 
-/// Section 4: a reader ignores a sub-chunk it does not know, in each of the
-/// three lists, whatever its size.
+/// A reader ignores an INFO sub-chunk it does not know, whatever its size.
+/// Spec: sf2.riff.info.unknown.ignored
 #[test]
-fn an_unknown_sub_chunk_is_ignored_in_every_list() {
-    for kind in [b"INFO", b"sdta", b"pdta"] {
+fn an_unknown_info_sub_chunk_is_ignored() {
+    let junk = chunk(b"JUNK", &[1, 2, 3, 4]);
+    let font = load(insert_first(base(), b"INFO", &junk)).unwrap();
+    assert_eq!(font.presets().len(), 1);
+}
+
+/// An unknown sub-chunk in `sdta` or `pdta` is a structural error, refused by
+/// name with the list and the sub-chunk, not skipped. The known sub-chunks of
+/// each list (`sm24` in `sdta`) are not unknown.
+/// Spec: sf2.riff.unknown.outside-info.structural
+#[test]
+fn an_unknown_sub_chunk_outside_info_is_refused() {
+    for kind in [b"sdta", b"pdta"] {
         let junk = chunk(b"JUNK", &[1, 2, 3, 4]);
-        let font = load(insert_first(base(), kind, &junk))
-            .unwrap_or_else(|e| panic!("{}: {e}", String::from_utf8_lossy(kind)));
-        assert_eq!(font.presets().len(), 1);
+        let error = load(insert_first(base(), kind, &junk)).unwrap_err();
+        assert!(
+            matches!(error, Error::UnknownChunk { list, id } if &list == kind && &id == b"JUNK"),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "the '{}' list has an unknown 'JUNK' sub-chunk",
+                String::from_utf8_lossy(kind)
+            )
+        );
     }
+    let sm24 = chunk(b"sm24", &[0; 4]);
+    assert!(load(insert_first(base(), b"sdta", &sm24)).is_ok());
 }
 
 /// RIFF pads a chunk of odd size to an even length, and the pad is not in the
-/// chunk's size. An odd-sized chunk (an unknown one, and a known string one)
+/// chunk's size. An odd-sized chunk (an unknown INFO one, a known string one,
+/// and a known one of the other two lists, `sm24` and `pmod`)
 /// before the rest leaves the rest where it was: the comment reads whole and
 /// the file still parses.
+/// Spec: sf2.riff.chunk.pad
 #[test]
 fn an_odd_sized_chunk_is_padded_to_even() {
-    for kind in [b"INFO", b"sdta", b"pdta"] {
-        let font = load(insert_first(base(), kind, &chunk(b"JUNK", &[7, 7, 7]))).unwrap();
+    for (kind, id) in [(b"INFO", b"JUNK"), (b"sdta", b"sm24"), (b"pdta", b"pmod")] {
+        let font = load(insert_first(base(), kind, &chunk(id, &[7, 7, 7]))).unwrap();
         assert_eq!(font.presets().len(), 1);
     }
     let font = load(insert_first(base(), b"INFO", &chunk(b"ICMT", b"abcd\0"))).unwrap();
@@ -89,6 +114,7 @@ fn an_odd_sized_chunk_is_padded_to_even() {
 
 /// The RIFF size bounds the file: bytes after it are not read, and a list that
 /// reaches past it is a short read, an error and not a panic or an over-read.
+/// Spec: sf2.riff.size.bounds, sf2.riff.damage.rejected
 #[test]
 fn the_riff_size_is_honoured() {
     let mut trailing = base();
@@ -104,6 +130,7 @@ fn the_riff_size_is_honoured() {
 
 /// A size that reaches past its list is refused by name; one that claims
 /// gigabytes is too, without reading or allocating them.
+/// Spec: sf2.riff.damage.rejected
 #[test]
 fn a_size_that_reaches_past_its_list_is_refused() {
     let mut file = base();
@@ -138,15 +165,120 @@ fn a_size_that_reaches_past_its_list_is_refused() {
 /// `ifil` is four bytes. Another size is refused, not read as four.
 #[test]
 fn a_version_chunk_of_the_wrong_size_is_refused() {
-    let mut file = insert_first(base(), b"INFO", &chunk(b"iver", &[2, 0, 1, 0, 9, 9]));
+    let mut file = insert_first(base(), b"INFO", &chunk(b"ifil", &[2, 0, 1, 0, 9, 9]));
     let error = load(std::mem::take(&mut file)).unwrap_err();
     assert!(
-        matches!(error, Error::InvalidChunkSize(id) if &id == b"iver"),
+        matches!(error, Error::InvalidChunkSize(id) if &id == b"ifil"),
         "{error:?}"
     );
 }
 
+/// An `iver` that is not four bytes is ignored, and the file loads and is
+/// taken to use no ROM samples: its ROM version stays at the default, where a
+/// four-byte `iver` of 2.1 is read.
+/// Spec: sf2.info.iver.invalid
+#[test]
+fn an_iver_that_is_not_four_bytes_is_ignored() {
+    let good = load(insert_first(
+        base(),
+        b"INFO",
+        &chunk(b"iver", &[2, 0, 1, 0]),
+    ))
+    .unwrap();
+    assert_eq!(
+        (
+            good.info().rom_version().major(),
+            good.info().rom_version().minor()
+        ),
+        (2, 1)
+    );
+
+    let default = load(base()).unwrap();
+    for size in [0usize, 2, 3, 6] {
+        let data = vec![9u8; size];
+        let font = load(insert_first(base(), b"INFO", &chunk(b"iver", &data)))
+            .unwrap_or_else(|e| panic!("iver of {size} bytes: {e}"));
+        assert_eq!(
+            (
+                font.info().rom_version().major(),
+                font.info().rom_version().minor()
+            ),
+            (
+                default.info().rom_version().major(),
+                default.info().rom_version().minor()
+            ),
+            "iver of {size} bytes"
+        );
+        assert_eq!(font.presets().len(), 1);
+    }
+}
+
+/// `base()` with its instrument's `sampleID` generator turned into an unused
+/// one, so its only zone is a global zone and no region names a sample, and its
+/// `smpl` sub-chunk replaced by `smpl` (or removed).
+fn without_regions(smpl: Option<&[u8]>) -> Vec<u8> {
+    let file = bytes(
+        &[Preset {
+            name: "p",
+            bank: 0,
+            program: 0,
+            zones: vec![(vec![], 0)],
+        }],
+        &[Inst {
+            name: "i",
+            zones: vec![vec![]],
+        }],
+    );
+    let mut file = file;
+    let igen = file.windows(4).position(|w| w == b"igen").unwrap() + 8;
+    let igen_end = igen + usize::try_from(word(&file, igen - 4)).unwrap();
+    for record in (igen..igen_end).step_by(4) {
+        if file[record..record + 2] == 53u16.to_le_bytes() {
+            file[record..record + 2].copy_from_slice(&14u16.to_le_bytes());
+        }
+    }
+    let at = file.windows(4).position(|w| w == b"smpl").unwrap();
+    let old = 8 + usize::try_from(word(&file, at + 4)).unwrap();
+    let new = smpl.map(|d| chunk(b"smpl", d)).unwrap_or_default();
+    let mut list = at - 8;
+    while &file[list..list + 4] != b"LIST" || &file[list + 8..list + 12] != b"sdta" {
+        list -= 1;
+    }
+    let mut out = file[..at].to_vec();
+    out.extend(&new);
+    out.extend(&file[at + old..]);
+    // Each size loses the old chunk and gains the new one, in u32: a size that
+    // would leave the range fails here rather than wrapping.
+    let (old, new) = (
+        u32::try_from(old).unwrap(),
+        u32::try_from(new.len()).unwrap(),
+    );
+    let resize = |size: u32| {
+        size.checked_sub(old)
+            .and_then(|s| s.checked_add(new))
+            .unwrap()
+    };
+    let size = word(&out, list + 4);
+    set_word(&mut out, list + 4, resize(size));
+    let riff = word(&out, 4);
+    set_word(&mut out, 4, resize(riff));
+    out
+}
+
+/// Section 6: the sdta list may have no `smpl` sub-chunk, or a zero-length
+/// one, and the file still loads, with no sample data.
+/// Spec: sf2.sdta.smpl.optional
+#[test]
+fn a_missing_or_empty_smpl_loads_with_no_sample_data() {
+    for (what, smpl) in [("missing", None), ("zero-length", Some(&[][..]))] {
+        let font = load(without_regions(smpl)).unwrap_or_else(|e| panic!("{what} smpl: {e}"));
+        assert!(font.wave_data().is_empty(), "{what} smpl");
+        assert!(font.instruments()[0].regions().is_empty(), "{what} smpl");
+    }
+}
+
 /// A file cut anywhere is an error and never a panic.
+/// Spec: sf2.riff.damage.rejected
 #[test]
 fn a_file_cut_at_any_length_is_an_error() {
     let file = base();

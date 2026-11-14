@@ -297,7 +297,7 @@ fn main() -> tutti_export::Result<()> {
 
     // ---- channels --------------------------------------------------------
     //
-    // Mono up to quad (signal in channel 0, silence elsewhere) and a 5.1 fold.
+    // Mono up to quad (the source on L and R, the surrounds silent) and stereo up to 5.1.
     // The judge checks the per-channel energy against the ITU matrix it computes
     // itself, rather than against the engine's own coefficients.
     write(

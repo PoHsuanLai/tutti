@@ -29,6 +29,26 @@
 //! assert!(block.iter().any(|&x| x > 0.9));
 //! ```
 //!
+//! # The two loops
+//!
+//! The control thread owns the [`Session`]. Each frame it calls
+//! [`Session::update`], which runs the [`Phase`]s of [`PHASES`] in order and
+//! returns the [`SessionEvent`]s they raised: [`Phase::Collect`] lands what
+//! the session's jobs sent and frees what the audio thread retired,
+//! [`Phase::Commit`] compiles and sends an edited graph, and the phases around
+//! them serve plugins, modulation, MIDI and reclamation.
+//!
+//! The audio thread runs the other loop: every block it renders the newest
+//! plan it has been handed, without waiting for the control thread.
+//!
+//! Between the two there are queues and no mutable state. A commit travels
+//! to the audio thread over the editor's queue, retired values travel back
+//! over its return queue, and a job on the session's spawner reports over a
+//! channel that [`Phase::Collect`] drains. A call on the [`Graph`] only stages
+//! an edit, in the graph value the control thread holds
+//! ([`Graph::topology`], [`Graph::is_edited`]); nothing reaches the audio
+//! thread until an update's commit sends it.
+//!
 //! Like `tutti-graph`, every module is private: everything is
 //! `tutti_session::Item`. The crate re-exports no crate whole (`cargo xtask check-session`).
 
@@ -139,7 +159,7 @@ pub use midi::{
 #[cfg(feature = "midi")]
 pub use midi_event::MidiEvent;
 #[cfg(feature = "midi")]
-pub use midi_follow::{FollowClock, FollowTempo};
+pub use midi_follow::{FollowClock, FollowMachineControl, FollowTempo, SendMachineControl};
 #[cfg(feature = "midi-hardware")]
 pub use midi_hardware::Resolution;
 #[cfg(feature = "modulation")]
@@ -195,7 +215,7 @@ pub use tutti_graph::{
     BusError, BusRef, BusSource, Buses, HasParam, HasParams, MissingSource, ParamUnit, Scalar,
 };
 pub use tutti_graph::{
-    CloseError, EventCapacity, Losses, MixError, ModeError, NodeMode, PassError, Stamp,
+    CloseError, CommitError, EventCapacity, Losses, MixError, ModeError, NodeMode, PassError, Stamp,
 };
 #[cfg(feature = "midi")]
 pub use tutti_ump::{MidiChannel, MidiGroup};

@@ -8,24 +8,34 @@
 //! `grep -E` or a Python regex is plain string code, written to the same
 //! language the pattern accepted (each gate's docs say how).
 
+mod alloc_binaries;
 mod canonical_paths;
 mod clap_sys;
+mod comments;
 mod conformance;
+mod conformance_site;
 mod decode_boundary;
 mod doc_features;
+mod doc_idents;
 mod doc_refs;
 mod errors;
 mod ffi;
 mod guards;
 mod hosting;
+mod junit;
 mod layout;
 mod lex;
 mod lints;
 mod midi_spec;
+mod passive_tests;
+mod platform_seam;
 mod pointers;
 mod prose;
 mod range_types;
+mod ratchet;
 mod session;
+mod sf2_spec;
+mod spec_text;
 mod submodule_pins;
 mod test_paths;
 mod toml;
@@ -114,6 +124,17 @@ pub(crate) enum Gate {
     DocRefs,
     /// Prose outside `docs/` points at no `file.rs:N`; under `docs/` the line exists.
     Pointers,
+    /// A backticked item name in prose is an item the code uses (a per-file ratchet).
+    DocIdents,
+    /// A `#[test]` asserts something (a per-file ratchet).
+    PassiveTests,
+    /// No comment holds more citations of design docs, audits, pull requests,
+    /// commits, mutation runs or `CLAUDE.md` than its baseline.
+    Comments,
+    /// An allocation test is a module of its area binary, not a binary of its own.
+    AllocBinaries,
+    /// A platform cfg stands only on a `mod` declaration.
+    PlatformSeam,
     /// The spec inventories are well formed, tags name rows, CLAP matches `clap-sys`.
     Conformance,
 }
@@ -135,6 +156,11 @@ impl Gate {
             Gate::ValueTraits => "gate check-value-traits".to_owned(),
             Gate::DocRefs => "gate check-doc-refs".to_owned(),
             Gate::Pointers => "gate check-pointers".to_owned(),
+            Gate::DocIdents => "gate check-doc-idents".to_owned(),
+            Gate::PassiveTests => "gate check-passive-tests".to_owned(),
+            Gate::Comments => "gate check-comments".to_owned(),
+            Gate::AllocBinaries => "gate check-alloc-binaries".to_owned(),
+            Gate::PlatformSeam => "gate check-platform-seam".to_owned(),
             Gate::Conformance => "gate check-conformance".to_owned(),
         }
     }
@@ -161,6 +187,11 @@ impl Gate {
             }
             Gate::DocRefs => doc_refs::check(&tree),
             Gate::Pointers => pointers::check(&tree),
+            Gate::DocIdents => doc_idents::check(&tree),
+            Gate::PassiveTests => passive_tests::check(&tree),
+            Gate::Comments => comments::check(&tree),
+            Gate::AllocBinaries => alloc_binaries::check(&tree, alloc_binaries::ALLOWED),
+            Gate::PlatformSeam => platform_seam::check(&tree, platform_seam::ALLOW),
             Gate::Conformance => {
                 let sys = clap_sys_tree(&tree);
                 let require =
@@ -169,6 +200,7 @@ impl Gate {
                     &tree,
                     sys.as_ref().map(|t| t as &dyn Tree).map_err(Clone::clone),
                     &midi_spec_text,
+                    &sf2_spec_text,
                     require,
                 )
             }
@@ -206,15 +238,27 @@ fn clap_sys_tree(repo: &RealTree) -> Result<RealTree, String> {
 /// `pdftotext -layout` makes of the PDF there. The error names what is
 /// missing.
 fn midi_spec_text(doc: &midi_spec::Doc) -> Result<String, String> {
-    let dir = std::env::var_os("TUTTI_MIDI_SPECS")
+    spec_text("TUTTI_MIDI_SPECS", doc.source)
+}
+
+/// The text of the SoundFont 2.04 spec, from the `TUTTI_SF2_SPEC` directory
+/// the same way.
+fn sf2_spec_text() -> Result<String, String> {
+    spec_text(sf2_spec::ENV, sf2_spec::SOURCE)
+}
+
+/// The `.txt` whose name starts with `source` under the directory the
+/// variable `var` names, or else what `pdftotext -layout` makes of the `.pdf`.
+fn spec_text(var: &str, source: &str) -> Result<String, String> {
+    let dir = std::env::var_os(var)
         .map(PathBuf::from)
-        .ok_or("TUTTI_MIDI_SPECS is not set")?;
+        .ok_or_else(|| format!("{var} is not set"))?;
     let all = RealTree { root: dir.clone() }.files(".", &|_| false);
     let find = |ext: &str| {
         all.iter()
             .find(|p| {
                 let name = p.rsplit('/').next().unwrap_or(p);
-                name.starts_with(doc.source) && name.ends_with(ext)
+                name.starts_with(source) && name.ends_with(ext)
             })
             .cloned()
     };
@@ -222,13 +266,8 @@ fn midi_spec_text(doc: &midi_spec::Doc) -> Result<String, String> {
         let bytes = fs::read(dir.join(&txt)).map_err(|e| format!("cannot read {txt}: {e}"))?;
         return Ok(String::from_utf8_lossy(&bytes).into_owned());
     }
-    let pdf = find(".pdf").ok_or_else(|| {
-        format!(
-            "no {}* .txt or .pdf under {} (TUTTI_MIDI_SPECS)",
-            doc.source,
-            dir.display()
-        )
-    })?;
+    let pdf = find(".pdf")
+        .ok_or_else(|| format!("no {source}* .txt or .pdf under {} ({var})", dir.display()))?;
     let out = process::Command::new("pdftotext")
         .args(["-layout"])
         .arg(dir.join(&pdf))
@@ -241,15 +280,78 @@ fn midi_spec_text(doc: &midi_spec::Doc) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// `conformance --results <dir> --out <dir>`: the dashboard at `<out>/index.html`,
+/// the landing page beside it at `<out>/../index.html` and the badges at `<out>/../badges/<area>-<os>.json`, from the JUnit files
+/// `<dir>/<os>.xml` (an OS with no file has run nothing).
+pub(crate) fn conformance_site(root: &Path, results: &Path, out: &Path) -> Result<(), String> {
+    let mut texts = Vec::new();
+    let entries = fs::read_dir(results).map_err(|e| {
+        format!(
+            "cannot read the results directory {}: {e}",
+            results.display()
+        )
+    })?;
+    let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    files.sort();
+    for path in files {
+        if path.extension().is_some_and(|x| x == "xml")
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+        {
+            let os = conformance_site::Os::from_name(stem)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            let xml =
+                fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            texts.push((os, String::from_utf8_lossy(&xml).into_owned()));
+        }
+    }
+    if texts.is_empty() {
+        return Err(format!("no <os>.xml JUnit file in {}", results.display()));
+    }
+    let tree = RealTree {
+        root: root.to_path_buf(),
+    };
+    let report = conformance_site::report(&tree, &texts)?;
+    let site = out.parent().unwrap_or(out);
+    let badges_dir = site.join("badges");
+    let mut files = vec![
+        (out.join("index.html"), conformance_site::dashboard(&report)),
+        (site.join("index.html"), conformance_site::landing()),
+    ];
+    for (name, json) in conformance_site::badges(&report) {
+        files.push((badges_dir.join(name), json));
+    }
+    for (path, contents) in files {
+        fs::create_dir_all(path.parent().expect("a file path has a parent"))
+            .and_then(|()| fs::write(&path, contents))
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    }
+    for f in &report {
+        for os in conformance_site::Os::ALL {
+            let name = os.name();
+            if !f.has_results(os) {
+                println!("{} {name}: no results", f.name);
+                continue;
+            }
+            let (covered, failing, applicable) = f.counts(os);
+            println!(
+                "{} {name}: {covered}/{applicable} covered, {failing} failing",
+                f.name
+            );
+        }
+    }
+    Ok(())
+}
+
 /// `conformance-inventory <format>`: rewrite the format's inventory file from
 /// its spec source, keeping the hand-written columns.
 pub(crate) fn conformance_inventory(root: &Path, format: &str) -> Result<(), String> {
     match format {
         "clap" => clap_inventory(root),
         "midi" => midi_inventory(root),
+        "sf2" => sf2_inventory(root),
         "vst3" => vst3_inventory(root),
         _ => Err(format!(
-            "no inventory extractor for `{format}` (`clap`, `vst3` or `midi`)"
+            "no inventory extractor for `{format}` (`clap`, `vst3`, `midi` or `sf2`)"
         )),
     }
 }
@@ -268,6 +370,36 @@ fn vst3_inventory(root: &Path) -> Result<(), String> {
     println!("wrote {path}: {} rows", items.len());
     for id in &added {
         println!("added {id} (no paraphrase: the gate refuses it until one is written)");
+    }
+    for id in &removed {
+        println!("removed {id}: its row is gone from the file; check its tests' tags");
+    }
+    Ok(())
+}
+
+fn sf2_inventory(root: &Path) -> Result<(), String> {
+    let repo = RealTree {
+        root: root.to_path_buf(),
+    };
+    let spec = sf2_spec::extract(&sf2_spec_text()?)?;
+    let path = "testing/conformance/sf2.txt";
+    let (text, added, removed) =
+        conformance::regenerate_sf2(&repo.read(path).unwrap_or_default(), &spec.items)?;
+    let file = root.join(path);
+    fs::create_dir_all(file.parent().expect("a file path has a parent"))
+        .and_then(|()| fs::write(&file, text))
+        .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+    println!("wrote {path}: {} extracted rows", spec.items.len());
+    let text_of: std::collections::BTreeMap<&str, &str> = spec
+        .items
+        .iter()
+        .map(|i| (i.id.as_str(), i.text.as_str()))
+        .collect();
+    for id in &added {
+        println!(
+            "added {id} (side todo, no paraphrase): {}",
+            text_of[id.as_str()]
+        );
     }
     for id in &removed {
         println!("removed {id}: its row is gone from the file; check its tests' tags");

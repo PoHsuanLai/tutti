@@ -70,6 +70,7 @@ fn sum(a: &[f32], b: &[f32]) -> Vec<f32> {
 /// the two channels' gains together). With the channel's CCs at 0 nothing else
 /// adds. The pan generator (-250: three quarters left) makes left and right
 /// differ, so a send that mixed the channels up fails.
+/// Spec: sf2.gen.chorusEffectsSend, sf2.gen.reverbEffectsSend, sf2.synth.sends.effects
 #[test]
 fn the_generators_set_each_voices_sends() {
     let mut rig = rig(vec![(CHORUS_SEND, 500), (REVERB_SEND, 250), (PAN, -250)]);
@@ -90,6 +91,7 @@ fn the_generators_set_each_voices_sends() {
 /// percent, added to the generator sum. With no generator, CC 91 at 127 sends
 /// 0.2 * 127/128 of the voice's level to the reverb, and CC 93 at 64 sends 0.2 *
 /// 64/128 = 0.1 to the chorus.
+/// Spec: sf2.mod.default.8, sf2.mod.default.9
 #[test]
 fn the_controllers_are_the_spec_default_modulators() {
     let mut rig = rig(vec![]);
@@ -110,6 +112,7 @@ fn the_controllers_are_the_spec_default_modulators() {
 /// The modulator's output adds to the generator sum, and the total is limited
 /// to the generator's range, 0 to 1000 tenths (section 8.1.3): 250 and CC 91 at
 /// 127 is 0.25 + 0.2 * 127/128; 900 and CC 91 at 127 is 1.098, limited to 1.
+/// Spec: sf2.mod.model.destination-sum, sf2.gen.reverbEffectsSend, sf2.mod.default.8, sf2.synth.sends.clamp
 #[test]
 fn a_send_sums_the_generator_and_the_modulator_and_stops_at_full_level() {
     let mut rig = rig(vec![(REVERB_SEND, 250)]);
@@ -136,6 +139,7 @@ fn a_send_sums_the_generator_and_the_modulator_and_stops_at_full_level() {
 /// sample it follows. (At -400 the sum stays negative either side, and the
 /// audible floor hides it.) Steady with the controllers at 0, the sends are
 /// exact zeros.
+/// Spec: sf2.synth.sends.clamp, sf2.gen.chorusEffectsSend, sf2.gen.reverbEffectsSend
 #[test]
 fn a_negative_send_sends_nothing() {
     let mut steady_rig = rig(vec![(CHORUS_SEND, -400), (REVERB_SEND, -400)]);
@@ -222,6 +226,7 @@ fn the_unit_is_idle_once_its_voices_end() {
 /// silent and not finished: the unit says `Masked`, never `Idle`, which is the
 /// status that lets the executor stop calling a node. After the delay the note
 /// sounds.
+/// Spec: sf2.gen.delayVolEnv, sf2.synth.env.delay
 #[test]
 fn a_voice_in_its_delay_is_silent_but_the_unit_is_not_idle() {
     // 1200 timecents is 2 s.

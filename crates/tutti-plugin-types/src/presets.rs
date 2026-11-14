@@ -97,14 +97,6 @@ impl PresetId {
             Self::Program { .. } | Self::Location(_) => None,
         }
     }
-
-    /// Returns the preset file's location, for CLAP.
-    pub fn location(&self) -> Option<&std::path::Path> {
-        match self {
-            Self::Location(p) => Some(p),
-            Self::Number(_) | Self::Program { .. } => None,
-        }
-    }
 }
 
 /// What a plugin's preset surface can do, as one answer for a preset UI.

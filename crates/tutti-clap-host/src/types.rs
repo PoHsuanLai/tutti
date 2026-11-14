@@ -181,26 +181,12 @@ impl ClapNoteExpression {
         self
     }
 
-    /// Scope to a specific MIDI channel.
-    #[must_use]
-    pub fn on_channel(mut self, channel: i16) -> Self {
-        self.channel = channel;
-        self
-    }
-
-    /// Scope to a specific MIDI key.
-    #[must_use]
-    pub fn on_key(mut self, key: i16) -> Self {
-        self.key = key;
-        self
-    }
-
     /// Builds a CLAP-native expression from the shared, format-agnostic
     /// [`NoteExpressionValue`](tutti_plugin_types::NoteExpressionValue). The
     /// shared form carries no voice addressing, so `port`/`channel`/`key`
     /// default to port 0 / any-channel / any-key.
     #[must_use]
-    pub fn from_shared(expr: &tutti_plugin_types::NoteExpressionValue) -> Self {
+    pub(crate) fn from_shared(expr: &tutti_plugin_types::NoteExpressionValue) -> Self {
         Self::new(expr.expression_type, expr.note_id, expr.value).at(expr.sample_offset)
     }
 }
@@ -535,27 +521,6 @@ pub struct VoiceInfo {
     pub supports_overlapping_notes: bool,
 }
 
-/// A predefined audio-port configuration the plugin can switch to.
-#[derive(Debug, Clone)]
-pub struct AudioPortConfig {
-    /// Stable id, passed back to select this configuration.
-    pub id: u32,
-    /// Display name, e.g. `"Stereo"` or `"5.1"`.
-    pub name: String,
-    /// Number of input ports this configuration exposes.
-    pub input_port_count: u32,
-    /// Number of output ports this configuration exposes.
-    pub output_port_count: u32,
-    /// Whether a main input port exists in this configuration.
-    pub has_main_input: bool,
-    /// Channel count of the main input; meaningless unless `has_main_input`.
-    pub main_input_channel_count: u32,
-    /// Whether a main output port exists in this configuration.
-    pub has_main_output: bool,
-    /// Channel count of the main output; meaningless unless `has_main_output`.
-    pub main_output_channel_count: u32,
-}
-
 /// A custom name for a single (port, channel, key) triple — used by
 /// drum kits and similar instruments.
 #[derive(Debug, Clone)]
@@ -585,27 +550,7 @@ pub struct Color {
     pub blue: u8,
 }
 
-impl Color {
-    /// Opaque color (`alpha = 255`).
-    pub const fn rgb(red: u8, green: u8, blue: u8) -> Self {
-        Self {
-            alpha: 255,
-            red,
-            green,
-            blue,
-        }
-    }
-
-    /// Color with explicit alpha.
-    pub const fn rgba(red: u8, green: u8, blue: u8, alpha: u8) -> Self {
-        Self {
-            alpha,
-            red,
-            green,
-            blue,
-        }
-    }
-}
+impl Color {}
 
 pub use tutti_clap_ffi::AutomationState as ParamAutomationState;
 

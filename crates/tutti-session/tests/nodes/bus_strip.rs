@@ -4,10 +4,11 @@
 //! Every figure is analytic: a source writes a constant exactly representable
 //! value, and a fold's gain is the fold's stated rule, not another render's.
 
+use tutti_buffers::InterleavedMut;
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status, Unforkable};
 use tutti_nodes::BusStripNode;
 use tutti_session::{OutPort, Root, Session, SessionBuilder};
-use tutti_types::{BusTopology, ChannelLayout, ChannelTopology, InterleavedMut, MaxBlock, Samples};
+use tutti_types::{BusTopology, ChannelLayout, ChannelTopology, MaxBlock, Samples};
 
 /// Constant `values` on its output channels, declaring `out` as its bus.
 struct Src {
@@ -44,7 +45,7 @@ fn heard(s: &mut Session, device: u16) -> Vec<f32> {
     let layout = ChannelLayout::from(device);
     let mut out = vec![-9.0f32; usize::from(device) * 64];
     for _ in 0..2 {
-        s.render(&mut InterleavedMut::new(&mut out, layout));
+        s.render(&mut InterleavedMut::new(&mut out, layout).unwrap());
     }
     out[..usize::from(device)].to_vec()
 }

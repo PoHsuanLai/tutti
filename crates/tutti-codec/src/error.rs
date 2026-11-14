@@ -16,6 +16,10 @@ pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
+    /// A buffer that is not whole frames of its width.
+    #[error(transparent)]
+    Buffer(#[from] tutti_buffers::BufferError),
+
     /// A [`Spec`](crate::Spec) the format cannot be written for.
     #[error("Invalid spec: {0}")]
     Spec(#[from] SpecError),
@@ -64,6 +68,7 @@ impl Clone for Error {
     fn clone(&self) -> Self {
         match self {
             Self::Io(e) => Self::Io(io::Error::new(e.kind(), e.to_string())),
+            Self::Buffer(e) => Self::Buffer(*e),
             Self::Spec(e) => Self::Spec(e.clone()),
             Self::UnknownExtension { extension } => Self::UnknownExtension {
                 extension: extension.clone(),

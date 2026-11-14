@@ -131,6 +131,61 @@ impl<'a, S: Sample> Interleaved<'a, S> {
     pub fn iter_frames(&self) -> impl Iterator<Item = &'a [S]> + use<'a, S> {
         self.data.chunks_exact(self.stride())
     }
+
+    /// Deinterleaves into caller-owned planes, reusing their allocations.
+    ///
+    /// Each plane is cleared and refilled; it grows only when it has less
+    /// capacity than [`len`](Self::len). Planes past `stride()` are cleared, so
+    /// a wider `planes` carries no stale data from a previous block. Channels
+    /// past `planes.len()` are skipped.
+    pub fn deinterleave_into(&self, planes: &mut [Vec<S>]) {
+        for plane in planes.iter_mut() {
+            plane.clear();
+        }
+        self.append_to_planes(planes);
+    }
+
+    /// Deinterleaves onto the end of caller-owned planes: channel `c` is
+    /// appended to `planes[c]`.
+    ///
+    /// The accumulating form of [`deinterleave_into`](Self::deinterleave_into),
+    /// for a caller collecting a whole render block by block. Planes past
+    /// `stride()` are left as they are, and channels past `planes.len()` are
+    /// skipped.
+    pub fn append_to_planes(&self, planes: &mut [Vec<S>]) {
+        let ch = self.stride();
+        for (c, plane) in planes.iter_mut().enumerate().take(ch) {
+            plane.reserve(self.len().get());
+            plane.extend(self.data.chunks_exact(ch).map(|f| f[c]));
+        }
+    }
+}
+
+impl Interleaved<'_, f32> {
+    /// Folds every frame through `fold` into a caller-owned buffer, reusing its
+    /// allocation: the result is interleaved at the fold's destination width,
+    /// [`len`](Self::len) frames long.
+    ///
+    /// `out` is resized to the result, so it is a destination and not an
+    /// accumulator. It grows only when it has less capacity than the result, so
+    /// a streaming consumer that reuses one `out` stops allocating once it has
+    /// seen its largest chunk.
+    ///
+    /// # Panics
+    ///
+    /// If `fold` does not read this buffer's width.
+    pub fn fold_into(&self, fold: &crate::Fold, out: &mut Vec<f32>) {
+        assert_eq!(
+            fold.src_layout(),
+            self.layout,
+            "the fold reads another width"
+        );
+        let width = usize::from(fold.dst_layout().count());
+        out.resize(self.len().interleaved_len(fold.dst_layout()), 0.0);
+        for (frame, dst) in self.iter_frames().zip(out.chunks_exact_mut(width)) {
+            fold.frame(frame, dst);
+        }
+    }
 }
 
 /// The write side of [`Interleaved`].
@@ -243,5 +298,38 @@ impl<'a, S: Sample> InterleavedMut<'a, S> {
     pub fn iter_frames_mut(&mut self) -> impl Iterator<Item = &mut [S]> + use<'_, S> {
         let stride = self.stride();
         self.data.chunks_exact_mut(stride)
+    }
+
+    /// Interleaves `planes` from frame `start` into every whole frame.
+    ///
+    /// Every sample is written, so a reused buffer keeps nothing from its last
+    /// use: a channel with no plane, and the frames a plane is too short to
+    /// reach, are silence. A plane past `stride()` is ignored. The strict form,
+    /// which refuses a mismatch, is [`interleave`](crate::interleave).
+    pub fn interleave_from<P: AsRef<[S]>>(&mut self, planes: &[P], start: Samples) {
+        let ch = self.stride();
+        let frames = self.len().get();
+        for c in 0..ch {
+            let src = planes
+                .get(c)
+                .and_then(|p| p.as_ref().get(start.get()..))
+                .unwrap_or(&[]);
+            let src = &src[..src.len().min(frames)];
+            let mut dst = self
+                .data
+                .get_mut(c..)
+                .unwrap_or_default()
+                .iter_mut()
+                .step_by(ch)
+                .take(frames);
+            // `src` leads the zip: it is the one that runs out, and a zip whose
+            // first side is `dst` would take one slot past it.
+            for (&s, d) in src.iter().zip(&mut dst) {
+                *d = s;
+            }
+            for d in dst {
+                *d = S::SILENCE;
+            }
+        }
     }
 }

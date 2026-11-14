@@ -15,7 +15,7 @@ use crate::spec::Spec;
 use crate::writer::FormatWriter;
 use aifc::{AifcWriteInfo, AifcWriter, FileFormat, SampleFormat};
 use std::io::{Seek, Write};
-use tutti_types::Interleaved;
+use tutti_buffers::Interleaved;
 
 /// Writes an AIFF (or AIFF-C) file through the [`FormatWriter`] contract.
 pub struct AiffWriter<W: Write + Seek> {

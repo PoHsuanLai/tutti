@@ -205,7 +205,7 @@ impl PluginInfo {
     }
 
     /// Sets whether the plugin has a MIDI **input** bus. The output direction is
-    /// separate — see [`midi_output`](Self::midi_output).
+    /// separate — see `midi_output`.
     #[must_use]
     pub fn midi(mut self, has_midi: bool) -> Self {
         self.has_midi_input = has_midi;
@@ -214,7 +214,7 @@ impl PluginInfo {
 
     /// Sets whether the plugin emits MIDI the host can read back.
     #[must_use]
-    pub fn midi_output(mut self, has_midi_output: bool) -> Self {
+    pub(crate) fn midi_output(mut self, has_midi_output: bool) -> Self {
         self.has_midi_output = has_midi_output;
         self
     }

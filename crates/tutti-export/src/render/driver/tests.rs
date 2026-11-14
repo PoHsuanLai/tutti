@@ -2,11 +2,12 @@ use super::*;
 use crate::control::{CancelToken, Progress, Stage};
 use crate::{GRAPH_MAX_BLOCK, Setup};
 use std::sync::Arc;
+use tutti_buffers::Interleaved;
 use tutti_graph::GraphBuilder;
 use tutti_tempo::TempoMap;
 use tutti_transport::{FrozenClock, OfflineTimeline, OfflineTimelineConfig};
+use tutti_types::ChannelLayout;
 use tutti_types::{Beat, Bpm, SampleRate};
-use tutti_types::{ChannelLayout, Interleaved};
 use tutti_ump::Ump;
 
 const RATE: SampleRate = SampleRate::SR_48K;
@@ -54,10 +55,11 @@ fn render(
                 let block = &mut scratch[..window.len() * ch];
                 fold.planar_to_interleaved(
                     |c| &planes[c][window.clone()],
-                    InterleavedMut::new(block, layout),
+                    InterleavedMut::new(block, layout).unwrap(),
                 );
                 out.extend(
                     Interleaved::new(block, layout)
+                        .unwrap()
                         .iter_frames()
                         .map(<[f32]>::to_vec),
                 );
@@ -274,13 +276,21 @@ fn plane_source_zero_fills_a_missing_channel_every_block() {
     let mut src = PlaneSource::new(&planes, None);
     let mut out = vec![9.9f32; 4 * 4];
     let quad = ChannelLayout::from(4u16);
-    assert_eq!(src.fill(InterleavedMut::new(&mut out, quad)).unwrap(), 4);
+    assert_eq!(
+        src.fill(InterleavedMut::new(&mut out, quad).unwrap())
+            .unwrap(),
+        4
+    );
     for f in out.as_chunks::<4>().0 {
         assert_eq!(f, &[1.0, 0.0, 0.0, 0.0]);
     }
     // Second pull into the same dirty buffer.
     out.fill(9.9);
-    assert_eq!(src.fill(InterleavedMut::new(&mut out, quad)).unwrap(), 4);
+    assert_eq!(
+        src.fill(InterleavedMut::new(&mut out, quad).unwrap())
+            .unwrap(),
+        4
+    );
     for f in out.as_chunks::<4>().0 {
         assert_eq!(f, &[1.0, 0.0, 0.0, 0.0]);
     }

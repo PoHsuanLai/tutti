@@ -121,6 +121,7 @@ impl Variant {
     }
 }
 
+use tutti_buffers::InterleavedMut;
 use tutti_graph::{Cost, Cx, Event, Io, Node, Offset, Prepare, Shape, Status, Unforkable};
 use tutti_nodes::{BusStripNode, ConvolverNode, LimiterControls, LimiterNode};
 use tutti_polysynth::{Adsr, FilterType, OscillatorType, PolySynth, SynthConfig};
@@ -128,8 +129,8 @@ use tutti_sampler::{MemorySource, Playback, SlotId, VoicePool, VoiceWindow};
 use tutti_session::{InPort, OutPort, Root, Session, Workers};
 use tutti_transport::MotionEvent;
 use tutti_types::{
-    Amplitude, Beat, Cents, ChannelLayout, Db, Hz, InterleavedMut, MaxBlock, PlaybackRate,
-    Resonance, SampleRate, Samples, Seconds,
+    Amplitude, Beat, Cents, ChannelLayout, Db, Hz, MaxBlock, PlaybackRate, Resonance, SampleRate,
+    Samples, Seconds,
 };
 use tutti_ump::{Message, MidiChannel, NoteNumber, NoteVelocity, Ump, Voice2};
 
@@ -376,14 +377,14 @@ fn measure(block: usize, workers: Workers, variant: Variant) -> Figures {
     let blocks = |span: Seconds| span.to_samples(SampleRate::of(RATE)).get().div_ceil(block);
     let warm = blocks(WARM);
     for _ in 0..warm {
-        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO).unwrap());
     }
     let n = blocks(MEASURED);
     let mut loads = Vec::with_capacity(n);
     let mut peak_out = 0.0f32;
     meter.reset();
     for _ in 0..n {
-        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO).unwrap());
         loads.push(meter.peek().last);
         peak_out = out.iter().fold(peak_out, |m, x| m.max(x.abs()));
     }

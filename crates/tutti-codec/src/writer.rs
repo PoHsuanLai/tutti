@@ -1,7 +1,7 @@
 //! The contract every format's writer keeps.
 
 use crate::error::Result;
-use tutti_types::Interleaved;
+use tutti_buffers::Interleaved;
 
 /// A `FormatWriter` writes blocks of interleaved samples into its sink as one
 /// file of its format.

@@ -4,8 +4,8 @@
 use super::ClapLoaded;
 use super::load::layout_of_port;
 use crate::types::{
-    AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioPortConfig, AudioPortInfo,
-    NoteDialect, NoteDialects, NoteName, NotePortInfo, SurroundChannel, VoiceInfo,
+    AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioPortInfo, NoteDialect,
+    NoteDialects, NoteName, NotePortInfo, SurroundChannel, VoiceInfo,
 };
 use clap_sys::ext::ambisonic::{
     CLAP_AMBISONIC_NORMALIZATION_MAXN, CLAP_AMBISONIC_NORMALIZATION_N2D,
@@ -96,7 +96,7 @@ impl ClapLoaded {
     /// notes to it go out as `clap_event_midi`: the same question as
     /// [`sends_midi_notes`](Self::sends_midi_notes), asked of every port.
     /// Empty for a plugin with no input note port.
-    pub fn midi_note_ports(&self, main: &MainThread) -> Vec<bool> {
+    pub(crate) fn midi_note_ports(&self, main: &MainThread) -> Vec<bool> {
         let count = self.note_port_count(main, true).min(16);
         (0..count)
             .map(|index| {
@@ -144,68 +144,6 @@ impl ClapLoaded {
             supported_dialects: NoteDialects::from_bits_truncate(info.supported_dialects),
             preferred_dialect,
         })
-    }
-
-    /// Number of predefined port configurations
-    /// (`CLAP_EXT_AUDIO_PORTS_CONFIG`) the plugin offers.
-    pub fn audio_port_config_count(&self, main: &MainThread) -> u32 {
-        self.plugin.audio_ports_config_count(main)
-    }
-
-    /// Describes the audio port configuration at `index`.
-    pub fn audio_port_config(&self, main: &MainThread, index: u32) -> Option<AudioPortConfig> {
-        let config = self.plugin.audio_ports_config(main, index)?;
-
-        Some(AudioPortConfig {
-            id: config.id,
-            name: config.name,
-            input_port_count: config.input_port_count,
-            output_port_count: config.output_port_count,
-            has_main_input: config.has_main_input,
-            main_input_channel_count: config.main_input_channel_count,
-            has_main_output: config.has_main_output,
-            main_output_channel_count: config.main_output_channel_count,
-        })
-    }
-
-    /// Asks the plugin to switch to a previously reported port configuration.
-    /// Returns whether the plugin accepted the request.
-    pub fn select_audio_port_config(&mut self, main: &MainThread, config_id: u32) -> bool {
-        self.plugin
-            .select_audio_ports_config(main, config_id)
-            .unwrap_or(false)
-    }
-
-    /// The `id` of the audio-ports configuration currently active
-    /// (`CLAP_EXT_AUDIO_PORTS_CONFIG_INFO`). Returns `None` when the plugin
-    /// does not implement the extension.
-    ///
-    /// This is the companion to [`audio_port_config_count`](Self::audio_port_config_count) /
-    /// [`audio_port_config`](Self::audio_port_config): those enumerate
-    /// the *available* configs; this reports which one is live and lets you
-    /// read its full per-port info via
-    /// [`audio_port_config_port_info`](Self::audio_port_config_port_info).
-    pub fn current_audio_port_config(&self, main: &MainThread) -> Option<u32> {
-        self.plugin.current_audio_ports_config(main)
-    }
-
-    /// Full [`AudioPortInfo`] for a single port *within a specific config*
-    /// (`CLAP_EXT_AUDIO_PORTS_CONFIG_INFO`). Unlike
-    /// [`audio_port_config`](Self::audio_port_config) (which returns
-    /// only the config summary), this exposes each port's id / name / channel
-    /// count / flags / type for the named `config_id`, without first having to
-    /// switch to it. Returns `None` when unsupported or the plugin rejects the
-    /// `(config_id, port_index, is_input)` triple.
-    pub fn audio_port_config_port_info(
-        &self,
-        main: &MainThread,
-        config_id: u32,
-        port_index: u32,
-        is_input: bool,
-    ) -> Option<AudioPortInfo> {
-        self.plugin
-            .audio_ports_config_port_info(main, config_id, port_index, is_input)
-            .and_then(|info| audio_port_info_from_ffi(&info))
     }
 
     /// Plugin-reported processing latency in samples. 0 when unsupported.
@@ -354,7 +292,7 @@ impl ClapLoaded {
     /// channels. Nothing is lost in the conversion — a position this crate
     /// cannot name arrives as [`Speaker::Unknown`](tutti_types::Speaker::Unknown)
     /// and keeps its channel's slot.
-    pub fn surround_topology(
+    pub(crate) fn surround_topology(
         &self,
         main: &MainThread,
         is_input: bool,

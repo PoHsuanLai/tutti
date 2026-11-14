@@ -22,6 +22,7 @@ testing = []
 serde = ["dep:serde"]
 
 [dependencies]
+tutti-buffers = { version = "0.0.1", path = "../tutti-buffers" }
 # Value vocabulary (the `Curve` trait), for `impl Curve for Trajectory`.
 tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
 tutti-rt = { version = "0.0.1", path = "../tutti-rt" }

@@ -84,20 +84,6 @@ impl RenderMode {
     pub fn is_offline(self) -> bool {
         matches!(self, RenderMode::Offline)
     }
-
-    /// Returns the mode implied by whether the caller is rendering offline.
-    ///
-    /// The inverse of [`is_offline`](Self::is_offline), for the call sites that
-    /// hold a bool — an export driver, or an engine reporting that it is
-    /// freewheeling.
-    #[must_use]
-    pub fn from_offline(offline: bool) -> Self {
-        if offline {
-            RenderMode::Offline
-        } else {
-            RenderMode::Realtime
-        }
-    }
 }
 
 /// How a plugin takes a change of [`RenderMode`], fixed for a loaded plugin.
@@ -137,14 +123,5 @@ mod tests {
     fn the_default_is_realtime() {
         assert_eq!(RenderMode::default(), RenderMode::Realtime);
         assert!(!RenderMode::default().is_offline());
-    }
-
-    /// The bool round-trip is what the format edges and the export driver both
-    /// use, so it has to be exact in both directions.
-    #[test]
-    fn offline_round_trips_through_a_bool() {
-        for mode in [RenderMode::Realtime, RenderMode::Offline] {
-            assert_eq!(RenderMode::from_offline(mode.is_offline()), mode);
-        }
     }
 }

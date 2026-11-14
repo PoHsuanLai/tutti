@@ -14,7 +14,7 @@
 //! velocity). Where a cast is sound, its `#[allow]` says why.
 #![deny(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 
-use tutti_plugin_types::{NoteExpressionValue, WireMidi};
+use tutti_plugin_types::WireMidi;
 
 mod harmony;
 mod legacy_cc;
@@ -41,23 +41,6 @@ pub trait EventExt {
     /// other direction is [`MidiEncoder`], which keeps the per-note bend ranges
     /// one event cannot carry.
     fn to_midi(&self) -> Option<WireMidi>;
-
-    /// The per-note expression value, or `None` for another payload or a
-    /// `typeId` that is not an `f64` expression (see
-    /// [`expression_type_from_id`]).
-    fn to_note_expression(&self) -> Option<NoteExpressionValue>;
-
-    /// The stepped per-note expression.
-    fn to_expression_int(&self) -> Option<NoteExpressionIntValue>;
-
-    /// The chord, its text read from `arena`.
-    fn to_chord(&self, arena: &[u16]) -> Option<Utf16Chord>;
-
-    /// The scale, its text read from `arena`.
-    fn to_scale(&self, arena: &[u16]) -> Option<Utf16Scale>;
-
-    /// The text annotation, read from `arena`.
-    fn to_expression_text(&self, arena: &[u16]) -> Option<Utf16Text>;
 }
 
 /// An engine value that stages as one [`Event`].
@@ -69,26 +52,6 @@ pub trait ToEvent {
 impl EventExt for Event {
     fn to_midi(&self) -> Option<WireMidi> {
         midi::decode(self)
-    }
-
-    fn to_note_expression(&self) -> Option<NoteExpressionValue> {
-        note_expression::decode(self)
-    }
-
-    fn to_expression_int(&self) -> Option<NoteExpressionIntValue> {
-        note_expression::decode_int(self)
-    }
-
-    fn to_chord(&self, arena: &[u16]) -> Option<Utf16Chord> {
-        harmony::decode_chord(self, arena)
-    }
-
-    fn to_scale(&self, arena: &[u16]) -> Option<Utf16Scale> {
-        harmony::decode_scale(self, arena)
-    }
-
-    fn to_expression_text(&self, arena: &[u16]) -> Option<Utf16Text> {
-        harmony::decode_text(self, arena)
     }
 }
 

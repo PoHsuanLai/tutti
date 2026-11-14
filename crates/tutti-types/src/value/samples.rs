@@ -126,8 +126,7 @@ impl Samples {
     /// samples holds at `layout`'s width: `len / channels`, the inverse of
     /// [`interleaved_len`](Self::interleaved_len).
     ///
-    /// A trailing partial frame is **not** counted, matching
-    /// [`Interleaved::len`](crate::Interleaved::len): a short frame is not a
+    /// A trailing partial frame is **not** counted: a short frame is not a
     /// frame, and writing one desynchronises the interleave for everything
     /// after it.
     ///

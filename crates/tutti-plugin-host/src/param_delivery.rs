@@ -572,13 +572,13 @@ impl ParamDelivery {
 
     /// `n` MIDI events the node did not deliver
     /// (`DeliveryCounters::count_midi_dropped`). RT-safe.
-    pub fn count_midi_dropped(&self, n: u64) {
+    pub(crate) fn count_midi_dropped(&self, n: u64) {
         self.counters.count_midi_dropped(n);
     }
 
     /// `n` transport changes the chunk had no room for
     /// (`DeliveryCounters::count_transport_dropped`). RT-safe.
-    pub fn count_transport_dropped(&self, n: u64) {
+    pub(crate) fn count_transport_dropped(&self, n: u64) {
         self.counters.count_transport_dropped(n);
     }
 
@@ -841,7 +841,7 @@ impl ParamDelivery {
 
     /// The chunk being filled will never be submitted (a reset or a
     /// re-prepare drops it): its values are owed to the next chunk.
-    pub fn abandon(&mut self) {
+    pub(crate) fn abandon(&mut self) {
         self.settle(false);
     }
 

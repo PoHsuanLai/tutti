@@ -202,6 +202,9 @@ jobs:
       - run: cargo xtask check-passive-tests
       - run: cargo xtask check-comments
       - run: cargo xtask check-alloc-binaries
+      # A public item names audio with a fixed sample format only as a row of
+      # `xtask/buffers-fixed.txt`; a ratchet like the baselines above.
+      - run: cargo xtask check-buffers
       # A platform cfg stands only on a `mod` declaration; the `-ffi` crates are
       # exempt and the temporary rows in the gate are a ratchet.
       - run: cargo xtask check-platform-seam

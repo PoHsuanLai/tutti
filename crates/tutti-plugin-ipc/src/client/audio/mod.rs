@@ -35,7 +35,7 @@ use tutti_plugin_types::{
 use tutti_types::SampleRate;
 
 /// VST3 sequencer-context inputs for one process block, bundled to keep
-/// [`AudioBridge::submit`]'s signature manageable. All default to empty.
+/// `AudioBridge::submit`'s signature manageable. All default to empty.
 #[derive(Debug, Default, Clone)]
 pub struct HarmonyInputs {
     /// Chord changes in the block.
@@ -48,7 +48,7 @@ pub struct HarmonyInputs {
     pub expr_ints: NoteExpressionIntChanges,
 }
 
-/// What [`AudioBridge::submit`] did with a block.
+/// What `AudioBridge::submit` did with a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Submitted {
     /// The bridge accepted the block (its output is collectable later).
@@ -85,13 +85,13 @@ const PARAM_TIMEOUT: Duration = Duration::from_secs(5);
 /// Listener for plugin-originated unsolicited events. Invoked on the
 /// bridge thread (a plain OS thread) — blocking is OK, but prefer posting
 /// to a channel and returning promptly.
-pub type BridgeListener = Arc<dyn Fn(BridgeEvent) + Send + Sync>;
+pub(crate) type BridgeListener = Arc<dyn Fn(BridgeEvent) + Send + Sync>;
 
 pub(super) type ListenerSlot = Arc<Mutex<Option<BridgeListener>>>;
 
 /// Clone is cheap (Arc-based).
 #[derive(Clone)]
-pub struct AudioBridge {
+pub(crate) struct AudioBridge {
     channels: Channels,
     payloads: PayloadPool,
     lifecycle: Lifecycle,
@@ -167,7 +167,7 @@ impl AudioBridge {
     /// some) of `points` points each (the node's per-chunk budget). Control
     /// thread: allocates. See [`submit`](Self::submit) and
     /// `PayloadPool::reserve_params`.
-    pub fn reserve_param_changes(&self, queues: usize, points: usize) {
+    pub(crate) fn reserve_param_changes(&self, queues: usize, points: usize) {
         self.payloads.reserve_params(queues, points);
     }
 
@@ -244,7 +244,7 @@ impl AudioBridge {
     /// Latches `cause` as the reason the bridge is dead (the first cause
     /// wins), so a host that ends the server itself reads the reason it
     /// gave.
-    pub fn mark_crashed(&self, cause: PluginFailure) {
+    pub(crate) fn mark_crashed(&self, cause: PluginFailure) {
         self.lifecycle.mark_crashed(cause);
     }
 
@@ -348,7 +348,7 @@ impl AudioBridge {
     }
 
     /// Queues a rate change. Realtime-safe; `false` when it was not queued.
-    pub fn set_sample_rate_rt(&self, rate: SampleRate) -> bool {
+    pub(crate) fn set_sample_rate_rt(&self, rate: SampleRate) -> bool {
         // Publish before queueing, so both the staleness bound and
         // the bridge thread's reply timeout track the new period from here on.
         self.channels.set_sample_rate(rate);
@@ -369,7 +369,7 @@ impl AudioBridge {
 
     /// Queues a reset of the plugin's processing state. Realtime-safe; `false`
     /// when it was not queued.
-    pub fn reset_rt(&self) -> bool {
+    pub(crate) fn reset_rt(&self) -> bool {
         !self.lifecycle.is_crashed() && self.channels.push_command(Command::Reset)
     }
 
@@ -391,7 +391,7 @@ impl AudioBridge {
     /// `status` is set to what the plugin said of itself at the end of block
     /// `seq` when its reply was among them, and left as it was otherwise: an
     /// earlier block's status is about an earlier block, and is dropped.
-    pub fn take_replies(
+    pub(crate) fn take_replies(
         &self,
         seq: u64,
         midi_out: &mut MidiEventVec,
@@ -603,7 +603,7 @@ impl AudioBridge {
     ///
     /// The plugin is dead, the queue is full, the server did not answer, or the
     /// server (the plugin) refused.
-    pub fn open_editor_in_server(
+    pub(crate) fn open_editor_in_server(
         &self,
         parent: Option<u64>,
         scale: ContentScale,
@@ -631,7 +631,7 @@ impl AudioBridge {
 
     /// Closes the server's editor. No answer: `false` when the command could
     /// not be queued.
-    pub fn close_editor_in_server(&self) -> bool {
+    pub(crate) fn close_editor_in_server(&self) -> bool {
         !self.lifecycle.is_crashed() && self.channels.push_command(Command::CloseEditor)
     }
 
@@ -641,7 +641,10 @@ impl AudioBridge {
     /// # Errors
     ///
     /// As [`open_editor_in_server`](Self::open_editor_in_server).
-    pub fn set_editor_size_in_server(&self, size: Size) -> std::result::Result<Size, EditorError> {
+    pub(crate) fn set_editor_size_in_server(
+        &self,
+        size: Size,
+    ) -> std::result::Result<Size, EditorError> {
         if self.lifecycle.is_crashed() {
             return Err(EditorError::PluginCrashed);
         }
@@ -661,13 +664,13 @@ impl AudioBridge {
 
     /// The size the server's editor asked its window to take since the last
     /// call.
-    pub fn take_editor_wants_size(&self) -> Option<Size> {
+    pub(crate) fn take_editor_wants_size(&self) -> Option<Size> {
         self.lifecycle.take_editor_wants()
     }
 
     /// Whether the server closed its editor on its own account since the last
     /// call.
-    pub fn take_editor_closed(&self) -> bool {
+    pub(crate) fn take_editor_closed(&self) -> bool {
         self.lifecycle.take_editor_closed()
     }
 

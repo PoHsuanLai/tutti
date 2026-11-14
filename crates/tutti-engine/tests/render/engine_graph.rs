@@ -30,6 +30,7 @@ use crate::support;
 use support::{Change, Segment, beat_of_frame, model_beats, step_map};
 use tutti_engine::Engine;
 
+use tutti_buffers::InterleavedMut;
 use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{
@@ -40,9 +41,7 @@ use tutti_graph::{OutPort, Source};
 use tutti_transport::{
     FadeOut, LoopEdit, MotionEvent, Then, Timeline, Transport, TransportCommand,
 };
-use tutti_types::{
-    At, Beat, Bpm, ChannelLayout, Frame, InterleavedMut, LoopRange, SampleRate, Samples, Tail,
-};
+use tutti_types::{At, Beat, Bpm, ChannelLayout, Frame, LoopRange, SampleRate, Samples, Tail};
 use tutti_ump::{MidiChannel, U7};
 
 const SR: f64 = 48_000.0;
@@ -67,7 +66,7 @@ fn render(engine: &Engine, layout: ChannelLayout, blocks: &[usize]) -> Vec<f32> 
     let mut all = Vec::new();
     for &n in blocks {
         let mut buf = vec![0.0f32; n * ch];
-        engine.process(&mut InterleavedMut::new(&mut buf, layout));
+        engine.process(&mut InterleavedMut::new(&mut buf, layout).unwrap());
         all.extend_from_slice(&buf);
     }
     all
@@ -286,7 +285,7 @@ fn fold_and_declick_are_the_fold_matrix_and_a_linear_fade() {
             let frame: Vec<f32> = (0..src).map(|c| value(f as u64, c)).collect();
             // The ITU formulas, written out: 6 -> 2 is `FL + m·C + m·SL`, and
             // equal widths pass through; 2 -> 6 leaves the rest silent.
-            let m = tutti_types::M3DB;
+            let m = tutti_buffers::M3DB;
             let folded: Vec<f32> = match (src, device) {
                 (6, 2) => vec![
                     frame[0] + m * frame[2] + m * frame[4],
@@ -1032,7 +1031,7 @@ fn re_preparing_under_the_engine_adopts_the_new_block_at_once() {
         let layout = ChannelLayout::from_count(3);
         let go = |n: usize| {
             let mut buf = vec![0.0f32; n * 3];
-            let mut out = InterleavedMut::new(&mut buf, layout);
+            let mut out = InterleavedMut::new(&mut buf, layout).unwrap();
             if segment {
                 engine.process_segment(&mut out);
             } else {
@@ -1186,7 +1185,7 @@ fn the_published_playhead_is_the_closed_form_over_ten_minutes() {
             // An untimed edit between blocks lands on the next block's frame.
             transport.settings().set_tempo(Bpm::of(91.5));
         }
-        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::MONO));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::MONO).unwrap());
         if i > 0 {
             assert_eq!(
                 first.lock().expect("log").to_bits(),
@@ -1487,7 +1486,7 @@ fn the_playhead_another_thread_reads_never_goes_backwards() {
         while reads.load(Ordering::Acquire) == seen {
             std::thread::yield_now();
         }
-        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::MONO));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::MONO).unwrap());
     }
     stop.store(true, Ordering::Release);
     let (backwards, last) = reader.join().expect("reader");

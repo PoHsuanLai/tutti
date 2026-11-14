@@ -10,7 +10,8 @@ use crate::writer::FormatWriter;
 use std::fs::File;
 use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
-use tutti_types::{ChannelLayout, Interleaved, Samples};
+use tutti_buffers::Interleaved;
+use tutti_types::{ChannelLayout, Samples};
 
 /// Writes blocks of audio as one file of a [format](crate::Format): the
 /// [writer](crate::FormatWriter) of whichever format the [`Spec`] names,
@@ -36,11 +37,12 @@ use tutti_types::{ChannelLayout, Interleaved, Samples};
 /// # #[cfg(feature = "encode-wav")] {
 /// use std::io::Cursor;
 /// use tutti_codec::{Encoder, Format, Pcm, Spec};
-/// use tutti_types::{ChannelLayout, Interleaved, SampleRate};
+/// use tutti_types::{ChannelLayout, SampleRate};
+/// use tutti_buffers::Interleaved;
 ///
 /// let spec = Spec::of_width(Format::Wav(Pcm::Int16), ChannelLayout::STEREO, SampleRate::SR_48K);
 /// let mut encoder = Encoder::create(&spec, Cursor::new(Vec::new()))?;
-/// encoder.write(Interleaved::new(&[0.5, -0.5, 0.25, -0.25], ChannelLayout::STEREO))?;
+/// encoder.write(Interleaved::new(&[0.5, -0.5, 0.25, -0.25], ChannelLayout::STEREO)?)?;
 /// let wav = encoder.finish()?.into_inner();
 /// assert_eq!(&wav[..4], b"RIFF");
 /// assert_eq!(wav.len(), 44 + 2 * 2 * 2); // a header, two stereo frames of 16 bits

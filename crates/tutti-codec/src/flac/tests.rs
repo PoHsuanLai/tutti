@@ -66,7 +66,8 @@ fn an_empty_stream_states_valid_sizes() {
 fn a_writer_that_lost_a_frame_fails_promptly() {
     use crate::test_sink::Flaky;
     use crate::{FormatWriter, Spec};
-    use tutti_types::{ChannelLayout, Interleaved, SampleRate};
+    use tutti_buffers::Interleaved;
+    use tutti_types::{ChannelLayout, SampleRate};
 
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -90,7 +91,7 @@ fn a_writer_that_lost_a_frame_fails_promptly() {
             .collect();
         let mut failed = false;
         for _ in 0..200 {
-            if w.write(Interleaved::new(&samples, ChannelLayout::STEREO))
+            if w.write(Interleaved::new(&samples, ChannelLayout::STEREO).unwrap())
                 .is_err()
             {
                 failed = true;
@@ -99,7 +100,7 @@ fn a_writer_that_lost_a_frame_fails_promptly() {
         }
         // More writes and the finish must not wait on the lost frame.
         let again = w
-            .write(Interleaved::new(&samples, ChannelLayout::STEREO))
+            .write(Interleaved::new(&samples, ChannelLayout::STEREO).unwrap())
             .is_err();
         let finished = w.finish().is_err();
         let _ = tx.send((failed, again, finished));

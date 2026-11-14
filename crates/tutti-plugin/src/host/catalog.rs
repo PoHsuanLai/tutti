@@ -40,11 +40,8 @@
 //! own thread and sends deltas back; [`poll_scan`](Catalog::poll_scan)
 //! applies them on the owner. The catalog is readable throughout, and nothing
 //! here runs on or reaches the audio thread.
-//!
-//! Audio knobs are separate and default sensibly; set them with
-//! [`Catalog::with_audio_config`] when the defaults don't fit.
 
-use crate::host::db_probe::{measure_record, probe_plugin, probe_plugin_measured, probe_record};
+use crate::host::db_probe::{measure_record, probe_plugin, probe_plugin_measured};
 use crate::host::plugin_ref::PluginRef;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -53,7 +50,7 @@ use tutti_plugin_db::{
     BlacklistedFile, Delta, FileFacts, PluginDb, PluginEntry, Scan, ScanBusy, ScanPoll, ScanResult,
     Scanner,
 };
-use tutti_plugin_ipc::{AudioConfig, CatalogConfig};
+use tutti_plugin_ipc::CatalogConfig;
 use tutti_plugin_types::PluginDescriptor;
 use tutti_plugin_types::{BridgeError, BridgeResult};
 
@@ -97,7 +94,6 @@ pub struct Catalog {
     blacklist: Arc<RwLock<PluginDb>>,
     scanner: Scanner,
     config: CatalogConfig,
-    audio: AudioConfig,
     persist: Persist,
     unreported: Unreported,
     /// The write a finished rescan started on its own thread.
@@ -108,7 +104,6 @@ impl std::fmt::Debug for Catalog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Catalog")
             .field("config", &self.config)
-            .field("audio", &self.audio)
             .finish_non_exhaustive()
     }
 }
@@ -234,9 +229,6 @@ impl Catalog {
     /// recovery, and on a short-lived thread for the save after a rescan, which
     /// gets a copy of the table. A crash recovery removes its sentinel only
     /// after `persist` succeeds.
-    ///
-    /// Audio settings default ([`AudioConfig::default`]); override with
-    /// [`Catalog::with_audio_config`].
     #[must_use]
     pub fn new(
         db: PluginDb,
@@ -250,7 +242,6 @@ impl Catalog {
             blacklist,
             scanner,
             config,
-            audio: AudioConfig::default(),
             persist: Arc::new(persist),
             unreported: Unreported::default(),
             pending_save: None,
@@ -269,23 +260,6 @@ impl Catalog {
     pub fn with_measuring(mut self) -> Self {
         self.scanner = Scanner::new(self.config.pedal_path(), probe_plugin_measured);
         self
-    }
-
-    /// Sets the audio settings a load that names this catalog applies.
-    #[must_use]
-    pub fn with_audio_config(mut self, audio: AudioConfig) -> Self {
-        self.audio = audio;
-        self
-    }
-
-    /// Returns the audio settings a load that names this catalog applies.
-    ///
-    /// `PluginLoad::with_catalog` (the session's load) takes them, and the
-    /// blacklist as a [`BlacklistView`], so no borrow of the catalog has to
-    /// outlive the launch, which can take from half a second to several
-    /// seconds.
-    pub fn audio_config(&self) -> &AudioConfig {
-        &self.audio
     }
 
     /// The database, for reading rows this catalog has no method for.
@@ -568,36 +542,6 @@ impl Catalog {
         self.change(|db, _, _| db.apply(Delta::remove(path)));
     }
 
-    /// Probes one plugin file and adds it to the catalog, returning its
-    /// [`PluginRef`] (the file's first plugin).
-    ///
-    /// For plugins known by path rather than found by a scan, such as one
-    /// shipped inside an application bundle or a file the user picked.
-    /// **Blocking**: the probe spawns a subprocess and waits on a handshake,
-    /// up to about seven seconds if the plugin hangs. A frame-driven host should
-    /// run [`probe_record`] on a worker and pass the result to
-    /// [`apply`](Self::apply) instead.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error of [`probe_record`], for example when the file
-    /// extension is not a plugin format or the probe fails.
-    pub fn register_path(&mut self, plugin_path: impl AsRef<Path>) -> BridgeResult<PluginRef> {
-        let delta = probe_record(plugin_path)?;
-        let key = delta.path().to_path_buf();
-        self.apply(delta);
-        self.db
-            .plugins()
-            .find(|p| p.path == key)
-            .map(|p| PluginRef::from(&p))
-            .or_else(|| PluginRef::file(&key))
-            .ok_or_else(|| BridgeError::LoadFailed {
-                path: key,
-                stage: tutti_plugin_types::LoadStage::Opening,
-                reason: "unrecognized plugin extension".to_string(),
-            })
-    }
-
     /// Measures the file `plugin` names and records the result: the tail and
     /// latency each of its plugins reports, against what it renders, in each descriptor's
     /// [`measured`](PluginDescriptor::measured).
@@ -618,12 +562,11 @@ impl Catalog {
         Ok(())
     }
 
-    /// Applies a delta to the catalog, such as the one [`probe_record`]
+    /// Applies a delta to the catalog, such as the one `probe_record`
     /// returns.
     ///
-    /// The non-blocking half of [`register_path`](Self::register_path): run
-    /// [`probe_record`] on any thread (it needs no catalog) and pass the result
-    /// here. Call [`save`](Self::save) to persist.
+    /// Run `probe_record` on any thread (it needs no catalog) and pass the
+    /// result here. Call [`save`](Self::save) to persist.
     pub fn apply(&mut self, delta: Delta) {
         self.change(|db, _, _| db.apply(delta));
     }

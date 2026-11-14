@@ -6,9 +6,10 @@
 
 use cpal::traits::DeviceTrait;
 use std::sync::Arc;
+use tutti_buffers::InterleavedMut;
 use tutti_engine::Engine;
 use tutti_rt::with_no_denormals;
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate};
+use tutti_types::{ChannelLayout, SampleRate};
 
 use crate::block::OutputBlock;
 use crate::driver_seam::{CpalDriver, OutputSpec, RunningStream, StreamDriver};

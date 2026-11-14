@@ -308,7 +308,11 @@ impl Vst3Loaded {
     /// (e.g. snapping a knob to the automation lane while reading). No-op if the
     /// plugin doesn't implement `IAutomationState`. Returns `true` if the call
     /// was delivered. Must run on the main/UI thread.
-    pub fn apply_automation_state(&mut self, main: &MainThread, mode: AutomationMode) -> bool {
+    pub(crate) fn apply_automation_state(
+        &mut self,
+        main: &MainThread,
+        mode: AutomationMode,
+    ) -> bool {
         self.plugin
             .set_automation_state(main, tutti_vst3_ffi::AutomationStates::from(mode))
     }

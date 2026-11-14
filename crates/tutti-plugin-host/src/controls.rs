@@ -321,7 +321,7 @@ impl PluginControls {
     /// Update the shared rate and re-stamp every installed source. Called from
     /// the node's `prepare`; a no-op on a slot with nothing installed (a
     /// later install reads the new rate).
-    pub fn restamp(&self, sample_rate: SampleRate) {
+    pub(crate) fn restamp(&self, sample_rate: SampleRate) {
         self.sample_rate.store(sample_rate, Ordering::Release);
     }
 

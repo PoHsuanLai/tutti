@@ -239,7 +239,6 @@ mod transport_cell;
 
 pub use controller::Vst2Controller;
 pub use error::{LoadStage, Result, Vst2Error};
-pub use host::ParameterChange;
 pub use loaded::Vst2Loaded;
 pub use processor::Vst2Processor;
 // `effGetParameterProperties` + the MIDI-metadata family. VST2 has no

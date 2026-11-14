@@ -11,10 +11,11 @@
 //! so its aligned input is its input) and a mix of one half is
 //! `A / 2 * 0.5 + A * 0.5`, each exact in `f32`.
 
+use tutti_buffers::InterleavedMut;
 use tutti_graph::{CrossfadeCurve, Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
 use tutti_nodes::testing::Const;
 use tutti_session::{InPort, MixError, NodeMode, OutPort, Root, Session};
-use tutti_types::{ChannelLayout, InterleavedMut, Mix, Seconds};
+use tutti_types::{ChannelLayout, Mix, Seconds};
 
 const A: f32 = 0.25;
 const BLOCK: usize = 64;
@@ -72,7 +73,7 @@ impl Rig {
         let mut block = vec![f32::NAN; BLOCK * 2];
         for _ in 0..SETTLE_BLOCKS {
             self.s
-                .render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+                .render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
         }
         block.iter().step_by(2).copied().collect()
     }

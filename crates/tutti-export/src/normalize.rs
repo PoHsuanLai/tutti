@@ -12,9 +12,10 @@
 //! A caller who holds planes and wants the reading for itself uses
 //! [`Normalize::gain_for_rendered`] and [`Rendered::apply_gain`](crate::Rendered::apply_gain).
 
+use tutti_buffers::{Interleaved, InterleavedMut};
 use tutti_dsp::DitherShape;
 use tutti_measure::{Loudness, LoudnessConfig, LoudnessState, finish_loudness, step_loudness};
-use tutti_types::{Amplitude, ChannelLayout, Db, Interleaved, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Amplitude, ChannelLayout, Db, SampleRate, Samples};
 
 use crate::Result;
 use crate::Unmeasured;
@@ -212,7 +213,7 @@ impl Normalize {
                 return Ok(Outcome::Cancelled);
             }
             let end = (at + chunk).min(frames);
-            measurer.feed(planes, at..end);
+            measurer.feed(planes, at..end)?;
             at = end;
             control.advance(Stage::Measuring, Samples(done.get() + at), total);
         }
@@ -329,27 +330,21 @@ impl Measurer {
     }
 
     /// Feeds the frames `span` of `planes`.
-    fn feed(&mut self, planes: &[Vec<f32>], span: std::ops::Range<usize>) {
+    fn feed(&mut self, planes: &[Vec<f32>], span: std::ops::Range<usize>) -> crate::Result<()> {
         let layout = self.cfg.layout;
         let frames = span.len();
         self.scratch.clear();
         self.scratch
             .resize(Samples(frames).interleaved_len(layout), 0.0);
-        InterleavedMut::new(&mut self.scratch, layout).interleave_from(planes, span.start);
-        step_loudness(
-            &self.cfg,
-            &mut self.state,
-            Interleaved::new(&self.scratch, layout),
-        );
+        let mut scratch = InterleavedMut::new(&mut self.scratch, layout)?;
+        scratch.interleave_from(planes, Samples(span.start));
+        step_loudness(&self.cfg, &mut self.state, scratch.as_ref());
+        Ok(())
     }
 
     /// Feeds `frames`, already interleaved in this meter's layout.
-    pub(crate) fn feed_interleaved(&mut self, frames: &[f32]) {
-        step_loudness(
-            &self.cfg,
-            &mut self.state,
-            Interleaved::new(frames, self.cfg.layout),
-        );
+    pub(crate) fn feed_interleaved(&mut self, frames: Interleaved<'_>) {
+        step_loudness(&self.cfg, &mut self.state, frames);
     }
 
     /// The reading of everything fed.

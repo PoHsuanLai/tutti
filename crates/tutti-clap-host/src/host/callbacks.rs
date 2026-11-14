@@ -181,32 +181,6 @@ impl HostCallbacks for HostState {
         timers.len() < len_before
     }
 
-    fn note_names_changed(&self) {
-        self.notes.names_changed.store(true, Ordering::Release);
-    }
-
-    fn voice_info_changed(&self) {
-        self.notes.voice_info_changed.store(true, Ordering::Release);
-    }
-
-    fn audio_ports_config_rescan(&self) {
-        self.audio_ports
-            .config_changed
-            .store(true, Ordering::Release);
-    }
-
-    fn ambisonic_changed(&self) {
-        self.audio_ports
-            .ambisonic_changed
-            .store(true, Ordering::Release);
-    }
-
-    fn surround_changed(&self) {
-        self.audio_ports
-            .surround_changed
-            .store(true, Ordering::Release);
-    }
-
     fn track_info(&self) -> Option<TrackInfo> {
         self.track.info.lock().ok()?.clone()
     }

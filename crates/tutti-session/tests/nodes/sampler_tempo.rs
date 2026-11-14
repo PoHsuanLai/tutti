@@ -4,9 +4,10 @@
 
 use std::sync::Arc;
 
+use tutti_buffers::InterleavedMut;
 use tutti_session::{OutPort, Root, Session};
 use tutti_transport::MotionEvent;
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate};
+use tutti_types::{ChannelLayout, SampleRate};
 
 const RATE: f64 = 48_000.0;
 
@@ -28,7 +29,7 @@ fn run(s: &Session, frames: usize, block: usize) -> Vec<f32> {
     let mut out = Vec::with_capacity(frames * 2);
     let mut buf = vec![0.0f32; block * 2];
     while out.len() < frames * 2 {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         out.extend_from_slice(&buf);
     }
     out.truncate(frames * 2);

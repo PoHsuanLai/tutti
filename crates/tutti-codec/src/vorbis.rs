@@ -15,7 +15,7 @@
 //! stand for each other (the engine's 5.1 has sides where Vorbis says rear).
 //! Mono and stereo are the same in every order and are not touched.
 //!
-//! A permutation, not a [`Fold`](tutti_types::Fold): a fold mixes a speaker the
+//! A permutation, not a [`Fold`](tutti_buffers::Fold): a fold mixes a speaker the
 //! destination lacks into its neighbours, and an encoder must never change the
 //! signal. Where the topology is not a rearrangement of Vorbis's layout for
 //! that width (or is absent for a width the engine has no default order for:
@@ -46,7 +46,8 @@ use std::io::{Seek, Write};
 use std::num::{NonZeroU8, NonZeroU32};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
-use tutti_types::{ChannelLayout, Interleaved, Speaker};
+use tutti_buffers::Interleaved;
+use tutti_types::{ChannelLayout, Speaker};
 use vorbis_rs::{VorbisBitrateManagementStrategy, VorbisEncoder, VorbisEncoderBuilder};
 
 /// Blocks in flight between the caller and the encoder thread.
@@ -295,6 +296,29 @@ fn build<W: Write>(
         .map_err(|e| Error::encoding(Codec::Ogg, format!("failed to build encoder: {e}")))
 }
 
+/// Encodes one block of `planes`, in stream order when `order` reorders
+/// them: the planes move into `ordered` for the call and back after it.
+fn encode<W: Write>(
+    encoder: &mut VorbisEncoder<W>,
+    planes: &mut [Vec<f32>],
+    ordered: &mut [Vec<f32>],
+    order: Option<&[usize]>,
+) -> std::result::Result<(), String> {
+    let Some(order) = order else {
+        return encoder
+            .encode_audio_block(planes)
+            .map_err(|e| e.to_string());
+    };
+    for (slot, &channel) in ordered.iter_mut().zip(order) {
+        *slot = std::mem::take(&mut planes[channel]);
+    }
+    let result = encoder.encode_audio_block(&*ordered);
+    for (slot, &channel) in ordered.iter_mut().zip(order) {
+        planes[channel] = std::mem::take(slot);
+    }
+    result.map_err(|e| e.to_string())
+}
+
 /// The encoder thread: deinterleave each block, put the planes in Vorbis's
 /// order, encode it, and finish the
 /// stream when the queue closes. After a failure it keeps draining the queue
@@ -315,18 +339,13 @@ fn run<W: Write>(
     let mut failed = false;
     for samples in queue {
         if !failed {
-            Interleaved::new(&samples, layout).deinterleave_into(&mut planes);
-            let result = match order {
-                None => encoder.encode_audio_block(&planes),
-                Some(order) => {
-                    for (slot, &channel) in ordered.iter_mut().zip(order) {
-                        *slot = std::mem::take(&mut planes[channel]);
-                    }
-                    let result = encoder.encode_audio_block(&ordered);
-                    for (slot, &channel) in ordered.iter_mut().zip(order) {
-                        planes[channel] = std::mem::take(slot);
-                    }
-                    result
+            // The queue carries the samples of checked views, so a block that
+            // is not whole frames is a fault of this writer, reported as one.
+            let result = match Interleaved::new(&samples, layout) {
+                Err(e) => Err(e.to_string()),
+                Ok(block) => {
+                    block.deinterleave_into(&mut planes);
+                    encode(&mut encoder, &mut planes, &mut ordered, order)
                 }
             };
             if let Err(e) = result {

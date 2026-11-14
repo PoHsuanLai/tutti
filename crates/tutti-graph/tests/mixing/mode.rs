@@ -22,15 +22,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use common::{Kind, Pair, Ringer, SpecBehaviour, TestNode, bits, prepare};
+use tutti_buffers::{FoldError, M3DB};
 use tutti_graph::{
     Bus, BusRole, Buses, CrossfadeCurve, Cx, Edge, Editor, Event, EventEdge, EventIn, EventKind,
     EventOut, Executor, ForkByClone, ForkMode, ForkTarget, GraphInvalid, GraphSpec, InPort, Io,
     ModeError, Node, NodeKey, NodeMode, Offset, OutPort, PassError, Prepare, Shape, Source, Status,
     Topology, TransportPosition, Unforkable, ValidGraph,
 };
-use tutti_types::{
-    BusTopology, ChannelLayout, ChannelTopology, FoldError, Latency, M3DB, Samples, Speaker, Tail,
-};
+use tutti_types::{BusTopology, ChannelLayout, ChannelTopology, Latency, Samples, Speaker, Tail};
 use tutti_ump::Ump;
 
 const BLOCK: usize = 64;

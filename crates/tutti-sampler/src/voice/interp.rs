@@ -21,11 +21,12 @@
 
 use std::ops::Range;
 use std::sync::Arc;
+use tutti_buffers::{Fold, FoldEnd, FoldError};
 use tutti_codec::Wave;
 use tutti_dsp::cubic_hermite;
 use tutti_types::{
-    Beat, BeatDuration, Bpm, ChannelLayout, ChannelTopology, Fold, FoldEnd, FoldError, Frame,
-    ReadRate, SamplePosition, SampleRate, Samples, Speaker, TimelineSegment, snap_to_whole_frame,
+    Beat, BeatDuration, Bpm, ChannelLayout, ChannelTopology, Frame, ReadRate, SamplePosition,
+    SampleRate, Samples, Speaker, TimelineSegment, snap_to_whole_frame,
 };
 
 use super::clock::{BlockClock, Run, Wrap};
@@ -1120,7 +1121,7 @@ mod tests {
 
     /// Narrowing goes through the engine's ITU-R BS.775 matrix, not a front-pair
     /// truncation: a centre-only 5.1 source must reach both stereo outputs at
-    /// −3 dB ([`M3DB`](tutti_types::M3DB)), the ITU figure.
+    /// −3 dB ([`M3DB`](tutti_buffers::M3DB)), the ITU figure.
     #[test]
     fn six_channel_wave_on_a_stereo_frame_folds_through_the_itu_matrix() {
         // 5.1 order: L R C LFE Ls Rs — centre only.
@@ -1133,7 +1134,7 @@ mod tests {
         let mut out = [0.0f32; 2];
         read_frame(&w, 4.0, &mut out);
 
-        assert_eq!(out, [tutti_types::M3DB; 2], "the ITU centre figure");
+        assert_eq!(out, [tutti_buffers::M3DB; 2], "the ITU centre figure");
         assert!(
             out[0] > 0.5 && out[1] > 0.5,
             "centre was dropped — this is front-pair truncation, not a fold: {out:?}"
@@ -1237,7 +1238,7 @@ mod tests {
         let place = Place::for_wave(&w, ChannelLayout::from(12u16)).unwrap();
         let mut out = [9.0f32; MAX_SAMPLER_CHANNELS];
         super::read_frame(&w, &place, 4.0, &mut out);
-        assert!((out[0] - tutti_types::M3DB).abs() < 1e-6, "{out:?}");
+        assert!((out[0] - tutti_buffers::M3DB).abs() < 1e-6, "{out:?}");
         assert!(out[1..].iter().all(|&s| s.abs() < 1e-6), "{out:?}");
 
         let mut quad = Wave::new(4, SampleRate::SR_48K);
@@ -1252,7 +1253,7 @@ mod tests {
             4.0,
             &mut out,
         );
-        let m = tutti_types::M3DB;
+        let m = tutti_buffers::M3DB;
         assert!((out[0] - (1.0 + m * 4.0)).abs() < 1e-5 && (out[1] - (2.0 + m * 8.0)).abs() < 1e-5);
     }
 

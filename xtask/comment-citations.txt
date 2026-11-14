@@ -1,5 +1,4 @@
 2 Cargo.toml
-1 crates/arc-lend/src/lib.rs
 1 crates/tutti-au-host/tests/render/au_process_no_alloc.rs
 1 crates/tutti-clap-ffi/src/events.rs
 1 crates/tutti-clap-host/src/events.rs
@@ -15,7 +14,6 @@
 1 crates/tutti-engine/tests/alloc_budget.rs
 4 crates/tutti-engine/tests/render/tempo_ramps.rs
 1 crates/tutti-engine/tests/render/tempo_steps.rs
-1 crates/tutti-engine/tests/rt_no_alloc_engine.rs
 1 crates/tutti-engine/tests/support/mod.rs
 1 crates/tutti-export/src/graph.rs
 1 crates/tutti-export/src/render/driver.rs
@@ -49,10 +47,8 @@
 1 crates/tutti-graph/src/slots.rs
 7 crates/tutti-graph/src/spec.rs
 2 crates/tutti-graph/src/testing.rs
-1 crates/tutti-graph/tests/bus_no_alloc.rs
 11 crates/tutti-graph/tests/differential.rs
 2 crates/tutti-graph/tests/events/play_clock.rs
-1 crates/tutti-graph/tests/event_tap.rs
 1 crates/tutti-graph/tests/executor/chase.rs
 1 crates/tutti-graph/tests/executor/no_denormals.rs
 1 crates/tutti-graph/tests/executor/parallel.rs
@@ -66,7 +62,6 @@
 1 crates/tutti-graph/tests/mixing/mix.rs
 1 crates/tutti-graph/tests/mixing/mode.rs
 10 crates/tutti-graph/tests/mixing/param_mod.rs
-4 crates/tutti-graph/tests/rt_no_alloc.rs
 2 crates/tutti-graph/tests/topology/bus_edges.rs
 1 crates/tutti-graph/tests/topology/buses.rs
 1 crates/tutti-graph/tests/topology/cost_model.rs
@@ -254,7 +249,6 @@
 1 crates/tutti-session/tests/wiring/vocabulary.rs
 1 crates/tutti/src/lib.rs
 1 crates/tutti-tempo/src/view.rs
-1 crates/tutti-tempo/tests/range.rs
 4 crates/tutti-transport/src/audio.rs
 3 crates/tutti-transport/src/clock.rs
 1 crates/tutti-transport/src/offline.rs
@@ -264,15 +258,12 @@
 1 crates/tutti-types/src/io.rs
 2 crates/tutti-types/src/value/unit_param.rs
 1 crates/tutti-types/src/value/units/amounts.rs
-1 crates/tutti-types/tests/beats_per_cycle_range.rs
-1 crates/tutti-types/tests/bpm_range.rs
-1 crates/tutti-types/tests/sample_rate_range.rs
 1 crates/tutti-vst2-host/src/controller.rs
 1 crates/tutti-vst2-host/src/hosting.rs
 1 crates/tutti-vst2-host/src/host.rs
 1 crates/tutti-vst2-host/src/loaded.rs
 1 crates/tutti-vst2-host/src/parameters.rs
-7 .github/workflows/ci.yml
+6 .github/workflows/ci.yml
 1 rust-toolchain.toml
 1 testing/tutti-fixtures/src/range_contract.rs
 2 testing/tutti-plugin-contract/src/cases.rs

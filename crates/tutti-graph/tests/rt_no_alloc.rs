@@ -1409,7 +1409,7 @@ fn mode_graph(workers: usize) -> (Editor, tutti_graph::Executor) {
 }
 
 /// Toggling modes and rendering inside `assert_no_alloc`, on `workers`
-/// participants (doc 013, "Bypass and mute are graph state"): every node of a
+/// participants: every node of a
 /// graph with latent nodes (lines to feed and to run), event nodes (held-key
 /// tables to observe and to close), a node with no audio input, and sums, has
 /// its mode moved every few blocks, so every block runs some node in a fade,
@@ -1456,7 +1456,7 @@ fn parallel_toggling_modes_are_allocation_free() {
 }
 
 /// Moving mixes and rendering inside `assert_no_alloc`, on `workers`
-/// participants (doc 013, "Bypass and mute are graph state", M4): the graph of
+/// participants: the graph of
 /// the mode gate with every node's mix moved every few blocks (the ends and
 /// between, so a node runs steady WET, steady DRY, a steady blend and a ramp)
 /// and a third of the nodes' modes moved with them, so a mix also meets a
@@ -1509,7 +1509,7 @@ fn parallel_moving_mixes_are_allocation_free() {
 }
 
 /// Driven mixes and rendering inside `assert_no_alloc`, on `workers`
-/// participants (doc 013, "Bypass and mute are graph state", M4b): the graph
+/// participants: the graph
 /// of the mode gate, with a commit that then drives the mix of five of its
 /// kept nodes from lanes of four periods and latencies (two of them late
 /// enough to give a node an event ring), and a mix, a range and a third of the
@@ -1602,7 +1602,7 @@ fn parallel_driven_mixes_are_allocation_free() {
     driven_mixes_are_allocation_free_on(4);
 }
 
-/// Edge fades (doc 030 section 4) inside `assert_no_alloc`, on `workers`
+/// Edge fades inside `assert_no_alloc`, on `workers`
 /// participants: eight constants summed at the output, each edge fading in or
 /// out over several blocks of different lengths, the ended fades reported on
 /// the ring (a push of a plain value), then a block rendered after the editor

@@ -11,8 +11,8 @@
 //!
 //! Not covered here, by construction: a block with no reader writes nothing and
 //! counts nothing. The count lives in an `Arc` only the reader reads, so once
-//! the reader is dropped there is nobody to observe it; `NodeMode` (doc 013's
-//! bypass and mute) is not in the graph yet, so a bypassed source's silence is
+//! the reader is dropped there is nobody to observe it; `NodeMode` (bypass
+//! and mute) is not in the graph yet, so a bypassed source's silence is
 //! M1's to test.
 
 use tutti_graph::testing as common;

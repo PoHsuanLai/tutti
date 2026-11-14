@@ -144,6 +144,151 @@ impl Cents {
     }
 }
 
+/// A pitch distance in cents, never below zero: how far a unison stack spreads
+/// its sub-voices to either side of the written pitch.
+///
+/// Distinct from [`Cents`], which is a signed offset: a distance has no
+/// direction, so a negative one is unwritable rather than clamped at each use.
+///
+/// **Range-checked**: [`new`](Self::new) refuses NaN, the infinities and
+/// anything below zero, and so do `TryFrom<f32>` and serde. [`of`](Self::of)
+/// is for a literal. [`clamped`](Self::clamped) is the one saturating
+/// constructor, for a value that arrives from a lane or a knob;
+/// [`Unit::from_raw`] is it too, since a cell holds any float.
+///
+/// ```
+/// use tutti_types::CentsSpan;
+///
+/// assert_eq!(CentsSpan::new(12.0).map(CentsSpan::get), Some(12.0));
+/// assert_eq!(CentsSpan::new(-1.0), None);
+/// assert_eq!(CentsSpan::clamped(-1.0), CentsSpan::ZERO);
+/// ```
+#[repr(transparent)]
+#[derive(Copy, Clone, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "f32", into = "f32"))]
+pub struct CentsSpan(f32);
+
+// NOT `Additive` and NOT `Scalable`: a difference or a negative factor leaves
+// the range. Do the arithmetic on the raw number and call `new` (or
+// `clamped`, where saturating is meant).
+impl CentsSpan {
+    /// No distance.
+    pub const ZERO: CentsSpan = CentsSpan(0.0);
+
+    /// The distance, or `None` when `raw` is NaN, infinite or below zero.
+    #[inline]
+    #[must_use]
+    pub const fn new(raw: f32) -> Option<CentsSpan> {
+        if raw >= 0.0 && raw <= f32::MAX {
+            Some(CentsSpan(raw))
+        } else {
+            None
+        }
+    }
+
+    /// The distance for a literal or a constant. For a value that arrives from
+    /// outside, use [`new`](Self::new).
+    ///
+    /// # Panics
+    ///
+    /// When `raw` is NaN, infinite or below zero; in a `const` that is a
+    /// compile error.
+    #[inline]
+    #[must_use]
+    #[track_caller]
+    pub const fn of(raw: f32) -> CentsSpan {
+        match Self::new(raw) {
+            Some(span) => span,
+            None => panic!("a cents span is finite and not below zero"),
+        }
+    }
+
+    /// `raw` constrained into `0..=f32::MAX`; NaN is [`ZERO`](Self::ZERO).
+    #[inline]
+    #[must_use]
+    pub const fn clamped(raw: f32) -> CentsSpan {
+        if raw.is_nan() || raw < 0.0 {
+            CentsSpan::ZERO
+        } else if raw > f32::MAX {
+            CentsSpan(f32::MAX)
+        } else {
+            CentsSpan(raw)
+        }
+    }
+
+    /// Returns the raw distance, for a boundary the unit types do not cross.
+    #[inline]
+    #[must_use]
+    pub const fn get(self) -> f32 {
+        self.0
+    }
+
+    /// This distance as a signed offset upward.
+    #[inline]
+    #[must_use]
+    pub const fn to_cents(self) -> Cents {
+        Cents(self.0)
+    }
+
+    /// This distance in semitones.
+    #[inline]
+    #[must_use]
+    pub fn to_semitones(self) -> Semitones {
+        self.to_cents().to_semitones()
+    }
+}
+
+impl PartialOrd for CentsSpan {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+
+impl core::fmt::Display for CentsSpan {
+    #[inline]
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+/// `from_raw` saturates ([`CentsSpan::clamped`]): a parameter cell holds any
+/// float, and a unit's `from_raw` cannot refuse.
+impl Unit for CentsSpan {
+    type Raw = f32;
+    #[inline]
+    fn from_raw(v: f32) -> Self {
+        Self::clamped(v)
+    }
+    #[inline]
+    fn to_raw(self) -> f32 {
+        self.0
+    }
+}
+
+impl TryFrom<f32> for CentsSpan {
+    type Error = CentsSpanOutOfRange;
+
+    #[inline]
+    fn try_from(raw: f32) -> Result<CentsSpan, CentsSpanOutOfRange> {
+        CentsSpan::new(raw).ok_or(CentsSpanOutOfRange(raw))
+    }
+}
+
+impl From<CentsSpan> for f32 {
+    #[inline]
+    fn from(span: CentsSpan) -> f32 {
+        span.0
+    }
+}
+
+/// A raw number that is not a cents span: NaN, infinite or below zero (see
+/// [`CentsSpan::new`]).
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error("a cents span is finite and not below zero, got {0}")]
+pub struct CentsSpanOutOfRange(pub f32);
+
 impl Semitones {
     /// One octave.
     pub const OCTAVE: Semitones = Semitones(12.0);

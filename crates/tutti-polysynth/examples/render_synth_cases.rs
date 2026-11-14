@@ -24,7 +24,7 @@ use tutti_graph::{Event, Offset};
 use tutti_polysynth::{
     Adsr, FilterType, OscillatorType, PolySynth, SvfMode, SynthConfig, UnisonConfig,
 };
-use tutti_types::{Amplitude, Cents, Hz, Q, Samples, Seconds, Spread};
+use tutti_types::{Amplitude, CentsSpan, Hz, Q, Samples, Seconds, Spread};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 const SR: f64 = 48_000.0;
@@ -189,7 +189,7 @@ fn main() {
         let mut cfg = base(OscillatorType::Saw);
         cfg.unison = Some(UnisonConfig {
             voice_count: UnisonVoices::new(voices).expect("a unison count"),
-            detune_cents: Cents::new(detune),
+            detune_cents: CentsSpan::new(detune).expect("a non-negative detune"),
             stereo_spread: Spread(0.8),
             ..Default::default()
         });

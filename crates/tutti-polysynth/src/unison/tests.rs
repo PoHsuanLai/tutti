@@ -6,11 +6,11 @@ use crate::UnisonVoices;
 fn a_driven_detune_is_floored_at_zero() {
     let mut engine = UnisonEngine::new(UnisonConfig {
         voice_count: UnisonVoices::of(3),
-        detune_cents: Cents(12.0),
+        detune_cents: CentsSpan::of(12.0),
         ..UnisonConfig::default()
     });
     engine.sync_from_atomics([Some(-10.0), None]);
-    assert_eq!(engine.config().detune_cents, Cents(0.0));
+    assert_eq!(engine.config().detune_cents, CentsSpan::ZERO);
 }
 
 #[test]
@@ -21,7 +21,7 @@ fn test_single_voice() {
     };
     let unison = UnisonEngine::new(config);
 
-    assert_eq!(unison.voice_count(), 1);
+    assert_eq!(unison.voice_count(), UnisonVoices::of(1));
 
     let params = unison.voice_params(0);
     assert!((params.freq_ratio - 1.0).abs() < 0.001);
@@ -33,13 +33,13 @@ fn test_single_voice() {
 fn test_detune_spread() {
     let config = UnisonConfig {
         voice_count: UnisonVoices::of(3),
-        detune_cents: Cents(12.0), // ~1/8 semitone spread
+        detune_cents: CentsSpan::of(12.0), // ~1/8 semitone spread
         stereo_spread: Spread::POINT,
         phase_randomize: false,
     };
     let unison = UnisonEngine::new(config);
 
-    assert_eq!(unison.voice_count(), 3);
+    assert_eq!(unison.voice_count(), UnisonVoices::of(3));
 
     // Center voice should be at ratio 1.0
     let center = unison.voice_params(1);
@@ -63,7 +63,7 @@ fn test_detune_spread() {
 fn test_stereo_spread() {
     let config = UnisonConfig {
         voice_count: UnisonVoices::of(3),
-        detune_cents: Cents(0.0),
+        detune_cents: CentsSpan::ZERO,
         stereo_spread: Spread(1.0),
         phase_randomize: false,
     };
@@ -138,7 +138,7 @@ fn test_config_update() {
         voice_count: UnisonVoices::of(5),
         ..Default::default()
     });
-    assert_eq!(unison.voice_count(), 5);
+    assert_eq!(unison.voice_count(), UnisonVoices::of(5));
 
     unison.sync_from_atomics([Some(20.0), Some(0.5)]);
     assert!((unison.config().detune_cents.get() - 20.0).abs() < 0.001);

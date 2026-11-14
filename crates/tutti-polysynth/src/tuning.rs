@@ -17,7 +17,7 @@ use tutti_ump::NoteNumber;
 // definition, so the duplication is inert — unlike the *conversions* that used
 // to sit beside it, which are now `Semitones::to_pitch_ratio` and
 // `Cents::to_pitch_ratio`.
-const A4_FREQ: Hz = Hz(440.0);
+pub(crate) const A4_FREQ: Hz = Hz(440.0);
 const A4_NOTE: NoteNumber = NoteNumber::of(69);
 
 #[derive(Debug, Clone, Copy, PartialEq)]

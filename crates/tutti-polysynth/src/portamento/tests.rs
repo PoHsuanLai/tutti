@@ -7,7 +7,7 @@ fn test_no_glide() {
         mode: PortamentoMode::Off,
         ..Default::default()
     };
-    let mut porta = Portamento::new(config, SampleRate::SR_44K1);
+    let mut porta = Portamento::new(config, SampleRate::SR_44K1, Hz::new(440.0));
 
     porta.set_target(Hz::new(880.0), false);
     assert!((porta.tick().get() - 880.0).abs() < 0.01);
@@ -18,10 +18,10 @@ fn test_no_glide() {
 fn test_always_glide() {
     let config = PortamentoConfig {
         mode: PortamentoMode::Always,
-        time: Seconds(0.01), // 10ms
+        time: GlideTime::of(0.01), // 10ms
         ..Default::default()
     };
-    let mut porta = Portamento::new(config, SampleRate::SR_44K1);
+    let mut porta = Portamento::new(config, SampleRate::SR_44K1, Hz::new(440.0));
 
     porta.reset(Hz::new(440.0));
     porta.set_target(Hz::new(880.0), false);
@@ -43,10 +43,10 @@ fn test_always_glide() {
 fn test_legato_only() {
     let config = PortamentoConfig {
         mode: PortamentoMode::LegatoOnly,
-        time: Seconds(0.01),
+        time: GlideTime::of(0.01),
         ..Default::default()
     };
-    let mut porta = Portamento::new(config, SampleRate::SR_44K1);
+    let mut porta = Portamento::new(config, SampleRate::SR_44K1, Hz::new(440.0));
 
     porta.reset(Hz::new(440.0));
 
@@ -70,10 +70,10 @@ fn test_curve_shapes() {
         let config = PortamentoConfig {
             mode: PortamentoMode::Always,
             curve,
-            time: Seconds(0.01),
+            time: GlideTime::of(0.01),
             ..Default::default()
         };
-        let mut porta = Portamento::new(config, SampleRate::SR_44K1);
+        let mut porta = Portamento::new(config, SampleRate::SR_44K1, Hz::new(440.0));
 
         porta.reset(Hz::new(440.0));
         porta.set_target(Hz::new(880.0), false);
@@ -103,12 +103,12 @@ fn advance_is_that_many_ticks() {
             mode: PortamentoMode::Always,
             curve,
             // 44.1 frames: a glide that ends mid-step.
-            time: Seconds(0.001),
+            time: GlideTime::of(0.001),
             ..Default::default()
         };
         let (mut by_tick, mut by_advance) = (
-            Portamento::new(config.clone(), SampleRate::SR_44K1),
-            Portamento::new(config, SampleRate::SR_44K1),
+            Portamento::new(config.clone(), SampleRate::SR_44K1, Hz::new(440.0)),
+            Portamento::new(config, SampleRate::SR_44K1, Hz::new(440.0)),
         );
         for target in [587.0, 311.13, 1234.5, 97.3, 2093.0] {
             for p in [&mut by_tick, &mut by_advance] {
@@ -131,7 +131,7 @@ fn advance_is_that_many_ticks() {
                     by_tick.current().get().to_bits(),
                     "{curve:?} +{steps}: current"
                 );
-                assert_eq!(by_advance.progress.to_bits(), by_tick.progress.to_bits());
+                assert_eq!(by_advance.glide, by_tick.glide);
             }
             assert!(!by_advance.is_gliding(), "the steps run past the glide");
             assert_eq!(
@@ -170,6 +170,7 @@ fn a_glide_follows_its_law_in_cents() {
                     ..Default::default()
                 },
                 rate,
+                Hz::new(440.0),
             );
             porta.begin(Hz::new(from), Hz::new(to), Seconds(time));
             let frames = time * rate.get();
@@ -193,4 +194,109 @@ fn a_glide_follows_its_law_in_cents() {
             assert_eq!(porta.ratio(), 1.0, "{law:?}: the voice plays the target");
         }
     }
+}
+
+/// A glide time is finite and above zero: `new`, `TryFrom` and `of` agree, and
+/// zero (which is `PortamentoMode::Off`, not a time), negatives, NaN and the
+/// infinities are refused. (Serde is not a feature of this crate, so the check
+/// runs on the `try_from` shape written here.)
+#[test]
+fn glide_time_keeps_the_range_checked_shape() {
+    use serde::{Deserialize, Serialize};
+    use tutti_fixtures::{RangeContract, check_range_contract};
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct Checked(GlideTime);
+    impl Serialize for Checked {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            self.0.get().serialize(s)
+        }
+    }
+    impl<'de> Deserialize<'de> for Checked {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            GlideTime::try_from(f64::deserialize(d)?)
+                .map(Checked)
+                .map_err(serde::de::Error::custom)
+        }
+    }
+    impl TryFrom<f64> for Checked {
+        type Error = GlideTimeError;
+        fn try_from(raw: f64) -> Result<Self, Self::Error> {
+            GlideTime::try_from(raw).map(Checked)
+        }
+    }
+    impl From<Checked> for f64 {
+        fn from(c: Checked) -> f64 {
+            c.0.get()
+        }
+    }
+    check_range_contract(&RangeContract {
+        new: |raw| GlideTime::new(raw).map(Checked),
+        get: |c| c.0.get(),
+        of: Some(|raw| Checked(GlideTime::of(raw))),
+        valid: &[0.001, 0.1, 10_000.0],
+        invalid: &[0.0, -0.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY],
+    });
+}
+
+/// **A constant-rate glide scales with the interval in octaves**, floored at
+/// 10% of the base time: an octave takes the base time, and a quarter-tone
+/// (a twentieth of an octave) takes a tenth of it, not a twentieth. The
+/// tolerance (1% of the base time) covers the `f32` progress sum.
+#[test]
+fn a_constant_rate_glide_scales_with_the_interval_and_floors_at_a_tenth() {
+    let rate = SampleRate::SR_48K;
+    let frames_of = |from: f32, to: f32| {
+        let mut porta = Portamento::new(
+            PortamentoConfig {
+                mode: PortamentoMode::Always,
+                time: GlideTime::of(1.0),
+                constant_time: false,
+                ..Default::default()
+            },
+            rate,
+            Hz::new(from),
+        );
+        porta.set_target(Hz::new(to), false);
+        let mut frames = 0u32;
+        while porta.is_gliding() {
+            porta.advance(1);
+            frames += 1;
+        }
+        f64::from(frames)
+    };
+    let octave = frames_of(220.0, 440.0);
+    assert!(
+        (octave - rate.get()).abs() <= 0.01 * rate.get(),
+        "an octave took {octave}"
+    );
+    let quarter_tone = frames_of(440.0, 440.0 * 2f32.powf(0.5 / 12.0));
+    assert!(
+        (quarter_tone - 0.1 * rate.get()).abs() <= 0.001 * rate.get(),
+        "a quarter-tone took {quarter_tone}, the floor is a tenth of the base time"
+    );
+}
+
+/// **Idle until set**: a glider at rest is not gliding, sits on its starting
+/// pitch, and a glide begun from it leaves that pitch.
+#[test]
+fn a_glider_rests_on_the_pitch_it_is_given() {
+    let mut porta = Portamento::new(
+        PortamentoConfig {
+            mode: PortamentoMode::Always,
+            ..Default::default()
+        },
+        SampleRate::SR_48K,
+        Hz::new(330.0),
+    );
+    assert!(!porta.is_gliding());
+    assert_eq!(porta.current(), Hz::new(330.0));
+    assert_eq!(porta.ratio(), 1.0);
+    porta.set_target(Hz::new(660.0), false);
+    assert!(porta.is_gliding());
+    assert_eq!(
+        porta.current(),
+        Hz::new(330.0),
+        "the glide starts where it rested"
+    );
 }

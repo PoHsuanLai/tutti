@@ -14,9 +14,9 @@
 use crate::SynthConfig;
 use crate::UnisonVoices;
 use crate::bank::{CONTROL_BLOCK, VoiceBank};
-use crate::mpe::MpeControl;
+use crate::mpe::{Expression, MpeControl};
 use crate::synth_voice::SynthVoice;
-use crate::tuning::key_freq;
+use crate::tuning::{A4_FREQ, key_freq};
 use crate::voice::Gate;
 use crate::{UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use tutti_graph::{EventKind, SubBlocks};
@@ -137,7 +137,9 @@ impl PolySynth {
 
         let unison = config.unison.as_ref().map(|u| UnisonEngine::new(u.clone()));
         // The engine's count: voices and bank must match its params.
-        let unison_count = unison.as_ref().map_or(1, UnisonEngine::voice_count);
+        let unison_count = unison
+            .as_ref()
+            .map_or(UnisonVoices::ONE, UnisonEngine::voice_count);
 
         let sample_rate = Self::INITIAL_RATE;
         let voices = (0..polyphony)
@@ -155,7 +157,7 @@ impl PolySynth {
             allocator,
             voices,
             bank,
-            last_freq: Hz(440.0),
+            last_freq: A4_FREQ,
             unison,
             bends,
             master_volume,
@@ -166,7 +168,11 @@ impl PolySynth {
         }
     }
 
-    fn build_bank(config: &SynthConfig, sample_rate: SampleRate, unison_count: usize) -> VoiceBank {
+    fn build_bank(
+        config: &SynthConfig,
+        sample_rate: SampleRate,
+        unison_count: UnisonVoices,
+    ) -> VoiceBank {
         VoiceBank::new(
             config.oscillator,
             &config.filter,
@@ -407,20 +413,20 @@ impl PolySynth {
                 return;
             }
             NoteControl::Pressure(value) => {
-                MpeControl::Pressure(value_to_unit_f32(ControlValue::new(value)))
+                MpeControl::Pressure(Expression::from_control(ControlValue::new(value)))
             }
             NoteControl::Registered(RegisteredPerNoteController::Volume, value) => {
-                MpeControl::Gain(value_to_unit_f32(ControlValue::new(value)))
+                MpeControl::Gain(Expression::from_control(ControlValue::new(value)))
             }
             NoteControl::Registered(RegisteredPerNoteController::Brightness, value) => {
-                MpeControl::Slide(value_to_unit_f32(ControlValue::new(value)))
+                MpeControl::Slide(Expression::from_control(ControlValue::new(value)))
             }
             // The index is a wire byte, not a 7-bit value: 0xCA is not CC74.
             NoteControl::Assignable(index, value) if index == CCNumber::BRIGHTNESS.get() => {
-                MpeControl::Slide(value_to_unit_f32(ControlValue::new(value)))
+                MpeControl::Slide(Expression::from_control(ControlValue::new(value)))
             }
             NoteControl::Assignable(index, value) if index == CCNumber::VOLUME.get() => {
-                MpeControl::Gain(value_to_unit_f32(ControlValue::new(value)))
+                MpeControl::Gain(Expression::from_control(ControlValue::new(value)))
             }
             NoteControl::Registered(..) | NoteControl::Assignable(..) => return,
         };
@@ -733,7 +739,7 @@ impl PolySynth {
         self.universal.reset();
         self.master_applied = MasterGain::UNITY;
         self.bends = [tutti_types::Semitones(0.0); 16];
-        self.last_freq = Hz(440.0);
+        self.last_freq = A4_FREQ;
     }
 
     /// Detach the control cells (master volume, unison detune and spread)

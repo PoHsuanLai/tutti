@@ -76,7 +76,9 @@ pub use amounts::{Depth, DepthOutOfRange, Drive, Feedback, Mix, Spread, StereoWi
 pub use angles::{ArcDegrees, Azimuth, Direction, Elevation, Phase, PhaseIncrement, Radians};
 pub use level::{Amplitude, Db};
 pub use measures::{Confidence, Correlation, Pan, Velocity};
-pub use ratios::{Cents, CompressionRatio, Q, Resonance, Semitones};
+pub use ratios::{
+    Cents, CentsSpan, CentsSpanOutOfRange, CompressionRatio, Q, Resonance, Semitones,
+};
 pub use time::{AtomicSampleRate, Hz, SampleRate, SampleRateOutOfRange, Seconds};
 pub use transport::{
     Beat, BeatDuration, BeatsPerCycle, BeatsPerCycleOutOfRange, Bpm, BpmOutOfRange, PlaybackRate,

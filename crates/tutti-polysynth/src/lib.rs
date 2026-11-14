@@ -148,7 +148,7 @@ pub use unison::{UnisonConfig, UnisonVoices, UnisonVoicesError};
 mod portamento;
 pub(crate) use portamento::Portamento;
 // Public: these appear in `SynthConfig` (`portamento` field + its config).
-pub use portamento::{PortamentoConfig, PortamentoMode};
+pub use portamento::{GlideTime, GlideTimeError, PortamentoConfig, PortamentoMode};
 
 mod tuning;
 // Public: `Tuning` appears in `SynthConfig`.

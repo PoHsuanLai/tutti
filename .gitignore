@@ -25,3 +25,5 @@ tests/fixtures/plugins/
 .venv/
 __pycache__/
 IMPROVEMENT_PLAN.md
+/book/build/
+/book/src/sounds/

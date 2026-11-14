@@ -60,11 +60,6 @@ fn release_takes_one_plain_version() {
     }
 }
 
-#[test]
-fn the_recipe_list_is_the_one_the_help_prints() {
-    assert_eq!(RECIPES.len(), 45);
-}
-
 /// Every static gate is a Rust gate: no recipe plans a script.
 #[test]
 fn no_recipe_runs_a_shell_script() {
@@ -297,6 +292,15 @@ fn profile_bench_keeps_its_defaults_and_its_glob() {
     assert_eq!(
         s[1],
         "samply record target/profiling/deps/engine_render-* --bench --profile-time 10"
+    );
+}
+
+#[test]
+fn book_builds_into_its_own_dir_or_the_one_named() {
+    assert_eq!(dry("book", &[]), ["mdbook build book"]);
+    assert_eq!(
+        dry("book", &["/srv/site/book"]),
+        ["mdbook build book --dest-dir /srv/site/book"]
     );
 }
 

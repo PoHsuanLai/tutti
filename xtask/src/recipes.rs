@@ -259,6 +259,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     ),
     ("deny", "", "RustSec advisories (needs cargo-deny)"),
     (
+        "book",
+        "[OUT]",
+        "build the book with mdbook into book/build, or into OUT (relative to book/)",
+    ),
+    (
         "package",
         "",
         "package every crate under crates/ the way crates.io takes it, without building",
@@ -347,6 +352,7 @@ impl Planner<'_> {
                 | "bench-cmp"
                 | "profile-bench"
                 | "verify-audio"
+                | "book"
                 | "release"
                 | "conformance-inventory"
         );
@@ -474,6 +480,14 @@ impl Planner<'_> {
             "check-loom" => self.lines(&[
                 r#"RUSTFLAGS="--cfg loom" cargo clippy --locked -p arc-lend -p tutti-rt -p tutti-shm-model --all-targets -- -D warnings"#,
             ]),
+            "book" => {
+                let [out] = Self::params(name, args, [""])?;
+                if out.is_empty() {
+                    self.lines(&["mdbook build book"]);
+                } else {
+                    self.lines(&[format!("mdbook build book --dest-dir {out}")]);
+                }
+            }
             "verify-audio" => {
                 let [out] = Self::params(name, args, ["/tmp/tutti-verify"])?;
                 self.lines(&[

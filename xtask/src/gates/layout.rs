@@ -669,7 +669,7 @@ mod tests {
     fn a_layered_workspace_passes() {
         let r = run(&base());
         assert!(r.passed(), "{:?}", r.findings);
-        assert_eq!(r.out[0], "check-layout: ok (6 members, 48 ranked)");
+        assert_eq!(r.out[0], "check-layout: ok (6 members, 49 ranked)");
     }
 
     #[test]

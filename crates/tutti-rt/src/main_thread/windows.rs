@@ -1,80 +1,31 @@
-//! Windows: the primary thread, the one with the earliest creation time among
-//! the process's threads. Windows has no "is the main thread" call; the
-//! loader starts the primary thread first, so it is the oldest, and it keeps
-//! its id for the life of the process.
+//! Windows: the loader runs a CRT initializer on the process's primary thread
+//! before `main`, and it records that thread's id (the method winit uses).
+//! Windows has no "is the main thread" call; the id recorded at startup is the
+//! primary thread's for the life of the process, even once it has exited.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use windows::Win32::Foundation::{CloseHandle, FILETIME};
-use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
-};
-use windows::Win32::System::Threading::{
-    GetCurrentProcessId, GetCurrentThreadId, GetThreadTimes, OpenThread,
-    THREAD_QUERY_LIMITED_INFORMATION,
-};
+use windows::Win32::System::Threading::GetCurrentThreadId;
 
-/// The primary thread's id, found once (0 is unfound; no thread has id 0).
+/// The primary thread's id, written once by [`init`] (0 until it has run; no
+/// thread has id 0).
 static PRIMARY: AtomicU32 = AtomicU32::new(0);
 
-pub(super) fn is_main_thread() -> bool {
-    let mut primary = PRIMARY.load(Ordering::Relaxed);
-    if primary == 0 {
-        primary = oldest_thread();
-        PRIMARY.store(primary, Ordering::Relaxed);
-    }
+/// Runs on the primary thread, from the `.CRT$XCU` table, before `main`.
+extern "C" fn init() {
     // SAFETY: `GetCurrentThreadId` takes no arguments and cannot fail.
+    PRIMARY.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
+}
+
+// SAFETY (link section): `.CRT$XCU` is the table of C initializers the MSVC
+// runtime calls at startup; an `extern "C" fn()` entry is what it expects, and
+// `#[used]` keeps the linker from dropping it.
+#[used]
+#[unsafe(link_section = ".CRT$XCU")]
+static INIT: extern "C" fn() = init;
+
+pub(super) fn is_main_thread() -> bool {
+    let primary = PRIMARY.load(Ordering::Relaxed);
+    // SAFETY: as above.
     primary != 0 && primary == unsafe { GetCurrentThreadId() }
-}
-
-/// The id of the process's thread with the earliest creation time, or 0 if the
-/// threads cannot be listed.
-fn oldest_thread() -> u32 {
-    // SAFETY: `GetCurrentProcessId` takes no arguments and cannot fail.
-    let pid = unsafe { GetCurrentProcessId() };
-    // SAFETY: a thread snapshot ignores its process argument.
-    let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }) else {
-        return 0;
-    };
-    let mut entry = THREADENTRY32 {
-        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
-        ..Default::default()
-    };
-    let mut oldest = (u64::MAX, 0u32);
-    // SAFETY: `snapshot` is a live snapshot handle and `entry` is a writable
-    // `THREADENTRY32` whose `dwSize` is set.
-    let mut more = unsafe { Thread32First(snapshot, &mut entry) }.is_ok();
-    while more {
-        if entry.th32OwnerProcessID == pid
-            && let Some(created) = creation_time(entry.th32ThreadID)
-            && created < oldest.0
-        {
-            oldest = (created, entry.th32ThreadID);
-        }
-        // SAFETY: as above.
-        more = unsafe { Thread32Next(snapshot, &mut entry) }.is_ok();
-    }
-    // SAFETY: `snapshot` is a handle this function owns and closes once.
-    let _ = unsafe { CloseHandle(snapshot) };
-    oldest.1
-}
-
-/// A thread's creation time as 100 ns ticks, or `None` if it cannot be read
-/// (the thread exited since the snapshot).
-fn creation_time(id: u32) -> Option<u64> {
-    // SAFETY: opening a thread by id has no precondition; the result is checked.
-    let thread = unsafe { OpenThread(THREAD_QUERY_LIMITED_INFORMATION, false, id) }.ok()?;
-    let (mut created, mut exited, mut kernel, mut user) = (
-        FILETIME::default(),
-        FILETIME::default(),
-        FILETIME::default(),
-        FILETIME::default(),
-    );
-    // SAFETY: `thread` is a live handle with query access and the four
-    // `FILETIME`s are writable.
-    let read = unsafe { GetThreadTimes(thread, &mut created, &mut exited, &mut kernel, &mut user) };
-    // SAFETY: `thread` is a handle this function owns and closes once.
-    let _ = unsafe { CloseHandle(thread) };
-    read.ok()?;
-    Some((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
 }

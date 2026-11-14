@@ -5,7 +5,8 @@
 //! skip the close. It hands the close to the collector of the session that loaded it
 //! (`tutti_plugin_types::MainWork`), which that session's `MainSession::update` drains. The
 //! reference VST2 plugin counts the `effClose`s it receives, so each test reads the plugin's
-//! own view: how many closes ran, and when.
+//! own view: how many closes ran, and when. The target runs on the process's main thread, so
+//! a load never waits out a deadline for a main-thread tick that nothing pumps.
 
 use std::path::PathBuf;
 use tutti_plugin::catalog::PluginRef;
@@ -65,7 +66,6 @@ fn loaded_and_released(session: &mut Session, main: MainThreadMarker) -> PluginH
 /// let go of it; the last handle of each is dropped off the thread that made the plugins,
 /// so each close goes to the collector of the session it belongs to. One session's update
 /// runs one close, and the other's runs the other: the plugin counts them.
-#[test]
 fn a_sessions_update_runs_only_its_own_plugins_closes() {
     let main = tutti_fixtures::main_thread();
     let (mut a, mut b) = (session(), session());
@@ -94,7 +94,6 @@ fn a_sessions_update_runs_only_its_own_plugins_closes() {
 
 /// **`Session::close` runs every close that is owed.** A plugin dropped off its own thread
 /// has handed its close to the session; `close` runs it, and the plugin counts it.
-#[test]
 fn close_runs_the_closes_the_session_is_owed() {
     let main = tutti_fixtures::main_thread();
     let mut session = session();
@@ -110,7 +109,6 @@ fn close_runs_the_closes_the_session_is_owed() {
 /// plugins are dropped with the session on a thread that is not the main thread, each
 /// hands its close to a collector that is going away, and the count of stranded work
 /// rises by that many.
-#[test]
 fn a_session_dropped_off_the_main_thread_counts_its_stranded_closes() {
     let main = tutti_fixtures::main_thread();
     let mut session = session();
@@ -136,10 +134,29 @@ fn a_session_dropped_off_the_main_thread_counts_its_stranded_closes() {
 
 /// **A thread that is not the main thread has no token.** The token is the OS's answer,
 /// so a spawned thread cannot make one, whatever a test thread stands in for.
-#[test]
 fn a_spawned_thread_cannot_make_a_main_thread_token() {
     let none = std::thread::spawn(|| MainThreadMarker::new().is_none())
         .join()
         .unwrap();
     assert!(none);
 }
+
+/// The cases of this module, run by `main`.
+pub(crate) const CASES: &[(&str, fn())] = &[
+    (
+        "main_work::a_sessions_update_runs_only_its_own_plugins_closes",
+        a_sessions_update_runs_only_its_own_plugins_closes,
+    ),
+    (
+        "main_work::close_runs_the_closes_the_session_is_owed",
+        close_runs_the_closes_the_session_is_owed,
+    ),
+    (
+        "main_work::a_session_dropped_off_the_main_thread_counts_its_stranded_closes",
+        a_session_dropped_off_the_main_thread_counts_its_stranded_closes,
+    ),
+    (
+        "main_work::a_spawned_thread_cannot_make_a_main_thread_token",
+        a_spawned_thread_cannot_make_a_main_thread_token,
+    ),
+];

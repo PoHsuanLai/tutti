@@ -40,9 +40,6 @@ mod main_view;
 // fake backend.
 #[cfg(feature = "plugin")]
 mod plugin_params;
-// What plugins hand to the main thread: each session runs its own, and `close` runs what is owed.
-#[cfg(feature = "vst2")]
-mod main_work;
 // The reference VST2 plugin, in process: the project meter it is given.
 #[cfg(feature = "vst2")]
 mod vst2_meter;

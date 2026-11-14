@@ -18,6 +18,9 @@ mod vst2_off_main_handle;
 // Modulation lanes on the reference VST2 plugin's parameters.
 #[cfg(all(feature = "vst2", feature = "modulation"))]
 mod vst2_modulation;
+// What plugins hand to the main thread: each session runs its own, and `close` runs what is owed.
+#[cfg(feature = "vst2")]
+mod main_work;
 // `typed` over a real format's own value map: the reference VST2 plugin's
 // integer-ranged parameter, in process.
 #[cfg(feature = "vst2")]
@@ -44,6 +47,8 @@ fn main() {
     cases.extend_from_slice(vst2_modulation::CASES);
     #[cfg(feature = "vst2")]
     cases.extend_from_slice(vst2_params::CASES);
+    #[cfg(feature = "vst2")]
+    cases.extend_from_slice(main_work::CASES);
     cases.extend_from_slice(plugin_event_sources::CASES);
     #[cfg(all(feature = "export", feature = "clap"))]
     cases.extend_from_slice(export_fork_plugin::CASES);

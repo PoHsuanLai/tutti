@@ -1,4 +1,4 @@
-//! Apple platforms: `pthread_main_np` answers whether the calling thread is the
+//! Apple platforms, FreeBSD, DragonFly and OpenBSD: `pthread_main_np` answers whether the calling thread is the
 //! process's main thread.
 
 pub(super) fn is_main_thread() -> bool {

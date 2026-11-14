@@ -15,12 +15,14 @@
 //! [`MainThreadMarker::new`] asks the OS whether the calling thread is the process's
 //! main thread and is `Some` only then:
 //!
-//! - macOS: `pthread_main_np`.
+//! - macOS and the BSDs that have it (FreeBSD, DragonFly, OpenBSD): `pthread_main_np`.
 //! - Linux and Android: the thread id equals the process id (the main thread is
 //!   the thread group leader).
-//! - Windows: the primary thread, the one with the earliest creation time among
-//!   the process's threads (Windows names no main thread; the primary thread is
-//!   the one the loader started).
+//! - Windows: a CRT initializer, which the loader runs on the primary thread
+//!   before `main`, records that thread's id, and the query compares it with the
+//!   caller's.
+//! - Any other target: no thread is known to be the main one, so `new` is
+//!   always `None` and an in-process plugin host is refused at the call.
 //!
 //! The app makes the token once, on its main thread, and hands it down. A
 //! library crate forbids `unsafe`, so it cannot make one anywhere else; a test
@@ -32,8 +34,13 @@ use std::marker::PhantomData;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[path = "main_thread/linux.rs"]
 mod os;
-#[cfg(target_vendor = "apple")]
-#[path = "main_thread/macos.rs"]
+#[cfg(any(
+    target_vendor = "apple",
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "openbsd"
+))]
+#[path = "main_thread/pthread.rs"]
 mod os;
 #[cfg(windows)]
 #[path = "main_thread/windows.rs"]
@@ -42,6 +49,9 @@ mod os;
     target_os = "linux",
     target_os = "android",
     target_vendor = "apple",
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "openbsd",
     windows
 )))]
 #[path = "main_thread/unsupported.rs"]

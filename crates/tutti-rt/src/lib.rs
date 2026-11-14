@@ -73,7 +73,7 @@
 //!   docs say what it does and does not guarantee.
 //! - `monotonic_ns` (`clock.rs`): the OS clock calls.
 //! - `MainThreadMarker::new` (`main_thread/`): the OS's "is this the main thread" query,
-//!   one module per OS, and `MainThreadMarker::new_unchecked`, whose `# Safety` names the
+//!   one module per OS (on Windows, a `.CRT$XCU` initializer entry), and `MainThreadMarker::new_unchecked`, whose `# Safety` names the
 //!   caller's duty (a test harness's constructor).
 //!
 //! `arc-lend`'s `ArcLend` (an external crate) holds the rest: an `AtomicPtr` to an `Arc::into_raw`

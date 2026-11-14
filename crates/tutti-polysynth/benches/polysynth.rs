@@ -213,7 +213,7 @@ fn bench_portamento(c: &mut Criterion) {
                 portamento: Some(PortamentoConfig {
                     mode: PortamentoMode::Always,
                     curve,
-                    time: GlideTime::of(10_000.0),
+                    time: GlideTime::of(Seconds(10_000.0)),
                     constant_time: true,
                 }),
                 ..config()

@@ -35,62 +35,56 @@ pub enum PortamentoMode {
 /// value this type holds. `new` refuses and never clamps; `of` is for a literal
 /// or a constant.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub struct GlideTime(f64);
+pub struct GlideTime(Seconds);
 
 impl GlideTime {
-    /// `seconds` as a glide time, or `None` when it is NaN, infinite, zero or
+    /// `time` as a glide time, or `None` when it is NaN, infinite, zero or
     /// negative.
     #[must_use]
-    pub const fn new(seconds: f64) -> Option<Self> {
-        if seconds > 0.0 && seconds <= f64::MAX {
-            Some(Self(seconds))
+    pub const fn new(time: Seconds) -> Option<Self> {
+        if time.0 > 0.0 && time.0 <= f64::MAX {
+            Some(Self(time))
         } else {
             None
         }
     }
 
-    /// `seconds` as a glide time, for a literal or a constant.
+    /// `time` as a glide time, for a literal or a constant.
     ///
     /// # Panics
     ///
-    /// If `seconds` is NaN, infinite, zero or negative.
+    /// If `time` is NaN, infinite, zero or negative.
     #[must_use]
     #[track_caller]
-    pub const fn of(seconds: f64) -> Self {
-        match Self::new(seconds) {
+    pub const fn of(time: Seconds) -> Self {
+        match Self::new(time) {
             Some(time) => time,
             None => panic!("a glide time is finite and above zero"),
         }
     }
 
-    /// The time in seconds.
+    /// The time.
     #[must_use]
-    pub const fn get(self) -> f64 {
+    pub const fn get(self) -> Seconds {
         self.0
     }
-
-    /// The time as [`Seconds`].
-    #[must_use]
-    pub const fn seconds(self) -> Seconds {
-        Seconds(self.0)
-    }
 }
 
-/// The refused raw of [`GlideTime`]'s `TryFrom<f64>`.
+/// The refused time of [`GlideTime`]'s `TryFrom<Seconds>`.
 #[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
-#[error("a glide time is finite and above zero, but was {0}")]
-pub struct GlideTimeError(pub f64);
+#[error("a glide time is finite and above zero, but was {0:?}")]
+pub struct GlideTimeError(pub Seconds);
 
-impl TryFrom<f64> for GlideTime {
+impl TryFrom<Seconds> for GlideTime {
     type Error = GlideTimeError;
 
-    fn try_from(seconds: f64) -> Result<Self, GlideTimeError> {
-        Self::new(seconds).ok_or(GlideTimeError(seconds))
+    fn try_from(time: Seconds) -> Result<Self, GlideTimeError> {
+        Self::new(time).ok_or(GlideTimeError(time))
     }
 }
 
-impl From<GlideTime> for f64 {
-    fn from(time: GlideTime) -> f64 {
+impl From<GlideTime> for Seconds {
+    fn from(time: GlideTime) -> Seconds {
         time.0
     }
 }
@@ -130,7 +124,7 @@ impl Default for PortamentoConfig {
         Self {
             mode: PortamentoMode::Off,
             curve: Law::Linear,
-            time: GlideTime::of(0.1),
+            time: GlideTime::of(Seconds(0.1)),
             constant_time: true,
         }
     }
@@ -189,14 +183,14 @@ impl Portamento {
             let from = self.current();
 
             let glide_time = if self.config.constant_time {
-                self.config.time.get()
+                self.config.time.get().get()
             } else {
                 // The interval in octaves; `Semitones::from_pitch_ratio`
                 // guards the non-positive ratio a bare `log2` would turn into
                 // a NaN glide time.
                 let interval =
                     (Semitones::from_pitch_ratio(freq.get() / from.get()).get() / 12.0).abs();
-                self.config.time.get() * f64::from(interval.max(MIN_INTERVAL_OCTAVES))
+                self.config.time.get().get() * f64::from(interval.max(MIN_INTERVAL_OCTAVES))
             };
 
             // A fractional glide length feeding a reciprocal, not a frame

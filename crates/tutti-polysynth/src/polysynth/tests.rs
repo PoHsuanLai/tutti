@@ -976,7 +976,7 @@ fn test_portamento_with_pitch_bend() {
         portamento: Some(PortamentoConfig {
             mode: PortamentoMode::Always,
             curve: Law::Linear,
-            time: crate::GlideTime::of(0.05), // 50ms glide
+            time: crate::GlideTime::of(tutti_types::Seconds(0.05)), // 50ms glide
             constant_time: true,
         }),
         ..Default::default()
@@ -2147,7 +2147,7 @@ fn a_long_block_renders_every_frame_like_short_blocks() {
         portamento: Some(PortamentoConfig {
             mode: PortamentoMode::Always,
             curve: Law::Linear,
-            time: crate::GlideTime::of(0.004),
+            time: crate::GlideTime::of(tutti_types::Seconds(0.004)),
             constant_time: true,
         }),
         ..Default::default()
@@ -2221,7 +2221,7 @@ fn process_and_tick_agree_through_a_glide() {
         portamento: Some(PortamentoConfig {
             mode: PortamentoMode::Always,
             curve: Law::Linear,
-            time: crate::GlideTime::of(0.05),
+            time: crate::GlideTime::of(tutti_types::Seconds(0.05)),
             constant_time: true,
         }),
         ..Default::default()
@@ -3313,7 +3313,7 @@ fn a_per_note_pitch_survives_a_glide() {
         c.portamento = Some(PortamentoConfig {
             mode: PortamentoMode::Always,
             curve: Law::Linear,
-            time: crate::GlideTime::of(0.05),
+            time: crate::GlideTime::of(tutti_types::Seconds(0.05)),
             constant_time: true,
         });
     });

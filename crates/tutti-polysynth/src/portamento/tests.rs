@@ -18,7 +18,7 @@ fn test_no_glide() {
 fn test_always_glide() {
     let config = PortamentoConfig {
         mode: PortamentoMode::Always,
-        time: GlideTime::of(0.01), // 10ms
+        time: GlideTime::of(Seconds(0.01)), // 10ms
         ..Default::default()
     };
     let mut porta = Portamento::new(config, SampleRate::SR_44K1, Hz::new(440.0));
@@ -43,7 +43,7 @@ fn test_always_glide() {
 fn test_legato_only() {
     let config = PortamentoConfig {
         mode: PortamentoMode::LegatoOnly,
-        time: GlideTime::of(0.01),
+        time: GlideTime::of(Seconds(0.01)),
         ..Default::default()
     };
     let mut porta = Portamento::new(config, SampleRate::SR_44K1, Hz::new(440.0));
@@ -70,7 +70,7 @@ fn test_curve_shapes() {
         let config = PortamentoConfig {
             mode: PortamentoMode::Always,
             curve,
-            time: GlideTime::of(0.01),
+            time: GlideTime::of(Seconds(0.01)),
             ..Default::default()
         };
         let mut porta = Portamento::new(config, SampleRate::SR_44K1, Hz::new(440.0));
@@ -103,7 +103,7 @@ fn advance_is_that_many_ticks() {
             mode: PortamentoMode::Always,
             curve,
             // 44.1 frames: a glide that ends mid-step.
-            time: GlideTime::of(0.001),
+            time: GlideTime::of(Seconds(0.001)),
             ..Default::default()
         };
         let (mut by_tick, mut by_advance) = (
@@ -214,19 +214,19 @@ fn glide_time_keeps_the_range_checked_shape() {
     }
     impl<'de> Deserialize<'de> for Checked {
         fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-            GlideTime::try_from(f64::deserialize(d)?)
+            GlideTime::try_from(Seconds::deserialize(d)?)
                 .map(Checked)
                 .map_err(serde::de::Error::custom)
         }
     }
-    impl TryFrom<f64> for Checked {
+    impl TryFrom<Seconds> for Checked {
         type Error = GlideTimeError;
-        fn try_from(raw: f64) -> Result<Self, Self::Error> {
+        fn try_from(raw: Seconds) -> Result<Self, Self::Error> {
             GlideTime::try_from(raw).map(Checked)
         }
     }
-    impl From<Checked> for f64 {
-        fn from(c: Checked) -> f64 {
+    impl From<Checked> for Seconds {
+        fn from(c: Checked) -> Seconds {
             c.0.get()
         }
     }
@@ -234,8 +234,14 @@ fn glide_time_keeps_the_range_checked_shape() {
         new: |raw| GlideTime::new(raw).map(Checked),
         get: |c| c.0.get(),
         of: Some(|raw| Checked(GlideTime::of(raw))),
-        valid: &[0.001, 0.1, 10_000.0],
-        invalid: &[0.0, -0.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY],
+        valid: &[Seconds(0.001), Seconds(0.1), Seconds(10_000.0)],
+        invalid: &[
+            Seconds(0.0),
+            Seconds(-0.1),
+            Seconds(f64::NAN),
+            Seconds(f64::INFINITY),
+            Seconds(f64::NEG_INFINITY),
+        ],
     });
 }
 
@@ -250,7 +256,7 @@ fn a_constant_rate_glide_scales_with_the_interval_and_floors_at_a_tenth() {
         let mut porta = Portamento::new(
             PortamentoConfig {
                 mode: PortamentoMode::Always,
-                time: GlideTime::of(1.0),
+                time: GlideTime::of(Seconds(1.0)),
                 constant_time: false,
                 ..Default::default()
             },

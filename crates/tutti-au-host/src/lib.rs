@@ -216,7 +216,7 @@ mod platform;
 pub use platform::*;
 
 pub use component::{AuComponentInfo, AuType};
-pub use error::{AuError, LoadFailedError, LoadStage, PresetFileError, PresetMismatch, Result};
+pub use error::{AuError, LoadFailure, LoadStage, PresetFileFailure, PresetMismatch, Result};
 pub use unit_code::{unit_measures, unit_role};
 
 // Shared host vocabulary re-exported so consumers can stay format-agnostic.

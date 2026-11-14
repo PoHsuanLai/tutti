@@ -10,7 +10,7 @@ use coreaudio_sys::{AudioBuffer, AudioBufferList, AudioTimeStamp, AudioUnitRende
 
 use crate::callback::with_state_mut;
 use crate::error::{Error, Result, check};
-use crate::property::{Element, LastRenderError, Scope, SetRenderCallback};
+use crate::property::{Element, LastRenderStatus, Scope, SetRenderCallback};
 use crate::status::{CANNOT_DO_IN_CURRENT_CONTEXT, NO_ERR};
 use crate::unit::Unit;
 
@@ -790,7 +790,7 @@ unsafe fn bind_list(
 ///   measured `-10874`, `kAudioUnitErr_TooManyFramesToProcess`, for a 256-frame
 ///   render on a 64-frame AUDelay — but only after being handed a buffer list
 ///   that lies about its size.)
-/// * `Error::RenderFailed` with the AU's `LastRenderError` attached when
+/// * `Error::RenderFailed` with the AU's `LastRenderStatus` attached when
 ///   `AudioUnitProcess` itself fails, which for most units means `unimpErr`.
 ///
 pub fn process_push(
@@ -870,7 +870,7 @@ fn copy_in_bus0_to_out_bus0(scratch: &mut PushScratch, silent: bool, frames: u32
 /// * `Error::Invalid` if `frames` exceeds the scratch's block size, or
 ///   if the scratch has no output bus at all — an AU must write somewhere, and a
 ///   zero-length output array is not a render.
-/// * `Error::RenderFailed` carrying the AU's `LastRenderError`. An AU handed
+/// * `Error::RenderFailed` carrying the AU's `LastRenderStatus`. An AU handed
 ///   more input lists than it has input elements reports
 ///   `kAudioUnitErr_InvalidElement` here, and one that does not implement the
 ///   selector reports `unimpErr`. Both surface rather than being absorbed: a
@@ -944,7 +944,7 @@ pub fn process_push_multiple(
 /// # Safety
 /// `unit` must be a live `AudioUnit`.
 fn last_render_error(unit: &Unit) -> Option<i32> {
-    unit.get::<LastRenderError>(Scope::GLOBAL, Element::ZERO)
+    unit.get::<LastRenderStatus>(Scope::GLOBAL, Element::ZERO)
         .ok()
         .filter(|&e| e != NO_ERR)
 }

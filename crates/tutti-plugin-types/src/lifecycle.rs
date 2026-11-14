@@ -269,7 +269,7 @@ pub enum Request {
 /// How much of the parameter set a rescan touches.
 ///
 /// Exhaustive: [`step`] and every shell match every variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RescanScope {
     /// Values only.
     Values,

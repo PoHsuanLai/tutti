@@ -128,7 +128,7 @@ impl<'a> ProcessContext<'a> {
 ///
 /// CLAP's *continue* and *continue if not quiet* are both
 /// [`Continue`](Self::Continue): neither narrows anything.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BlockStatus {
     /// Nothing to report: the declared tail ceiling stands.

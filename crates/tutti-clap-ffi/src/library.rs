@@ -18,7 +18,7 @@ use crate::plugin::Plugin;
 use crate::roles::ThreadRoles;
 
 /// Which step of loading failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Stage {
     /// Opening the library or reading `clap_entry`.
     Opening,
@@ -31,18 +31,23 @@ pub enum Stage {
 }
 
 /// A load that failed: which step, and what went wrong at it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum LoadError {
     /// The library could not be opened; the loader's message.
+    #[error("{:?}: {}", self.stage(), self.reason())]
     Library(String),
     /// The library has no `clap_entry` symbol; the loader's message.
+    #[error("{:?}: {}", self.stage(), self.reason())]
     NoEntrySymbol(String),
     /// The path is not a C string; the reason.
+    #[error("{:?}: {}", self.stage(), self.reason())]
     InvalidPath(String),
     /// The entry's `init` answered `false`.
+    #[error("{:?}: {}", self.stage(), self.reason())]
     EntryInit,
     /// An entry the CLAP structs define is absent (a null function pointer).
+    #[error("{:?}: {}", self.stage(), self.reason())]
     MissingFunction {
         /// The step that needed it.
         stage: Stage,
@@ -50,6 +55,7 @@ pub enum LoadError {
         name: &'static str,
     },
     /// The entry or a descriptor declares a CLAP version this host cannot read.
+    #[error("{:?}: {}", self.stage(), self.reason())]
     Version {
         /// What declared it.
         what: &'static str,
@@ -63,15 +69,19 @@ pub enum LoadError {
         revision: u32,
     },
     /// The entry returned no plugin factory.
+    #[error("{:?}: {}", self.stage(), self.reason())]
     NoFactory,
     /// The factory advertises no plugins.
+    #[error("{:?}: {}", self.stage(), self.reason())]
     EmptyFactory,
     /// The factory advertises plugins but returned no descriptor for any.
+    #[error("{:?}: {}", self.stage(), self.reason())]
     NoDescriptors {
         /// How many it advertised.
         count: u32,
     },
     /// No descriptor has the id asked for.
+    #[error("{:?}: {}", self.stage(), self.reason())]
     UnknownId {
         /// The id asked for.
         wanted: String,
@@ -79,10 +89,13 @@ pub enum LoadError {
         available: Vec<String>,
     },
     /// The plugin id is not a C string; the reason.
+    #[error("{:?}: {}", self.stage(), self.reason())]
     InvalidPluginId(String),
     /// The factory returned no instance.
+    #[error("{:?}: {}", self.stage(), self.reason())]
     CreateFailed,
     /// The plugin's own `init` answered `false`.
+    #[error("{:?}: {}", self.stage(), self.reason())]
     PluginInitFailed,
 }
 
@@ -140,14 +153,6 @@ impl LoadError {
         }
     }
 }
-
-impl std::fmt::Display for LoadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}: {}", self.stage(), self.reason())
-    }
-}
-
-impl std::error::Error for LoadError {}
 
 /// What a descriptor declares, as owned strings.
 #[derive(Debug, Clone)]

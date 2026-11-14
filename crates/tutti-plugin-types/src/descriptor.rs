@@ -71,7 +71,7 @@ pub struct PluginDescriptor {
 /// registry entry without instantiating it, and an editor is a property of an
 /// instance. Reporting `false` there is a guess that gets *persisted* to the
 /// catalog and then read at browse time as though it were an answer.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum EditorPresence {
     /// Nobody has instantiated the plugin to find out.

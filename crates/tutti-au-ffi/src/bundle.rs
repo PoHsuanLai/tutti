@@ -46,25 +46,16 @@ pub struct DeclaredComponent {
 }
 
 /// Why a path declares no components.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum BundleError {
     /// CoreFoundation does not open the path as a bundle (it does not exist,
     /// or is a plain file).
+    #[error("not a bundle")]
     NotABundle,
     /// A bundle with no `AudioComponents` array, or one that is not an array.
+    #[error("the bundle declares no AudioComponents")]
     NoComponents,
 }
-
-impl std::fmt::Display for BundleError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BundleError::NotABundle => f.write_str("not a bundle"),
-            BundleError::NoComponents => f.write_str("the bundle declares no AudioComponents"),
-        }
-    }
-}
-
-impl std::error::Error for BundleError {}
 
 /// A four-character code in a plist string: exactly four ASCII bytes, spaces
 /// kept (`"dls "`).

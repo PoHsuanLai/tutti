@@ -86,6 +86,11 @@ pub(super) const EXCEPTIONS: &[(&str, &str, &str)] = &[
         "permanent: any listing row with any report is a saved device",
     ),
     (
+        "crates/tutti-midi-device/src/ci/pe/resource/state.rs",
+        "Wire",
+        "permanent: the persisted shape `TryFrom` reads and checks",
+    ),
+    (
         "crates/tutti-midi-protocol/src/mpe/zone.rs",
         "MpeZoneConfigRaw",
         "permanent: the persisted shape `TryFrom` reads and checks",

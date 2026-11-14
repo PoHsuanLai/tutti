@@ -222,6 +222,16 @@ pub struct PeExpired {
     pub send: PeSignal,
 }
 
+/// A message partly received: what [`PeReassembler::held`] shows of it.
+#[derive(Clone, Copy, Debug)]
+pub struct PeHeld<'a> {
+    /// The Header Data, read from the first chunk.
+    pub header: &'a PeHeader,
+    /// The Property Data of the chunks so far, as sent: before its encoding is
+    /// undone.
+    pub data: &'a [u8],
+}
+
 /// A message being received.
 #[derive(Debug)]
 struct Stream {
@@ -563,6 +573,24 @@ impl PeReassembler {
             }
             None => false,
         }
+    }
+
+    /// What has come of a message still being received: its Header Data and the
+    /// Property Data so far, as sent. `None` when no such message is held.
+    #[must_use]
+    pub fn held(
+        &self,
+        peer: Muid,
+        kind: PeMessageKind,
+        request_id: PeRequestId,
+    ) -> Option<PeHeld<'_>> {
+        self.streams
+            .iter()
+            .find(|s| s.is(peer, kind, request_id))
+            .map(|s| PeHeld {
+                header: &s.header,
+                data: &s.data,
+            })
     }
 
     /// Drops a message its sender ended with a Terminate NAK (M2-103 §12.1).

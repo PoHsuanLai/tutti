@@ -4,13 +4,7 @@ use tutti_types::Sink;
 
 /// A device that supports `[min, max]` at `format`.
 fn range(min: u32, max: u32, format: cpal::SampleFormat) -> cpal::SupportedStreamConfigRange {
-    cpal::SupportedStreamConfigRange::new(
-        2,
-        cpal::SampleRate(min),
-        cpal::SampleRate(max),
-        cpal::SupportedBufferSize::Unknown,
-        format,
-    )
+    cpal::SupportedStreamConfigRange::new(2, min, max, cpal::SupportedBufferSize::Unknown, format)
 }
 
 /// What a pull of an empty ring answers, whatever width the mic has.
@@ -19,7 +13,7 @@ fn verdict(mic: &mut MicIn) -> Pull {
 }
 
 fn fallback(rate: u32) -> cpal::SupportedStreamConfig {
-    range(rate, rate, cpal::SampleFormat::F32).with_sample_rate(cpal::SampleRate(rate))
+    range(rate, rate, cpal::SampleFormat::F32).with_sample_rate(rate)
 }
 
 /// **A device that can run at the graph's rate is opened at it**, not at
@@ -38,7 +32,7 @@ fn a_device_covering_the_graph_rate_is_opened_at_it() {
         "Wide Range Mic",
     )
     .expect("48k is inside [8k, 96k]");
-    assert_eq!(chosen.sample_rate(), cpal::SampleRate(48_000));
+    assert_eq!(chosen.sample_rate(), 48_000);
 }
 
 /// **F32 wins when several supported ranges cover the rate.**
@@ -59,7 +53,7 @@ fn f32_is_preferred_over_an_integer_format_at_the_same_rate() {
     )
     .expect("both ranges cover 48k");
     assert_eq!(chosen.sample_format(), cpal::SampleFormat::F32);
-    assert_eq!(chosen.sample_rate(), cpal::SampleRate(48_000));
+    assert_eq!(chosen.sample_rate(), 48_000);
 }
 
 /// An integer-only device is still accepted — preference is not a
@@ -74,7 +68,7 @@ fn an_integer_only_device_is_accepted_at_the_graph_rate() {
     )
     .expect("the range covers 48k");
     assert_eq!(chosen.sample_format(), cpal::SampleFormat::I16);
-    assert_eq!(chosen.sample_rate(), cpal::SampleRate(48_000));
+    assert_eq!(chosen.sample_rate(), 48_000);
 }
 
 /// **A device that cannot reach the graph's rate is an error, naming both
@@ -116,7 +110,7 @@ fn a_default_that_already_matches_is_accepted_with_no_ranges() {
         "Silent About Its Configs",
     )
     .expect("the default already runs at the graph rate");
-    assert_eq!(chosen.sample_rate(), cpal::SampleRate(48_000));
+    assert_eq!(chosen.sample_rate(), 48_000);
 }
 
 /// A `MicIn` over an empty ring and a fresh fault record, with no device.
@@ -286,11 +280,8 @@ fn a_disconnect_fails_the_mic_and_a_transient_error_does_not() {
         "a live mic with an empty ring is late, not finished"
     );
 
-    mic.faults().record(&cpal::StreamError::BackendSpecific {
-        err: cpal::BackendSpecificError {
-            description: "xrun".into(),
-        },
-    });
+    mic.faults()
+        .record(&cpal::Error::with_message(cpal::ErrorKind::Xrun, "xrun"));
     assert!(mic.faults().is_faulted());
     assert_eq!(
         verdict(&mut mic),
@@ -298,7 +289,8 @@ fn a_disconnect_fails_the_mic_and_a_transient_error_does_not() {
         "a backend error is not a death"
     );
 
-    mic.faults().record(&cpal::StreamError::DeviceNotAvailable);
+    mic.faults()
+        .record(&cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
     assert_eq!(verdict(&mut mic), Pull::Failed);
 }
 
@@ -319,7 +311,7 @@ fn a_disconnected_mic_hands_over_its_buffered_frames_then_reads_failed() {
         .unwrap();
 
     prod.push_interleaved(&[0.5, -0.5]);
-    faults.record(&cpal::StreamError::DeviceNotAvailable);
+    faults.record(&cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
     // The pump's pass: the frame the ring held is written first.
     let mut scratch = [0.0f32; 8];
     let Pull::Frames(n) = mic.pull(&mut scratch) else {
@@ -345,11 +337,10 @@ fn a_mic_whose_backend_keeps_failing_without_audio_is_failed() {
     let mut mic = mic_without_a_device();
     let faults = mic.faults();
     let t0 = faults.epoch;
-    let err = cpal::StreamError::BackendSpecific {
-        err: cpal::BackendSpecificError {
-            description: "`alsa::poll()` returned POLLERR".into(),
-        },
-    };
+    let err = cpal::Error::with_message(
+        cpal::ErrorKind::BackendError,
+        "`alsa::poll()` returned POLLERR",
+    );
     faults.record_at(&err, t0);
     assert_eq!(verdict(&mut mic), Pull::Starved);
     faults.record_at(&err, t0 + crate::faults::STALL_GRACE);

@@ -8,7 +8,7 @@
 //! preamble  := 7E device_id 0D sub_id2 version muid muid          -- source, destination
 //! muid      := b b b b                                            -- four bytes; checked after
 //! discovery := manufacturer family model revision categories      -- Table 6 and 8
-//!              max_size path_id [ function_block ]                -- a Version 1 peer stops early
+//!              max_size [ path_id [ function_block ] ]            -- a Version 1 peer stops early
 //! manufacturer := 00 xx yy                                        -- three bytes (M2-104 §7.1.3)
 //! family, model := u7 u7
 //! revision  := u7 u7 u7 u7
@@ -75,6 +75,11 @@ fn wire4(input: &mut &[u8]) -> Res<[u8; 4]> {
 /// A 7-bit data byte as a [`U7`].
 fn u7(input: &mut &[u8]) -> Res<U7> {
     any.verify_map(U7::new).parse_next(input)
+}
+
+/// A [`U7`], or `None` when the message ended before it.
+fn u7_or_none(input: &mut &[u8]) -> Res<Option<U7>> {
+    alt((eof.value(None), u7.map(Some))).parse_next(input)
 }
 
 /// A [`U7`], or its default when the message ended before it.
@@ -151,7 +156,7 @@ fn discovery(is_reply: bool, input: &mut &[u8]) -> Res<DiscoveryData> {
         identity: identity,
         categories: u7.map(|c| CiCategories::from_bits_truncate(c.get())),
         max_sysex_size: max_sysex_size,
-        output_path_id: u7_or_default,
+        output_path_id: u7_or_none,
         function_block: |i: &mut &[u8]| if is_reply {
             function_block(i)
         } else {

@@ -315,11 +315,15 @@ fn a_typed_parameter_goes_through_the_range_and_the_plugins_map() {
         .typed::<Hz>(CUTOFF)
         .unwrap();
     // The fake started it at 0.5: 20 + 19980 / 2.
-    assert_eq!(cutoff.get(), Hz::new(10_010.0));
+    assert_eq!(cutoff.get(), Ok(Hz::new(10_010.0)));
 
     cutoff.set(Hz::new(20.0 + 19_980.0 * 0.25)).unwrap();
     assert_eq!(fake.sets(), [(CUTOFF, 0.25)]);
-    assert_eq!(cutoff.get(), Hz::new(5_015.0), "read-your-writes, in Hz");
+    assert_eq!(
+        cutoff.get(),
+        Ok(Hz::new(5_015.0)),
+        "read-your-writes, in Hz"
+    );
     assert_eq!(cutoff.param().normalized(), Normalized::of(0.25));
 
     assert_eq!(
@@ -331,6 +335,24 @@ fn a_typed_parameter_goes_through_the_range_and_the_plugins_map() {
         Err(PluginParamError::OutOfRange(CUTOFF))
     );
     assert_eq!(fake.sets().len(), 1, "a refused value reaches nothing");
+}
+
+/// **A typed read of a plugin that stops answering its map is an error**, not
+/// the declared default: the fake declared `1000 Hz` as the default, and once it
+/// answers no plain value `get` names the parameter instead of reading it.
+#[test]
+fn a_typed_read_of_a_silent_plugin_is_an_error_not_the_default() {
+    let (s, node, fake, _) = ready();
+    let cutoff = s
+        .plugin(node)
+        .unwrap()
+        .params()
+        .typed::<Hz>(CUTOFF)
+        .unwrap();
+    assert_eq!(cutoff.get(), Ok(Hz::new(10_010.0)));
+
+    locked(&fake.infos).clear();
+    assert_eq!(cutoff.get(), Err(PluginParamError::NoPlainValue(CUTOFF)));
 }
 
 /// **An id the plugin does not declare is refused**, by `get` and by `typed`,

@@ -79,7 +79,11 @@ fn a_typed_hertz_parameter_round_trips_through_the_formats_own_range() {
             Normalized::of(position),
             "{plain} Hz is position {position}"
         );
-        assert_eq!(hertz.get(), Hz::new(plain), "and reads back as {plain} Hz");
+        assert_eq!(
+            hertz.get(),
+            Ok(Hz::new(plain)),
+            "and reads back as {plain} Hz"
+        );
     }
     assert_eq!(
         hertz.set(Hz::new(128.0)),

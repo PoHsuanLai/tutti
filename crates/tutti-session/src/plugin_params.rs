@@ -66,7 +66,10 @@
 //! plugin to the host, VST2 has none, AU's are notifications to listeners), so a
 //! plugin hears only the values.
 
+use std::marker::PhantomData;
+
 use tutti_graph::NodeKey;
+
 use tutti_plugin_host::{Notice, ParamReporter, PluginHandle};
 use tutti_plugin_types::{
     AutomationMode, AutomationModeError, Normalized, ParamEdit, ParamId, ParamUnit, ParameterInfo,
@@ -230,7 +233,6 @@ impl<'a> Params<'a> {
             declared,
             wanted,
         };
-        let default = U::from_plain(declared, info.default_value()).ok_or(unfit.clone())?;
         // Every type here is an interval: if both ends read, so does
         // everything between them.
         for end in [min, max] {
@@ -241,7 +243,7 @@ impl<'a> Params<'a> {
             unit: declared,
             min,
             max,
-            default,
+            unit_type: PhantomData,
         })
     }
 
@@ -512,9 +514,7 @@ pub struct TypedParam<'a, U> {
     unit: ParamUnit,
     min: f64,
     max: f64,
-    /// The declared default, read at the check: what [`get`](Self::get) answers
-    /// when the plugin answers no plain value.
-    default: U,
+    unit_type: PhantomData<U>,
 }
 
 impl<'a, U: PlainUnit> TypedParam<'a, U> {
@@ -526,15 +526,19 @@ impl<'a, U: PlainUnit> TypedParam<'a, U> {
     }
 
     /// The value now, in `U`: the mirror's position through the format's own
-    /// map. A plugin that stops answering the map reads as the declared
-    /// default.
-    #[must_use]
-    pub fn get(&self) -> U {
+    /// map.
+    ///
+    /// # Errors
+    ///
+    /// [`PluginParamError::NoPlainValue`] when the plugin does not answer the
+    /// map (the format has none, or the plugin stopped answering).
+    pub fn get(&self) -> Result<U, PluginParamError> {
+        let id = self.param.id();
         self.param
             .plain()
             .map(|plain| plain.clamp(self.min, self.max))
             .and_then(|plain| U::from_plain(self.unit, plain))
-            .unwrap_or(self.default)
+            .ok_or(PluginParamError::NoPlainValue(id))
     }
 
     /// Sets the parameter to `value`, through the declared range and the

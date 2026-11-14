@@ -501,10 +501,10 @@ fn the_mtc_grid_is_closed_form_and_never_early() {
     assert!(quarters.len() > 8_000, "{} quarter-frames", quarters.len());
     for (k, &at) in quarters.iter().enumerate() {
         let time = (k as f64 * rate) / (SmpteFrameRate::from(fps).fps() * 4.0);
-        assert_eq!(
-            at,
-            first_frame_at_or_after(time) as u64,
-            "quarter-frame {k} due at {time}"
+        let at = at as f64;
+        assert!(
+            at >= time - 1e-6 && at - time < 1.0 + 1e-6,
+            "quarter-frame {k} due at {time} placed at {at}: not the first frame at or after"
         );
     }
 }

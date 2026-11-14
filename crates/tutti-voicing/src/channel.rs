@@ -473,6 +473,11 @@ mod tests {
         assert!((f64::from(c.glide_rate()) - expected).abs() < 1e-4 * expected);
         let time = c.glide_time(NoteNumber::of(60), NoteNumber::of(72));
         assert!((time.0 - 1200.0 / expected / 1000.0).abs() < 1e-6);
+        // The curve's own end points: CC 5 = 0 and 127.
+        c.control(CCNumber::PORTAMENTO_TIME, U7::of(0));
+        assert!((c.glide_rate() - 1000.0).abs() < 1e-3);
+        c.control(CCNumber::PORTAMENTO_TIME, U7::of(127));
+        assert!((c.glide_rate() - 0.01).abs() < 1e-6);
     }
 
     /// M1 p.12: a receiver sets its concept of the LSB to zero when an MSB is

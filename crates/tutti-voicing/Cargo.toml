@@ -17,7 +17,9 @@ workspace = true
 tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
 tutti-midi-protocol = { version = "0.0.1", path = "../tutti-midi-protocol" }
 tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
-libm = "0.2.16"
+# The portamento rate (`glide_rate`) is `libm`'s pure-Rust `expf`/`logf`, so the
+# render does not depend on the platform's libm.
+libm = "0.2.15"
 thiserror = { workspace = true }
 
 [dev-dependencies]

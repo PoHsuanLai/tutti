@@ -63,8 +63,7 @@
 //!
 //! # The timeout
 //!
-//! [`PEER_REPLY_TIMEOUT`] is tutti's choice, 3 seconds: M2-101 gives none for Profile
-//! Configuration, and the only wait it states is Discovery's 3 seconds at least (§5.5.5).
+//! An inquiry waits [`PEER_REPLY_TIMEOUT`] for its reply.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;

@@ -40,10 +40,7 @@
 //!
 //! # The timeout
 //!
-//! [`PEER_REPLY_TIMEOUT`] is tutti's choice, 3 seconds: M2-101 §9 gives no limit for a
-//! Process Inquiry transaction, and the only wait the document states is
-//! Discovery's 3 seconds at least (§5.5.5). The capabilities inquiry waits that
-//! long for its reply. A report waits that long for the Reply, and the Reply
+//! The capabilities inquiry waits [`PEER_REPLY_TIMEOUT`] for its reply. A report waits that long for the Reply, and the Reply
 //! starts the wait again, for the End; so the time a report takes is bounded by
 //! the peer's silence, not by how much it has to say.
 

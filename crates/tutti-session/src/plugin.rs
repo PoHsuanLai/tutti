@@ -1047,6 +1047,13 @@ impl HostedPlugin {
             .map(|v| v.map(|v| v.get() as f32))
     }
 
+    /// Queues the announcement that every parameter value changed, as the
+    /// plugin's own would arrive: a load the host made moves values the plugin
+    /// may not report, and the next `Phase::Plugins` reads them again.
+    pub(crate) fn refresh_values(&self) {
+        queue(&self.notices, Notice::Refresh(PluginRefresh::ParamValues));
+    }
+
     /// Asks for the parameters to be read again (the plugin announced a
     /// rescan): a fresh read, handed to the host at the next
     /// `Phase::Plugins`, and a fresh token, so a read still in flight lands
@@ -1225,7 +1232,8 @@ impl<'a> StateView<'a> {
         Ok(PluginState::new(self.hosted.plugin.clone(), bytes))
     }
 
-    /// Restores `state` into the plugin.
+    /// Restores `state` into the plugin. The parameter mirror is read again by
+    /// the next `Phase::Plugins`, whatever values the state moved.
     ///
     /// # Errors
     ///
@@ -1234,7 +1242,9 @@ impl<'a> StateView<'a> {
     /// [`StateError`].
     pub fn restore(&self, main: &MainThread, state: &PluginState) -> Result<(), StateError> {
         state.check_for(&self.hosted.plugin)?;
-        self.hosted.handle.load_state(main, state.bytes())
+        self.hosted.handle.load_state(main, state.bytes())?;
+        self.hosted.refresh_values();
+        Ok(())
     }
 }
 

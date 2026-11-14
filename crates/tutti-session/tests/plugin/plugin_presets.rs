@@ -95,6 +95,52 @@ mod clap {
             "an accepted preset file moved the plugin's own state"
         );
     }
+
+    /// The mirror's value of the plugin's first parameter (Cutoff).
+    fn cutoff(s: &Session, node: NodeKey) -> Option<f64> {
+        let plugin = s.plugin(node).unwrap();
+        let params = plugin.params();
+        let first = params.iter().next()?.id();
+        params.get(first).ok().map(|p| p.normalized().get())
+    }
+
+    /// **A preset the session loads moves the parameter mirror.** The plugin
+    /// reports no value change for a preset file (it only sets Cutoff), so the
+    /// mirror read at load keeps the old value unless the session reads it
+    /// again: after the load, updates bring the mirror to the plugin's new
+    /// Cutoff.
+    #[test]
+    fn a_loaded_preset_file_moves_the_mirror() {
+        let (mut s, node) = loaded();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !s.plugin(node).is_ok_and(|p| p.params().is_ready()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the read never landed"
+            );
+            let _ = s.update();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let before = cutoff(&s, node).expect("Cutoff is read");
+
+        let mut ui = s.main(main_thread());
+        ui.plugin(node)
+            .unwrap()
+            .presets()
+            .unwrap()
+            .load_file("/nowhere/bright.tutti-preset")
+            .expect("the plugin takes the preset");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while cutoff(ui.session(), node) == Some(before) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the mirror still reads {before} after the preset moved Cutoff"
+            );
+            let _ = ui.update();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
 }
 
 #[cfg(feature = "vst2")]

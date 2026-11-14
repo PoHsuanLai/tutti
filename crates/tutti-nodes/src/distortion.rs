@@ -26,10 +26,8 @@
 //! branch.
 
 use crate::ramp::LastGood;
-use std::sync::Arc;
 use tutti_dsp::{ShapeKind, Shaper};
 use tutti_graph::{Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status};
-use tutti_types::AtomicF32;
 use tutti_types::UnitParam;
 use tutti_types::{ChannelLayout, Drive, Param, Tail};
 
@@ -90,9 +88,10 @@ impl DistortionNode {
         }
     }
 
-    /// Atomic handle for the UI / automation to share the drive cell.
-    pub fn drive(&self) -> Arc<AtomicF32> {
-        self.drive.as_atomic()
+    /// A handle on the shared [`Drive`] cell, for the UI / automation.
+    #[must_use]
+    pub fn drive(&self) -> Param<Drive> {
+        self.drive.handle()
     }
 
     /// Rebuild the (stateless) shaper if drive has moved meaningfully. Cheap:
@@ -343,11 +342,10 @@ mod tests {
     /// address it does not own is refused.
     #[test]
     fn drive_settable_via_unit_param() {
-        use std::sync::atomic::Ordering;
         let n = DistortionNode::new(ShapeKind::Tanh, Drive::new(1.0));
         let set = n.param_set();
         assert!(set.set(UnitParam::Drive, 5.0));
-        assert!((n.drive().load(Ordering::Acquire) - 5.0).abs() < 1e-3);
+        assert!((n.drive().load().get() - 5.0).abs() < 1e-3);
         // A param this unit doesn't own is refused.
         assert!(!set.set(UnitParam::Cutoff, 1000.0));
     }

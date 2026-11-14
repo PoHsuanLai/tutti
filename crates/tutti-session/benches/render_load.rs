@@ -311,10 +311,7 @@ fn scene(block: usize, workers: Workers, variant: Variant) -> Session {
             connect_stereo(&mut s, strip, 0, src);
             if reverb {
                 let send = BusStripNode::stereo();
-                send.volume().store(
-                    Db(-12.0).to_amplitude().get(),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
+                send.set_volume(Db(-12.0).to_amplitude());
                 let (send, _) = s.graph().add(send);
                 connect_stereo(&mut s, send, 0, src);
                 sends.push(send);

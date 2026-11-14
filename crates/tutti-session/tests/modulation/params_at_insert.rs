@@ -87,7 +87,7 @@ fn add_addresses_a_hosts_param_node() {
 fn add_addresses_an_engine_node() {
     let mut s = session();
     let node = DistortionNode::new(ShapeKind::Tanh, Drive::new(BASE));
-    let cell = node.drive();
+    let cell = node.drive().as_atomic();
     let (key, _) = s.graph().add(node);
     modulate_drive(&mut s, key.erase());
     assert_knob_is(&s, key.erase(), &cell);

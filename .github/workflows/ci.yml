@@ -152,7 +152,7 @@ jobs:
   clippy-windows:
     name: clippy (windows)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -181,7 +181,7 @@ jobs:
   clippy-macos:
     name: clippy (macos)
     needs: changes
-    if: needs.changes.outputs.macos == 'true'
+    if: needs.changes.outputs.macos == 'true' && needs.changes.outputs.full == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -201,7 +201,7 @@ jobs:
   contract-windows:
     name: plugin contract (windows)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: windows-latest
     continue-on-error: true
     steps:
@@ -219,7 +219,7 @@ jobs:
   features:
     name: dark features
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     env:
       TUTTI_GOLDEN: require
@@ -418,7 +418,7 @@ jobs:
   test-more:
     name: test (${{ matrix.os }}, editor + release + doctests)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -518,7 +518,8 @@ jobs:
   miri:
     name: miri (tutti-rt)
     needs: changes
-    if: needs.changes.outputs.loom == 'true'
+    # `tutti-rt` depends on no other workspace crate, so the `loom` filter covers what miri reads.
+    if: needs.changes.outputs.loom == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     # About 10 minutes on main; a hang fails here, not at GitHub's cap. Slow pure-arithmetic tests shrink under `cfg!(miri)`.
     timeout-minutes: 25
@@ -553,6 +554,9 @@ jobs:
   # `macos`: the change touches code that differs on macOS. It gates `clippy (macos)` and the macOS `test`;
   # `macos_main` (editor, release and doctest runs, macOS rustdoc) is for pushes only.
   # `deps`: a manifest, the lock, `deny.toml`, the toolchain or this file changed, which is what `cargo deny` reads.
+  # `full`: false on a pull request, which runs the light set (static gates, Linux clippy, the Linux `test`,
+  # rustdoc, `cargo deny` when `deps`); the merge group and the push run the rest. `cargo xtask check-windows`
+  # and `check-features` run locally what a pull request skips.
   changes:
     name: what changed?
     runs-on: ubuntu-24.04
@@ -564,6 +568,7 @@ jobs:
       test_os: ${{ steps.diff.outputs.test_os }}
       test_more_os: ${{ steps.diff.outputs.test_more_os }}
       deps: ${{ steps.diff.outputs.deps }}
+      full: ${{ steps.diff.outputs.full }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -581,9 +586,16 @@ jobs:
             echo 'test_os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
             echo 'test_more_os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
             echo "deps=true" >> "$GITHUB_OUTPUT"
+            echo "full=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # HEAD is the merge commit of the pull request or merge group.
+          # A pull request runs the light set; its merge group runs the rest.
+          if [ "$EVENT" = "pull_request" ]; then
+            echo "full=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "full=true" >> "$GITHUB_OUTPUT"
+          fi
+          # HEAD is the pull request's merge commit, or the merge group's head.
           changed=$(git diff --name-only "$BASE"...HEAD)
           echo "$changed"
           if echo "$changed" | grep -qvE '^(docs/.*|[^/]+\.md)$'; then
@@ -607,7 +619,11 @@ jobs:
           fi
           if echo "$changed" | grep -qE '^(crates/(tutti-rt|tutti-cpal|tutti-midi-hardware|tutti-coremidi-ffi|tutti-au-[a-z]+|tutti-vst2-[a-z]+|tutti-vst3-[a-z]+|tutti-clap-[a-z]+|tutti-plugin[a-z-]*)/|crates/tutti-session/(src|tests)/plugin|testing/tutti-(shared-plugin[a-z0-9-]*|clap-test-plugin|vst2-[a-z]+|vst2-test-plugin|plugin-contract|fixtures)/|vendor/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
             echo "macos=true" >> "$GITHUB_OUTPUT"
-            echo 'test_os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+            if [ "$EVENT" = "pull_request" ]; then
+              echo 'test_os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+            else
+              echo 'test_os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "macos=false" >> "$GITHUB_OUTPUT"
             echo 'test_os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
@@ -616,7 +632,7 @@ jobs:
   loom:
     name: loom (${{ matrix.group }})
     needs: changes
-    if: needs.changes.outputs.loom == 'true'
+    if: needs.changes.outputs.loom == 'true' && needs.changes.outputs.full == 'true'
     # Three runners: `pos_ring_loom` and `doorbell_loom` were most of the runtime. Every model runs, at the same
     # bound, in exactly one group. Release builds, since loom explores every interleaving in-process; `--cfg loom`
     # is global, so each model builds for its own target, never the workspace.
@@ -666,7 +682,7 @@ jobs:
   loom-parallel:
     name: loom (parallel executor)
     needs: changes
-    if: needs.changes.outputs.loom == 'true'
+    if: needs.changes.outputs.loom == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:

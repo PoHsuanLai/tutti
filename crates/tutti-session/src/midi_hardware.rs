@@ -255,7 +255,8 @@ impl Midi<'_> {
     /// Opens an output device, by id or name, and makes it the hardware out's
     /// sink: the output is the hardware out's own, replacing the sink it had (a
     /// session sends to one destination, and the stamp stream carries on across
-    /// the change). It stamps as the device's configuration says, which each
+    /// the change, and across a [`disconnect_output`](Self::disconnect_output)
+    /// before it). It stamps as the device's configuration says, which each
     /// update's poll follows.
     ///
     /// # Errors
@@ -266,8 +267,13 @@ impl Midi<'_> {
         match &mut self.state.out {
             Some(out) => out.set_device(output),
             None => {
-                let rate = self.graph.prepared().sample_rate();
-                self.state.out = Some(UmpOut::of_device(output, rate));
+                self.state.out = Some(match self.state.parked_stream.take() {
+                    Some(stream) => UmpOut::resumed(output, stream),
+                    None => {
+                        let rate = self.graph.prepared().sample_rate();
+                        UmpOut::of_device(output, rate)
+                    }
+                });
             }
         }
         Ok(())
@@ -293,7 +299,8 @@ impl Midi<'_> {
     pub fn disconnect_output(&mut self) -> Result<()> {
         self.hardware()?;
         if self.output().is_some() {
-            self.state.out = None;
+            // The stamp stream stays, so the next output's stamps carry on.
+            self.state.parked_stream = self.state.out.take().map(UmpOut::into_stream);
             Ok(())
         } else {
             Err(MidiError::OutputNotOpen)

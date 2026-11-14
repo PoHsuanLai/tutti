@@ -345,6 +345,22 @@ impl UmpOut {
         Self::over(Sink::Device(Box::new(output)), sample_rate)
     }
 
+    /// An output over `output` that carries on `stream`, the stamp stream of
+    /// an output that was closed ([`into_stream`](Self::into_stream)).
+    #[cfg(feature = "midi-hardware")]
+    pub(crate) fn resumed(
+        output: tutti_midi_hardware::OpenOutput,
+        stream: tutti_midi_runtime::JrStream,
+    ) -> Self {
+        Self::with_stream(Sink::Device(Box::new(output)), stream)
+    }
+
+    /// The stamp stream, which outlives the sink it stamped for.
+    #[cfg(feature = "midi-hardware")]
+    pub(crate) fn into_stream(self) -> tutti_midi_runtime::JrStream {
+        self.stream
+    }
+
     /// JR-stamp `events` and send each resulting UMP message (the timestamp
     /// prefixes and the events) to the sink. The stream advances its own
     /// origin, so successive blocks stay monotonic whichever drain called.
@@ -756,6 +772,10 @@ pub(crate) struct MidiState {
     /// the routes are then the host's, and the session's own are refused.
     host_routes: bool,
     pub(crate) out: Option<UmpOut>,
+    /// The stamp stream of a device output that was disconnected, which the
+    /// next one carries on ([`Midi::connect_output`]).
+    #[cfg(feature = "midi-hardware")]
+    pub(crate) parked_stream: Option<tutti_midi_runtime::JrStream>,
     /// The session's one MPE mode ([`Midi::set_mpe`]).
     mpe: MpeMode,
     /// The hardware out's tap on the clock, which `Phase::MidiOut` drains;

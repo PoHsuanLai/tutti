@@ -1933,26 +1933,17 @@ fn a_midi_ci_peers_message_report_is_asked_for_through_the_session() {
     assert_eq!(report, ended.iter().collect::<Vec<_>>());
 }
 
-/// **The hardware out JR-stamps only as its device's configuration says**
-/// (M2-104 §7.1.6.2: JR Timestamps go to a device only once a Stream
-/// Configuration Notification has said it receives them). The
-/// session asks for JR off, so the output is unstamped when the device
-/// settles; when the device notifies that it receives JR the next `MidiOut`
-/// phase stamps, and the wire carries the JR messages; when it notifies the
-/// reverse the stamps stop. There is no switch of the session's own.
+/// Runs the Stream negotiation of the open duplex device `raw` to its end,
+/// answering as an Endpoint that receives no JR does. Returns the time it
+/// started at.
 #[cfg(feature = "midi-hardware")]
-#[test]
-fn the_hardware_out_stamps_as_the_devices_configuration_says() {
+fn settle(
+    s: &mut Session,
+    fake: &tutti_midi_hardware::test_support::FakeCounters,
+    raw: EndpointId,
+) -> Instant {
     use tutti_midi_hardware::{Capabilities, Endpoint};
-    use tutti_ump::{Message, Protocol, Stream, StreamConfig};
-
-    let (mut s, fake) = hot_plug_session();
-    plug(&fake, 7, "Dev", PortDirection::Duplex);
-    let _ = s.update();
-    let raw = EndpointId::from_raw(7);
-    s.midi().connect_input("dev").expect("connects");
-    s.midi().connect_output("dev").expect("connects");
-
+    use tutti_ump::Message;
     // The device answers the session's Stream messages as an Endpoint does.
     let mut device = Endpoint::new(Capabilities {
         midi1: true,
@@ -1964,7 +1955,7 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
     let mut settled = false;
     for ms in 0..8 {
         let now = start + Duration::from_millis(ms);
-        let events = update_at(&mut s, now);
+        let events = update_at(s, now);
         settled |= events
             .iter()
             .any(|e| matches!(e, SessionEvent::Midi(MidiEvent::StreamSettled { .. })));
@@ -1979,6 +1970,29 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
         }
     }
     assert!(settled, "the negotiation settled");
+    start
+}
+
+/// **The hardware out JR-stamps only as its device's configuration says**
+/// (M2-104 §7.1.6.2: JR Timestamps go to a device only once a Stream
+/// Configuration Notification has said it receives them). The
+/// session asks for JR off, so the output is unstamped when the device
+/// settles; when the device notifies that it receives JR the next `MidiOut`
+/// phase stamps, and the wire carries the JR messages; when it notifies the
+/// reverse the stamps stop. There is no switch of the session's own.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn the_hardware_out_stamps_as_the_devices_configuration_says() {
+    use tutti_ump::{Message, Protocol, Stream, StreamConfig};
+
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 7, "Dev", PortDirection::Duplex);
+    let _ = s.update();
+    let raw = EndpointId::from_raw(7);
+    s.midi().connect_input("dev").expect("connects");
+    s.midi().connect_output("dev").expect("connects");
+
+    let start = settle(&mut s, &fake, raw);
     let stamping = |s: &mut Session| s.midi().hardware_out().out.map(|o| o.is_stamping());
     assert_eq!(stamping(&mut s), Some(false), "asked for JR off");
 
@@ -2011,6 +2025,59 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
     assert_eq!(stamping(&mut s), Some(false));
     assert!(!sent.iter().any(|u| u.is_jr()), "{sent:?}");
     assert_eq!(sent.len(), 2);
+}
+
+/// Opens the duplex device 7 as input and output, settled, and has it
+/// receive JR Timestamps.
+#[cfg(feature = "midi-hardware")]
+fn jr_session() -> (
+    Session,
+    tutti_midi_hardware::test_support::FakeCounters,
+    EndpointId,
+) {
+    use tutti_ump::{Message, Protocol, Stream, StreamConfig};
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 7, "Dev", PortDirection::Duplex);
+    let _ = s.update();
+    let raw = EndpointId::from_raw(7);
+    s.midi().connect_input("dev").expect("connects");
+    s.midi().connect_output("dev").expect("connects");
+    settle(&mut s, &fake, raw);
+    let ump = Ump::from(Message::Stream(Stream::StreamConfigurationNotification(
+        StreamConfig {
+            protocol: Protocol::Midi2,
+            rx_jr: true,
+            tx_jr: false,
+        },
+    )));
+    let now = Instant::now();
+    assert!(fake.send_input(raw, ump, now));
+    update_at(&mut s, now + Duration::from_millis(20));
+    fake.take_sent(raw);
+    (s, fake, raw)
+}
+
+/// **The JR stamp stream carries on across a disconnect and reconnect of the
+/// output**: a stream that restarted at origin 0 would stamp the next
+/// events earlier than ones already sent. Two events 480 frames apart move
+/// the origin to 481; after the output is closed and opened again it is still
+/// 481.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn the_stamp_stream_survives_a_disconnected_output() {
+    let (mut s, _fake, _raw) = jr_session();
+    s.midi()
+        .hardware_out()
+        .route(&[(Frame::new(0), key(0, 60)), (Frame::new(480), key(0, 61))]);
+    let origin = |s: &mut Session| s.midi().hardware_out().out.map(|o| o.origin());
+    assert_eq!(origin(&mut s), Some(Frame::new(481)));
+    s.midi().disconnect_output().expect("it was open");
+    s.midi().connect_output("dev").expect("connects");
+    assert_eq!(
+        origin(&mut s),
+        Some(Frame::new(481)),
+        "the stream carried on"
+    );
 }
 
 /// **`reconnect_saved` is all or nothing**: a duplex device whose output

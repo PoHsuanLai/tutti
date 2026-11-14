@@ -134,6 +134,31 @@ fn an_instrument_has_its_handles_keys_and_no_second_live_input() {
     );
 }
 
+/// **A node's keys have one owner, whichever was asked first**: a node whose
+/// live input handed out its keys ([`Midi::input`](tutti_session::Midi::input))
+/// is not made an instrument with a second pair, and an instrument's node
+/// hands out no live keys (the test above). Nothing is opened by the refusal.
+#[test]
+fn a_node_whose_live_input_has_its_keys_is_not_made_an_instrument() {
+    let mut s = offline();
+    let (node, ()) = s.graph().add(Probe(ForkByClone(Five), Arc::default()));
+    let key = node.erase();
+    let _keys = s.midi().input(key).expect("the live input's keys");
+    assert!(matches!(
+        s.instrument(key),
+        Err(tutti_session::Error::NotInstrument {
+            why: tutti_session::NotInstrument::LiveInput,
+            ..
+        })
+    ));
+    assert!(
+        s.graph_ref()
+            .feed(key, tutti_session::Feeder::Instrument)
+            .is_empty(),
+        "no instrument queue was opened"
+    );
+}
+
 /// **The instrument's key is typed, so a source of the caller's own wires into
 /// its event input** (`events_in` is a method of `Key`, which an erased
 /// `NodeKey` has not).

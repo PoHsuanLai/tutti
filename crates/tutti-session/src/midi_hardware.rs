@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use tutti_midi_hardware::{
-    CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Learned, Match, PeerProfiles, ProfileSwitch,
-    ReportAsk, ReportPeer, Resolved, SavedDevice,
+    CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery, Learned, Match, PeerProfiles, PortDirection,
+    ProfileSwitch, ReportAsk, ReportPeer, Resolved, SavedDevice,
 };
 use tutti_ump::DeviceIdentity;
 
@@ -336,23 +336,8 @@ impl Midi<'_> {
     pub fn reconnect_saved(&mut self, saved: &DeviceInfo) -> Result<Resolution> {
         let io = self.io.as_deref_mut().ok_or(MidiError::NoHardware)?;
         let rate = self.graph.prepared().sample_rate();
-        self.state.reconnect(
-            io,
-            rate,
-            saved,
-            Directions {
-                input: saved.direction.is_input(),
-                output: saved.direction.is_output(),
-            },
-        )
+        self.state.reconnect(io, rate, saved, saved.direction)
     }
-}
-
-/// Which directions of a device a connection is wanted in.
-#[derive(Clone, Copy)]
-pub(crate) struct Directions {
-    pub(crate) input: bool,
-    pub(crate) output: bool,
 }
 
 /// What the app connected and the OS took away: reconnected when the device
@@ -425,7 +410,7 @@ impl MidiState {
         io: &mut tutti_midi_hardware::MidiSession,
         rate: tutti_types::SampleRate,
         saved: &DeviceInfo,
-        wanted: Directions,
+        wanted: PortDirection,
     ) -> Result<Resolution> {
         let resolved = io.devices().resolve(saved);
         // The one arm that binds is `BindPolicy::ExactOnly`'s, spelled out so
@@ -437,12 +422,12 @@ impl MidiState {
             Resolved::Missing => return Ok(Resolution::Missing),
         };
         let mut opened_input = false;
-        if wanted.input && found.direction.is_input() {
+        if wanted.is_input() && found.direction.is_input() {
             let was_open = io.is_input_connected(&found.id);
             io.connect_input(&found.id)?;
             opened_input = !was_open;
         }
-        if wanted.output
+        if wanted.is_output()
             && found.direction.is_output()
             && let Err(refused) = self.connect_output(io, rate, DeviceQuery::from(&found.id))
         {
@@ -509,10 +494,7 @@ impl MidiState {
             .position(|lost| is_arrived(io, lost))
         {
             let lost = self.lost.inputs[at].clone();
-            let wanted = Directions {
-                input: true,
-                output: false,
-            };
+            let wanted = PortDirection::Input;
             match self.reconnect(io, rate, &lost, wanted) {
                 Ok(_) => {
                     self.lost.inputs.remove(at);
@@ -533,10 +515,7 @@ impl MidiState {
             }
         }
         if let Some(lost) = self.lost.output.clone().filter(|lost| is_arrived(io, lost)) {
-            let wanted = Directions {
-                input: false,
-                output: true,
-            };
+            let wanted = PortDirection::Output;
             match self.reconnect(io, rate, &lost, wanted) {
                 Ok(_) => out.push(
                     MidiEvent::OutputRestored {

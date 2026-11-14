@@ -46,8 +46,7 @@
 //! from the crate root, or a raw slice that is not audio (a coefficient
 //! table is a site too and is judged `measured`).
 
-use super::lex::{blank, find_word_from, matching};
-use super::value_traits::test_ranges;
+use super::lex::{blank, find_word_from, matching, test_ranges};
 use super::{Report, Tree};
 use std::collections::{BTreeMap, BTreeSet};
 

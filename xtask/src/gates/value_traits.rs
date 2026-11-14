@@ -12,7 +12,7 @@
 //! An enum behind `pub(crate)` or no `pub` is not public. A derive written as a
 //! path (`std::hash::Hash`) counts by its last segment.
 
-use super::lex::{blank, line_of, matching};
+use super::lex::{blank, line_of, matching, test_ranges};
 use super::{Report, Tree};
 use std::collections::BTreeSet;
 
@@ -28,29 +28,6 @@ fn skipped(dir: &str) -> bool {
 
 fn word(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
-}
-
-/// The byte ranges of items behind `#[cfg(test)]`, in blanked text.
-pub(super) fn test_ranges(code: &str) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    let mut from = 0;
-    while let Some(p) = code[from..].find("#[cfg(test)]") {
-        let at = from + p;
-        let after = at + "#[cfg(test)]".len();
-        from = after;
-        let Some(stop) = code[after..].find(['{', ';']).map(|i| after + i) else {
-            continue;
-        };
-        if code.as_bytes()[stop] == b'{' {
-            if let Some(end) = matching(code, stop, b'{', b'}') {
-                out.push((at, end));
-                from = end;
-            }
-        } else {
-            out.push((at, stop));
-        }
-    }
-    out
 }
 
 /// The attribute bodies (`derive(Debug)`) written before `at`, and whether the

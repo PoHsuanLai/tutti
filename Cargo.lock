@@ -1802,6 +1802,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "rgb"
+version = "0.8.53"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "ringbuf"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2466,6 +2475,7 @@ dependencies = [
  "tutti-graph",
  "tutti-plugin-types",
  "tutti-rt",
+ "tutti-types",
 ]
 
 [[package]]
@@ -2477,6 +2487,7 @@ dependencies = [
  "clap-sys",
  "libloading 0.9.1",
  "raw-window-handle",
+ "rgb",
  "tempfile",
  "thiserror 2.0.21",
  "tutti-clap-ffi",
@@ -2996,6 +3007,7 @@ dependencies = [
  "postcard",
  "proptest",
  "raw-window-handle",
+ "rgb",
  "serde",
  "serde_json",
  "tempfile",

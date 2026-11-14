@@ -437,6 +437,21 @@ pub(crate) fn forget_host() {
     WAKE_HOST.store(std::ptr::null_mut(), Ordering::Release);
 }
 
+/// Calls `host.request_callback()` from the calling thread; `false` when no
+/// plugin instance is initialised. `[thread-safe]`.
+pub(crate) fn request_callback_now() -> bool {
+    let host = WAKE_HOST.load(Ordering::Acquire);
+    if host.is_null() {
+        return false;
+    }
+    // SAFETY: the host outlives the plugin instance, which cleared the pointer
+    // before it was destroyed.
+    if let Some(request) = unsafe { (*host).request_callback } {
+        unsafe { request(host) };
+    }
+    true
+}
+
 /// Whether [`tutti_test_plugin_request_process_now`] has run in this image.
 pub(crate) fn process_requested() -> bool {
     PROCESS_REQUESTED.load(Ordering::Acquire)

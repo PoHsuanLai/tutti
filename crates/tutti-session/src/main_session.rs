@@ -216,8 +216,8 @@ pub enum Opened {
     /// Embedded in the parent window, at this size: the host sizes the parent
     /// to it. The size names its unit: a [`Size::Physical`] where the plugin's
     /// format counts in device pixels, a [`Size::Logical`] where it counts in
-    /// points (macOS, and AU), so a windowing frontend passes it on as it is
-    /// (winit's `Window::request_inner_size` takes a `Size`).
+    /// points (macOS, and AU), so a windowing frontend that sizes its windows
+    /// in `dpi` units, as winit does, passes it on as it is.
     Embedded(Size),
     /// The plugin made a floating window of its own (a CLAP plugin that cannot
     /// embed): there is no size, and nothing to lay out.

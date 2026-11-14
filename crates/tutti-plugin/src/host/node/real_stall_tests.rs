@@ -68,6 +68,7 @@ const INPUT_DC: f32 = 7.0;
 /// A healthy block of channel 0.
 const EXPECTED_LIVE: f32 = INPUT_DC + TAG_P0C0;
 
+use tutti_fixtures::midi;
 /// Serializes these tests against each other and against every other suite that
 /// drives the reference CLAP probe.
 ///
@@ -472,7 +473,7 @@ fn dump_and_note() -> (Vec<tutti_graph::EventKind>, tutti_graph::EventKind) {
         .expect("a 7-bit payload")
         .collect();
     assert_eq!(dump.len(), 5);
-    let note = tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1);
+    let note = midi::note_on(MidiChannel::FIRST, 60, 1);
     (
         dump.into_iter().map(tutti_graph::EventKind::Midi).collect(),
         tutti_graph::EventKind::Midi(note),

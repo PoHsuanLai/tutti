@@ -12,6 +12,7 @@ use tutti_types::{Amplitude, At, Frame, Tail};
 
 use super::midi::*;
 use super::rig::{BLOCK, Rig};
+use tutti_ump::{Message, NoteNumber, NoteVelocity, Ump, Voice2};
 
 /// A case a subject cannot pass: it runs, and must fail with `fails_with`.
 pub struct Gap {
@@ -454,7 +455,10 @@ pub fn a_fork_starts_silent_and_plays<S: Subject>() {
             tutti_types::Beat(0.0),
             [TimedMidiEvent::new(
                 tutti_types::Beat(0.01),
-                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, midi::MID_VELOCITY),
+                Message::midi2(
+                    MidiChannel::FIRST,
+                    Voice2::note_on(NoteNumber::of(64), NoteVelocity::CENTER),
+                ),
             )
             .unwrap()],
         )

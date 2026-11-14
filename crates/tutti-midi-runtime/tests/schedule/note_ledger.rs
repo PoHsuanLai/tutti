@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
 use crate::common::{FRAMES_PER_BEAT, at, beat_of, connect, off, on, rolling};
-use tutti_fixtures::midi::{cc, note_off, note_on};
+
+use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::contract::Direct;
 use tutti_graph::{
@@ -283,16 +284,16 @@ fn key(n: u32) -> (MidiChannel, NoteNumber) {
 
 fn ump_on(n: u32) -> Ump {
     let (c, n) = key(n);
-    note_on(MidiGroup::FIRST, c, n.get(), 0xFFFF)
+    midi::note_on(c, n.get(), 0xFFFF)
 }
 
 fn ump_off(n: u32) -> Ump {
     let (c, n) = key(n);
-    note_off(MidiGroup::FIRST, c, n.get(), 0)
+    midi::note_off(c, n.get(), 0)
 }
 
 fn ump_cc(v: u32) -> Ump {
-    cc(MidiGroup::FIRST, MidiChannel::FIRST, CCNumber::VOLUME, v)
+    midi::cc(MidiChannel::FIRST, CCNumber::VOLUME, v)
 }
 
 /// `script` through `relay` into a sink, in 64-frame blocks; `blocks` of
@@ -454,8 +455,11 @@ fn random_clip(seed: u64) -> (Shared, u64) {
             };
             let end = start + 1 + r.below(1_200);
             [
-                at(start, note_on(g, c, n, 0xFFFF)),
-                at(end, note_off(g, c, n, 0)),
+                at(
+                    start,
+                    midi::note_on(tutti_ump::Address::new(g, c), n, 0xFFFF),
+                ),
+                at(end, midi::note_off(tutti_ump::Address::new(g, c), n, 0)),
             ]
         })
         .collect();
@@ -509,8 +513,11 @@ fn a_full_table_withholds_what_it_cannot_keep() {
     let note = |i: u32, start: u64, end: u64| {
         let (g, c, n) = key(i);
         [
-            at(start, note_on(g, c, n, 0xFFFF)),
-            at(end, note_off(g, c, n, 0)),
+            at(
+                start,
+                midi::note_on(tutti_ump::Address::new(g, c), n, 0xFFFF),
+            ),
+            at(end, midi::note_off(tutti_ump::Address::new(g, c), n, 0)),
         ]
     };
     let events = (0..2_100u32)
@@ -943,18 +950,16 @@ fn spread_clip(r: &mut Rng, overlap: bool) -> (Vec<TimedMidiEvent>, usize, usize
         };
         *next = end + 1;
         let (g, c, n) = (MidiGroup::of(key.0), MidiChannel::of(key.1), key.2);
-        events.push(at(start, note_on(g, c, n, 0xFFFF)));
-        events.push(at(end, note_off(g, c, n, 0)));
+        events.push(at(
+            start,
+            midi::note_on(tutti_ump::Address::new(g, c), n, 0xFFFF),
+        ));
+        events.push(at(end, midi::note_off(tutti_ump::Address::new(g, c), n, 0)));
     }
     let ccs = 100 + r.below(300);
     for v in 0..ccs {
         let f = bunches[r.below(4) as usize];
-        let cc = cc(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            CCNumber::VOLUME,
-            v as u32,
-        );
+        let cc = midi::cc(MidiChannel::FIRST, CCNumber::VOLUME, v as u32);
         events.push(at(f, cc));
     }
     (events, notes as usize, ccs as usize)

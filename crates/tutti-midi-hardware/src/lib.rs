@@ -80,9 +80,9 @@
 //! ```rust,no_run
 //! use std::sync::Arc;
 //! use tutti_midi_hardware::{DeviceInlets, MidiSession};
-//! use tutti_fixtures::midi::note_on;
 //! use tutti_graph::Offset;
-//! use tutti_ump::{MidiChannel, MidiGroup};
+//! use tutti_fixtures::midi;
+//! use tutti_ump::{MidiChannel, NoteVelocity};
 //!
 //! // The inlets inbound events land in (four devices, 1024 events each, placed
 //! // 10 ms after they arrive), then a session over this platform's backend.
@@ -105,7 +105,7 @@
 //! // Outbound: the output is a value the caller owns; `queue` returns how many
 //! // events the device accepted.
 //! let mut output = session.connect_output("iac")?;
-//! let note = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+//! let note = midi::note_on(MidiChannel::FIRST, 60, 0x8000);
 //! assert_eq!(output.queue(&[(Offset::ZERO, note)]), 1);
 //! # Ok::<(), tutti_midi_hardware::Error>(())
 //! ```

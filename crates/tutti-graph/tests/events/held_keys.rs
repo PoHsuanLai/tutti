@@ -10,7 +10,7 @@ use tutti_graph::testing as common;
 use std::sync::{Arc, Mutex};
 
 use common::TestPool;
-use tutti_fixtures::midi::{self, MID_VELOCITY, m1_cc, m1_note_off, m1_note_on};
+use tutti_fixtures::midi;
 use tutti_graph::NodeSpec;
 use tutti_graph::{
     Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut, Executor, Fade, ForkByClone,
@@ -110,27 +110,27 @@ fn at(n: u64) -> EventIn {
 
 /// A MIDI 1.0 Note On, group 0, velocity 100.
 fn m1_on(ch: u8, note: u8) -> Words {
-    m1_note_on(MidiChannel::of(ch), NoteNumber::of(note), U7::of(100)).0
+    midi::m1_note_on(MidiChannel::of(ch), note, U7::of(100)).0
 }
 
 /// A MIDI 1.0 Note Off, group 0, velocity 0.
 fn m1_off(ch: u8, note: u8) -> Words {
-    m1_note_off(MidiChannel::of(ch), NoteNumber::of(note), U7::of(0)).0
+    midi::m1_note_off(MidiChannel::of(ch), note, U7::of(0)).0
 }
 
 /// A MIDI 1.0 Note On at velocity 0, which MIDI 1.0 reads as an off.
 fn m1_on_vel0(ch: u8, note: u8) -> Words {
-    m1_note_on(MidiChannel::of(ch), NoteNumber::of(note), U7::of(0)).0
+    midi::m1_note_on(MidiChannel::of(ch), note, U7::of(0)).0
 }
 
 /// A MIDI 2.0 Note On, group 0, the midpoint velocity.
 fn m2_on(ch: u8, note: u8) -> Words {
-    midi::note_on(MidiGroup::FIRST, MidiChannel::of(ch), note, MID_VELOCITY).0
+    midi::note_on(MidiChannel::of(ch), note, 0x8000).0
 }
 
 /// A MIDI 2.0 Note Off, group 0, velocity 0.
 fn m2_off(ch: u8, note: u8) -> Words {
-    midi::note_off(MidiGroup::FIRST, MidiChannel::of(ch), note, 0).0
+    midi::note_off(MidiChannel::of(ch), note, 0).0
 }
 
 fn on60() -> Words {
@@ -148,7 +148,7 @@ fn off61() -> Words {
 
 /// A MIDI 1.0 Control Change on channel 0, group 0.
 fn m1_controller(controller: CCNumber, value: u8) -> Words {
-    m1_cc(MidiChannel::FIRST, controller, U7::of(value)).0
+    midi::m1_cc(MidiChannel::FIRST, controller, U7::of(value)).0
 }
 
 /// Which engine a scenario runs on.
@@ -615,7 +615,7 @@ fn no_cut_no_change() {
 #[test]
 fn velocity_zero_is_an_off_in_midi1_and_an_on_in_midi2() {
     let (m1_on, m1_on0) = (m1_on(1, 0x40), m1_on_vel0(1, 0x40));
-    let m2_on0 = midi::note_on(MidiGroup::FIRST, MidiChannel::of(2), 0x41, 0).0;
+    let m2_on0 = midi::note_on(MidiChannel::of(2), 0x41, 0).0;
     let m2_on = m2_on(1, 0x40);
     let logs = on_all(
         |r| {
@@ -1872,9 +1872,9 @@ mod no_alloc {
                     m.push((
                         0,
                         if tog {
-                            m1_note_on(ch, key, vel)
+                            Ump::from(Message::midi1(ch, Voice1::note_on(key, vel)))
                         } else {
-                            m1_note_off(ch, key, vel)
+                            Ump::from(Message::midi1(ch, Voice1::note_off(key, vel)))
                         }
                         .0,
                     ));

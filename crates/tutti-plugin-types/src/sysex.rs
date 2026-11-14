@@ -112,6 +112,7 @@ pub fn push_sysex_stack(out: &mut MidiEventVec, frame_offset: u32, message: &[u8
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_fixtures::midi;
     use tutti_ump::{MidiChannel, SysexStep, Ump, frame};
 
     fn packets(group: MidiGroup, payload: &[u8]) -> Vec<Ump> {
@@ -224,12 +225,7 @@ mod tests {
         let mut out = RtMidiEvents::new();
         assert!(out.push(WireMidi {
             offset: 0,
-            ump: tutti_fixtures::midi::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::of(0),
-                60,
-                tutti_fixtures::midi::MID_VELOCITY
-            )
+            ump: midi::note_on(MidiChannel::of(0), 60, 0x8000)
         }));
         assert!(!push_sysex(
             &mut out,

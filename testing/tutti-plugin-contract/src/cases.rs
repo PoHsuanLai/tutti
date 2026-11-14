@@ -3,7 +3,6 @@
 
 use crate::active::main_thread;
 use crate::transcript::select_tail;
-use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
@@ -19,6 +18,9 @@ use crate::{
     Active, BLOCK, Format, Kind, ParamTiming, RATE, Render, prepare, select, set_level, set_mode,
     transcript,
 };
+use tutti_fixtures::midi;
+use tutti_midi_protocol::widen_velocity;
+use tutti_ump::U7;
 
 fn read<C: Control + ?Sized>(c: &C, param: Param) -> Option<f64> {
     c.parameter(&main_thread(), param.id()).map(Normalized::get)
@@ -56,9 +58,13 @@ fn note(offset: usize, on: bool) -> UmpAt {
     let (group, channel) = (MidiGroup::FIRST, MidiChannel::of(0));
     let ump = if on {
         // 7-bit 100, widened (M2-115).
-        midi::note_on(group, channel, 60, tutti_fixtures::midi::wide_velocity(100))
+        midi::note_on(
+            tutti_ump::Address::new(group, channel),
+            60,
+            widen_velocity(U7::of(100)).get(),
+        )
     } else {
-        midi::note_off(group, channel, 60, 0)
+        midi::note_off(tutti_ump::Address::new(group, channel), 60, 0)
     };
     let offset = Offset::of(Samples(offset), Samples(BLOCK));
     (offset, ump)

@@ -56,10 +56,10 @@ fn organ() -> Hand {
 }
 
 fn m1(voice: Voice1) -> Ump {
-    support::rig::m1(MidiChannel::FIRST, voice)
+    Ump::from(Message::midi1(MidiChannel::FIRST, voice))
 }
 fn m2(voice: Voice2) -> Ump {
-    support::rig::m2(MidiChannel::FIRST, voice)
+    Ump::from(Message::midi2(MidiChannel::FIRST, voice))
 }
 fn note_on_2(n: u8, velocity: u16) -> Ump {
     m2(Voice2::NoteOn {
@@ -112,7 +112,7 @@ fn a_midi_1_note_on_at_velocity_0_is_a_note_off() {
     let mut unit = organ();
     let out = render(
         &mut unit,
-        &[pedal(ControlValue::new(u32::MAX)), note_on_2(60, 0xFFFF)],
+        &[pedal(ControlValue::MAX), note_on_2(60, 0xFFFF)],
         22_050,
     );
     let held = rms(&out[11_025..]);
@@ -123,7 +123,7 @@ fn a_midi_1_note_on_at_velocity_0_is_a_note_off() {
         pedalled > held * 0.5,
         "the pedal holds a Note Off: {pedalled} against {held}"
     );
-    render(&mut unit, &[pedal(ControlValue::new(0))], 44_100);
+    render(&mut unit, &[pedal(ControlValue::MIN)], 44_100);
     let after = rms(&render(&mut unit, &[], 1_000));
     assert!(after < held * 0.01, "{after} against {held}");
 }
@@ -141,7 +141,7 @@ fn a_midi_2_note_on_at_a_velocity_that_narrows_to_zero_is_a_note_on() {
         let mut unit = organ();
         let pedal = m2(Voice2::ControlChange {
             controller: CCNumber::SUSTAIN,
-            value: ControlValue::new(u32::MAX),
+            value: ControlValue::MAX,
         });
         let out = render(&mut unit, &[pedal, note_on_2(60, 0xFFFF)], 22_050);
         let held = rms(&out[11_025..]);
@@ -287,7 +287,7 @@ fn a_full_bend_spans_the_registered_sensitivity() {
         velocity: NoteVelocity::new(0xC000),
         attribute: Attribute::None,
     });
-    let full = m2(Voice2::PitchBend(BendValue::new(u32::MAX)));
+    let full = m2(Voice2::PitchBend(BendValue::MAX));
     let still = period(&sustained(&[key]), 200, 500);
     let sensitivity = |semitones: u32, cents: u32| {
         m2(Voice2::Registered {
@@ -331,7 +331,7 @@ fn a_re_rated_unit_keeps_the_bend_and_its_range() {
         // M2-115 §3: the 14-bit (msb << 7 | lsb) value, left-justified (shift 18).
         value: ControlValue::new((7 << 7) << 18),
     });
-    let full = m2(Voice2::PitchBend(BendValue::new(u32::MAX)));
+    let full = m2(Voice2::PitchBend(BendValue::MAX));
     let sustained = |hand: &mut Hand, events: &[Ump]| {
         let out = render(hand, events, 40_000);
         out[8_000..].to_vec()
@@ -366,30 +366,30 @@ fn messages_with_no_synthesizer_setter_change_nothing() {
         m1(Voice1::ChannelPressure(U7::of(90))),
         m2(Voice2::PolyPressure {
             note: n,
-            value: ControlValue::new(u32::MAX),
+            value: ControlValue::MAX,
         }),
-        m2(Voice2::ChannelPressure(ControlValue::new(u32::MAX))),
+        m2(Voice2::ChannelPressure(ControlValue::MAX)),
         // A Registered Per-Note Controller no voice generator carries
         // (Breath), and an Assignable one, which names nothing.
         m2(Voice2::RegisteredPerNote {
             note: n,
             controller: RegisteredPerNoteController::Breath,
-            value: ControlValue::new(0),
+            value: ControlValue::MIN,
         }),
         m2(Voice2::AssignablePerNote {
             note: n,
             controller: 7,
-            value: ControlValue::new(0),
+            value: ControlValue::MIN,
         }),
         m2(Voice2::Registered {
             bank: U7::of(0),
             index: U7::of(0),
-            value: ControlValue::new(u32::MAX),
+            value: ControlValue::MAX,
         }),
         m2(Voice2::Assignable {
             bank: U7::of(0),
             index: U7::of(7),
-            value: ControlValue::new(0),
+            value: ControlValue::MIN,
         }),
         m2(Voice2::RelativeRegistered {
             bank: U7::of(0),
@@ -451,7 +451,7 @@ fn a_block_with_more_events_than_any_scratch_reads_them_all() {
     let mut events = vec![
         m2(Voice2::ControlChange {
             controller: CCNumber::MOD_WHEEL,
-            value: ControlValue::new(0),
+            value: ControlValue::MIN,
         });
         600
     ];
@@ -474,7 +474,7 @@ fn a_unit_plays_its_own_groups_channels_only() {
             },
             Voice2::NoteOn {
                 note: NoteNumber::of(60),
-                velocity: NoteVelocity::new(0xFFFF),
+                velocity: NoteVelocity::MAX,
                 attribute: Attribute::None,
             },
         ))

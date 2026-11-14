@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use tutti_fixtures::midi::m1_note_on;
+
 use tutti_types::MaxBlock;
 use tutti_ump::{MidiChannel, NoteNumber, U7};
 
@@ -28,6 +28,7 @@ use tutti_types::{
     Amplitude, At, AtomicF32, Beat, Bpm, ChannelLayout, Depth, Frame, FrameClock, Hz, ParamAddr,
     PhaseIncrement, SampleRate, Samples, Seconds, UnitParam,
 };
+use tutti_ump::{Message, Voice1};
 
 const RATE: f64 = 48_000.0;
 const TEMPO: Bpm = Bpm::of(120.0);
@@ -172,7 +173,10 @@ impl Node for Held {
             io.event_out(0)
                 .push(Event::midi(
                     o,
-                    m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100)),
+                    Message::midi1(
+                        MidiChannel::FIRST,
+                        Voice1::note_on(NoteNumber::of(60), U7::of(100)),
+                    ),
                 ))
                 .expect("room");
         }

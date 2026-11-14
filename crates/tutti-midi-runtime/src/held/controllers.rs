@@ -97,7 +97,7 @@ impl Controllers {
                 match PEDALS.get(usize::from(bit)) {
                     Some(&cc) => Voice2::ControlChange {
                         controller: CCNumber::new(cc).expect("a controller"),
-                        value: ControlValue::new(0),
+                        value: ControlValue::MIN,
                     },
                     None => Voice2::PitchBend(BendValue::new(CENTRE_32)),
                 },

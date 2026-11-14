@@ -299,11 +299,11 @@ fn narrow_message_keeps_the_address() {
     let on2 = Message::Midi2(to, Voice2::note_on(note, widen_velocity(U7::of(100))));
     assert_eq!(
         narrow_message(on2),
-        Ok(Message::note_on(to, note, U7::of(100)))
+        Ok(Message::midi1(to, Voice1::note_on(note, U7::of(100))))
     );
     let clock = Message::System(MidiGroup::of(2), System::TimingClock);
     assert_eq!(narrow_message(clock), Ok(clock));
-    let already = Message::note_on(to, note, U7::of(9));
+    let already = Message::midi1(to, Voice1::note_on(note, U7::of(9)));
     assert_eq!(narrow_message(already), Ok(already));
 }
 

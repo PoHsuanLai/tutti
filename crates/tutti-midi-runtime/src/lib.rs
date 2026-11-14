@@ -154,9 +154,10 @@
 //!
 //! ```rust
 //! use tutti_midi_runtime::MpeIngest;
-//! use tutti_fixtures::midi::{lower_zone, note_on, pitch_bend, wide_velocity};
+//! use tutti_fixtures::midi::{self, lower_zone};
 //! use tutti_graph::Offset;
-//! use tutti_ump::{Message, MidiChannel, MidiGroup, Voice2};
+//! use tutti_midi_protocol::widen_velocity;
+//! use tutti_ump::{BendValue, Message, MidiChannel, U7, Voice2};
 //!
 //! let mut ingest = MpeIngest::new(lower_zone(7));
 //!
@@ -165,12 +166,12 @@
 //! // each handed to the closure.
 //! let member = MidiChannel::of(1);
 //! let mut sent = Vec::new();
-//! let on = note_on(MidiGroup::FIRST, member, 60, wide_velocity(100));
+//! let on = midi::note_on(member, 60, widen_velocity(U7::of(100)).get());
 //! ingest.translate(&(Offset::ZERO, on), |e| sent.push(e));
 //! assert_eq!(sent.len(), 1, "a note-on passes through");
 //!
 //! // A channel-wide bend on that member becomes a per-note bend on note 60.
-//! let bend = pitch_bend(MidiGroup::FIRST, member, 0xC000_0000);
+//! let bend = midi::pitch_bend(member, 0xC000_0000);
 //! sent.clear();
 //! ingest.translate(&(Offset::ZERO, bend), |e| sent.push(e));
 //! let [(_, folded)] = sent[..] else { panic!("the channel holds a note") };

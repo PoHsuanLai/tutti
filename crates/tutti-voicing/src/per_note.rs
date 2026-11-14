@@ -860,14 +860,14 @@ mod tests {
         for m in [
             Voice2::ControlChange {
                 controller: CCNumber::RESET_ALL,
-                value: ControlValue::new(0),
+                value: ControlValue::MIN,
             },
             Voice2::NoteOff {
                 note: NoteNumber::of(5),
                 velocity: NoteVelocity::MIN,
                 attribute: Attribute::None,
             },
-            Voice2::PitchBend(BendValue::new(u32::MAX)),
+            Voice2::PitchBend(BendValue::MAX),
         ] {
             assert_eq!(s.step(a, m), &[], "{m:?}");
         }

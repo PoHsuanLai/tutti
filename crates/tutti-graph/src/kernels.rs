@@ -352,7 +352,7 @@ impl EventFifo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
+    use tutti_ump::{Message, MidiChannel, NoteNumber, U7, Ump, Voice1};
 
     /// A ring of `n` outputs its input `n` samples later, across blocks.
     #[test]
@@ -458,9 +458,9 @@ mod tests {
         Event::midi(
             Offset::raw(offset),
             if off {
-                tutti_fixtures::midi::m1_note_off(channel, note, velocity)
+                Ump::from(Message::midi1(channel, Voice1::note_off(note, velocity)))
             } else {
-                tutti_fixtures::midi::m1_note_on(channel, note, velocity)
+                Ump::from(Message::midi1(channel, Voice1::note_on(note, velocity)))
             },
         )
     }

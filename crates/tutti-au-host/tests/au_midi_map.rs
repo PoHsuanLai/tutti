@@ -50,7 +50,8 @@ use crate::support::au::Au;
 use tutti_au_host::{AuError, AuMidiMapping, MidiTrigger};
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+use tutti_midi_protocol::widen_value;
+use tutti_ump::{CCNumber, MidiChannel, U7};
 
 /// Serializes instantiate/dispose against component enumeration, for the reason
 /// `au_conformance.rs`'s `AU_LOCK` does. Recovered from poisoning so one real
@@ -721,10 +722,9 @@ fn a_mapped_cc_actually_moves_the_parameter() {
         au.send_midi(&[(
             Offset::ZERO,
             midi::cc(
-                MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 mapped_cc,
-                tutti_fixtures::midi::wide_value(127),
+                widen_value(U7::of(127)).get(),
             ),
         )]);
 
@@ -781,10 +781,9 @@ fn an_unmapped_cc_does_not_move_the_parameter() {
         au.send_midi(&[(
             Offset::ZERO,
             midi::cc(
-                MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::of(20),
-                tutti_fixtures::midi::wide_value(127),
+                widen_value(U7::of(127)).get(),
             ),
         )]);
         let mut output = vec![vec![0.0f32; BLOCK as usize]; au.num_outputs() as usize];
@@ -843,10 +842,9 @@ fn arming_a_hot_map_and_sending_a_cc_completes_the_mapping() {
         au.send_midi(&[(
             Offset::ZERO,
             midi::cc(
-                MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::EXPRESSION,
-                tutti_fixtures::midi::wide_value(64),
+                widen_value(U7::of(64)).get(),
             ),
         )]);
 

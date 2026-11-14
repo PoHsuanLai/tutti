@@ -10,7 +10,8 @@ use std::sync::Arc;
 use tutti_session::Root;
 
 use tutti_export::Produced;
-use tutti_fixtures::midi::{note_off, note_on};
+
+use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Node, Offset};
@@ -23,7 +24,7 @@ use tutti_soundfont::{Settings, SoundFontUnit};
 use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
 use tutti_types::ChannelLayout;
 use tutti_types::{Amplitude, Beat, Bpm, SampleRate, Samples, Seconds, UnitParam};
-use tutti_ump::{MidiChannel, MidiGroup, U7, Ump};
+use tutti_ump::{Message, MidiChannel, NoteNumber, NoteVelocity, U7, Ump, Voice2};
 
 const RATE: f64 = 48_000.0;
 /// A beat at 90 BPM and 48 kHz, in frames.
@@ -129,14 +130,17 @@ fn clip() -> Vec<TimedMidiEvent> {
         TimedMidiEvent::new(Beat(1.0), clip_note_on()).unwrap(),
         TimedMidiEvent::new(
             Beat(2.0),
-            note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
+            Message::midi2(
+                MidiChannel::FIRST,
+                Voice2::note_off(NoteNumber::of(60), NoteVelocity::MIN),
+            ),
         )
         .unwrap(),
     ]
 }
 
 fn clip_note_on() -> Ump {
-    note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF)
+    midi::note_on(MidiChannel::FIRST, 60, 0xFFFF)
 }
 
 fn install_clip(session: &mut Session, synth: NodeKey) {

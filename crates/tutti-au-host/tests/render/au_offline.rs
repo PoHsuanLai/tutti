@@ -70,7 +70,7 @@ use tutti_au_host::types::K_AUDIO_UNIT_ERR_INVALID_PROPERTY;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::ChannelLayout;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::MidiChannel;
 
 // Serializes AU instantiation, as `au_conformance.rs`'s `AU_LOCK` does and for
 // the same reason: component discovery walks a process-global registry, and
@@ -222,10 +222,7 @@ fn an_offline_flagged_unit_still_renders() {
             );
 
             // Instruments have no input bus, so they are driven by MIDI.
-            au.send_midi(&[(
-                Offset::ZERO,
-                midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
-            )]);
+            au.send_midi(&[(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0xC000))]);
             let input = silence(2, BLOCK as usize);
             let mut output = silence(2, BLOCK as usize);
             let mut max = 0.0f32;
@@ -1189,10 +1186,7 @@ fn offline_flagged_render_does_not_allocate() {
         .expect("initialize with the offline flag set");
     assert!(au.is_offline_render().unwrap());
 
-    au.send_midi(&[(
-        Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
-    )]);
+    au.send_midi(&[(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0xC000))]);
     let mut b = RtBufs::new();
     let drive = |au: &mut crate::support::au::Au, b: &mut RtBufs| {
         let ins: &[&[f32]] = &[&b.in_l, &b.in_r];

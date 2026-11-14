@@ -6,8 +6,6 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
-use tutti_fixtures::midi::note_on;
-
 use crate::common;
 use tutti_graph::NodeKey;
 use tutti_graph::WorkerPool;
@@ -18,7 +16,7 @@ use tutti_graph::{
 use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{ClockNode, HarmonyNode, MidiClipNode, MidiIngestNode, TimedMidiEvent};
 use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{Message, MidiChannel, NoteNumber, NoteVelocity, Ump, Voice2};
 
 const SR: f64 = 48_000.0;
 const BPM: f64 = 120.0;
@@ -78,11 +76,9 @@ fn clip(k: u64) -> MidiClipNode {
     MidiClipNode::new((0..20).map(|i| {
         TimedMidiEvent::new(
             Beat(0.02 * i as f64 + 0.000_3 * k as f64),
-            note_on(
-                MidiGroup::FIRST,
+            Message::midi2(
                 MidiChannel::FIRST,
-                (36 + k + i) as u8,
-                0xFFFF,
+                Voice2::note_on(NoteNumber::of((36 + k + i) as u8), NoteVelocity::MAX),
             ),
         )
         .unwrap()

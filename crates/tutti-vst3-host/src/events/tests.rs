@@ -5,6 +5,7 @@ use tutti_graph::UmpAt;
 use tutti_midi_protocol::{
     bend_to_signed_f32, channel_voice, narrow_velocity, value_to_unit_f32, velocity_to_unit_f32,
 };
+use tutti_midi_protocol::{widen_bend, widen_value};
 use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue};
 use tutti_types::Samples;
 use tutti_ump::{
@@ -62,10 +63,7 @@ fn encode_live(event: &UmpAt) -> (i32, Option<Event>) {
         }
         _ => return (-1, encoder.encode(event).first().copied()),
     };
-    let on = Message::Midi2(
-        address,
-        Voice2::note_on(note, NoteVelocity::new(midi::MID_VELOCITY)),
-    );
+    let on = Message::Midi2(address, Voice2::note_on(note, NoteVelocity::CENTER));
     let started = match encoder.encode(&(event.0, Ump::from(on))).first() {
         Some(Event {
             payload: Payload::NoteOn(on),
@@ -110,10 +108,7 @@ fn inbound_system_message_passes_through() {
 
 #[test]
 fn note_on_lands_in_note_on_variant() {
-    let event = (
-        at(5),
-        midi::note_on(MidiGroup::FIRST, MidiChannel::of(3), 60, midi::MID_VELOCITY),
-    );
+    let event = (at(5), midi::note_on(MidiChannel::of(3), 60, 0x8000));
     let vst3 = encode(&event).expect("NoteOn should convert");
     match &vst3.payload {
         Payload::NoteOn(e) => {
@@ -136,10 +131,7 @@ fn note_on_lands_in_note_on_variant() {
 #[test]
 fn note_off_lands_in_note_off_variant() {
     const RELEASE: u16 = 0x4000;
-    let event = (
-        at(10),
-        midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 72, RELEASE),
-    );
+    let event = (at(10), midi::note_off(MidiChannel::FIRST, 72, RELEASE));
     let vst3 = encode(&event).expect("NoteOff should convert");
     match &vst3.payload {
         Payload::NoteOff(e) => {
@@ -177,7 +169,7 @@ fn a_huge_frame_offset_saturates_rather_than_going_negative() {
     let event = (
         // A block of 2^32 frames, so that its last offset is `u32::MAX`.
         Offset::of(Samples(last), Samples(last + 1)),
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
+        midi::note_on(MidiChannel::FIRST, 60, 0x8000),
     );
     let vst3 = encode(&event).expect("NoteOn should convert");
     let offset = vst3.sample_offset();
@@ -193,12 +185,7 @@ fn a_huge_frame_offset_saturates_rather_than_going_negative() {
 fn poly_pressure_lands_in_poly_pressure_variant() {
     let event = (
         at(0),
-        midi::poly_pressure(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            60,
-            tutti_fixtures::midi::wide_value(100),
-        ),
+        midi::poly_pressure(MidiChannel::of(1), 60, widen_value(U7::of(100)).get()),
     );
     let (id, vst3) = encode_live(&event);
     let vst3 = vst3.expect("PolyPressure should convert");
@@ -225,17 +212,12 @@ fn unmapped_channel_messages_are_dropped_and_counted_never_sent_as_data() {
     let mut encoder = MidiEncoder::default();
     let events = [
         midi::cc(
-            MidiGroup::FIRST,
             MidiChannel::of(2),
             CCNumber::BRIGHTNESS,
-            tutti_fixtures::midi::wide_value(100),
+            widen_value(U7::of(100)).get(),
         ),
-        midi::pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            tutti_fixtures::midi::wide_bend(8192),
-        ),
-        midi::program_change(MidiGroup::FIRST, MidiChannel::of(9), 42, None),
+        midi::pitch_bend(MidiChannel::FIRST, widen_bend(U14::of(8192)).get()),
+        midi::program_change(MidiChannel::of(9), 42, None),
     ];
     for (i, ump) in events.into_iter().enumerate() {
         let made = encoder.encode(&(Offset::ZERO, ump)).to_vec();
@@ -496,12 +478,7 @@ fn a_note_on_has_an_id_of_its_own_and_its_note_off_names_none() {
     let mut note_on = |channel: u8, note: u8| match encoder
         .encode(&(
             Offset::ZERO,
-            midi::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::of(channel),
-                note,
-                midi::MID_VELOCITY,
-            ),
+            midi::note_on(MidiChannel::of(channel), note, 0x8000),
         ))
         .first()
         .map(|e| e.payload)
@@ -522,10 +499,7 @@ fn a_note_on_has_an_id_of_its_own_and_its_note_off_names_none() {
     assert_ne!(first, other_key);
 
     let off = encoder
-        .encode(&(
-            Offset::ZERO,
-            midi::note_off(MidiGroup::FIRST, MidiChannel::of(5), 67, 0),
-        ))
+        .encode(&(Offset::ZERO, midi::note_off(MidiChannel::of(5), 67, 0)))
         .first()
         .map(|e| e.payload);
     match off {
@@ -542,12 +516,7 @@ fn per_note_pitch_bend_becomes_tuning_expression() {
     // bound to the noteId of the note sounding on (5, 67).
     let event = (
         at(12),
-        midi::per_note_pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::of(5),
-            67,
-            tutti_fixtures::midi::wide_bend(8192),
-        ),
+        midi::per_note_pitch_bend(MidiChannel::of(5), 67, widen_bend(U14::of(8192)).get()),
     );
     let (id, vst3) = encode_live(&event);
     let vst3 = vst3.expect("per-note bend should map");
@@ -567,14 +536,12 @@ fn per_note_pitch_bend_becomes_tuning_expression() {
 /// sensitivity of 24 on channel 3, 6 semitones there and 12 elsewhere.
 #[test]
 fn a_per_note_bend_is_tuned_over_its_channels_range() {
-    use tutti_midi_protocol::PitchBendSensitivity;
-    use tutti_midi_protocol::signed_f32_to_bend;
+    use tutti_midi_protocol::{PitchBendSensitivity, signed_f32_to_bend};
 
     let bend = |channel: u8, amount: f32| {
         (
             Offset::ZERO,
             midi::per_note_pitch_bend(
-                MidiGroup::FIRST,
                 MidiChannel::of(channel),
                 60,
                 signed_f32_to_bend(amount).get(),
@@ -598,12 +565,7 @@ fn a_per_note_bend_is_tuned_over_its_channels_range() {
     for channel in [3, 4] {
         let _ = encoder.encode(&(
             Offset::ZERO,
-            midi::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::of(channel),
-                60,
-                midi::MID_VELOCITY,
-            ),
+            midi::note_on(MidiChannel::of(channel), 60, 0x8000),
         ));
     }
     assert!(close(
@@ -617,8 +579,7 @@ fn a_per_note_bend_is_tuned_over_its_channels_range() {
 
     let sensitivity = (
         Offset::ZERO,
-        midi::registered_rpn(
-            MidiGroup::FIRST,
+        midi::registered(
             MidiChannel::of(3),
             tutti_ump::Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
             PitchBendSensitivity::of(24).to_rpn_bits(),
@@ -657,14 +618,14 @@ fn per_note_controller_maps_known_indices_only() {
     // CC 74 (brightness) is a known dimension → Brightness expression.
     let known = (
         Offset::ZERO,
-        midi::per_note_controller(
-            MidiGroup::FIRST,
+        Ump::from(Message::midi2(
             MidiChannel::FIRST,
-            60,
-            74,
-            tutti_fixtures::midi::wide_value(100),
-            false,
-        ),
+            Voice2::AssignablePerNote {
+                note: NoteNumber::of(60),
+                controller: 74,
+                value: widen_value(U7::of(100)),
+            },
+        )),
     );
     let (id, known) = encode_live(&known);
     match known {
@@ -683,14 +644,14 @@ fn per_note_controller_maps_known_indices_only() {
     // An index with no VST3 expression counterpart is dropped.
     let unknown = (
         Offset::ZERO,
-        midi::per_note_controller(
-            MidiGroup::FIRST,
+        Ump::from(Message::midi2(
             MidiChannel::FIRST,
-            60,
-            33,
-            tutti_fixtures::midi::wide_value(100),
-            false,
-        ),
+            Voice2::AssignablePerNote {
+                note: NoteNumber::of(60),
+                controller: 33,
+                value: widen_value(U7::of(100)),
+            },
+        )),
     );
     assert!(encode_live(&unknown).1.is_none());
 }
@@ -754,7 +715,7 @@ fn note_on_velocity_round_trips_at_full_width() {
     let velocity_u16 = 0x9123; // not a multiple of the 7-bit step
     let event = (
         Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, velocity_u16),
+        midi::note_on(MidiChannel::FIRST, 60, velocity_u16),
     );
     let vst3 = encode(&event).expect("converts");
     let back = vst3.to_midi().expect("round-trips");
@@ -1136,7 +1097,7 @@ mod message {
                 address(1),
                 Voice2::NoteOn {
                     note: note(60),
-                    velocity: NoteVelocity::new(midi::MID_VELOCITY),
+                    velocity: NoteVelocity::CENTER,
                     attribute,
                 },
             ));
@@ -1244,11 +1205,11 @@ mod message {
                 ch,
                 Voice2::ControlChange {
                     controller: CCNumber::new(74).unwrap(),
-                    value: ControlValue::new(0xFFFF_FFFF),
+                    value: ControlValue::MAX,
                 },
             ),
-            Message::Midi2(ch, Voice2::PitchBend(BendValue::new(0x8000_0000))),
-            Message::Midi2(ch, Voice2::ChannelPressure(ControlValue::new(0x8000_0000))),
+            Message::Midi2(ch, Voice2::PitchBend(BendValue::CENTER)),
+            Message::Midi2(ch, Voice2::ChannelPressure(ControlValue::CENTER)),
             Message::Midi2(
                 ch,
                 Voice2::ProgramChange {
@@ -1349,7 +1310,7 @@ mod message {
                 address(2),
                 Voice2::NoteOff {
                     note: note(60),
-                    velocity: NoteVelocity::new(midi::MID_VELOCITY),
+                    velocity: NoteVelocity::CENTER,
                     attribute: Attribute::None,
                 }
             ))
@@ -1396,7 +1357,7 @@ mod message {
                 ch,
                 Voice2::NoteOn {
                     note: note(60),
-                    velocity: NoteVelocity::new(0xFFFF),
+                    velocity: NoteVelocity::MAX,
                     attribute: Attribute::Reserved { kind: 9, data: 1 },
                 },
             ),
@@ -1527,7 +1488,9 @@ mod message {
         assert_eq!(whole.offset, 2);
         assert_eq!(
             whole.ump,
-            midi::sysex7_packets(&[0x7E, 0x7F, 0x06, 0x01])[0]
+            Sysex7Packets::from_payload(MidiGroup::FIRST, &[0x7E, 0x7F, 0x06, 0x01])
+                .expect("a payload of 7-bit bytes")
+                .collect::<Vec<Ump>>()[0]
         );
         assert!(data(&[0xF0, 0x7E, 0x7F, 0x06, 0x01]).to_midi().is_none());
         assert!(data(&[0xF0, 0x7E, 0x80, 0xF7]).to_midi().is_none());

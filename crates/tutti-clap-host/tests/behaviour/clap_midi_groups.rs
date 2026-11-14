@@ -8,13 +8,14 @@ use clap_sys::events::{
     CLAP_NOTE_EXPRESSION_BRIGHTNESS, CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING,
 };
 use tutti_clap_host::{ClapEvent, InputEventList};
-use tutti_fixtures::midi as fx;
+use tutti_fixtures::midi;
 use tutti_graph::Offset;
-use tutti_midi_protocol::PitchBendSensitivity;
+use tutti_midi_protocol::{PitchBendSensitivity, widen_value};
 use tutti_types::Samples;
 use tutti_ump::{
     Address, Attribute, MidiChannel, MidiGroup, NoteId, NoteNumber, NoteVelocity, Rpn, Ump, Voice2,
 };
+use tutti_ump::{Bank, ControlValue, Message, RegisteredPerNoteController, System, U7};
 
 const BLOCK: usize = 1_000;
 
@@ -72,7 +73,7 @@ fn note_on_pitched(group: MidiGroup, channel: MidiChannel, key: u8, pitch: f64) 
         Address { group, channel },
         Voice2::NoteOn {
             note: NoteNumber::of(key),
-            velocity: NoteVelocity::new(fx::MID_VELOCITY),
+            velocity: NoteVelocity::CENTER,
             attribute: Attribute::Pitch((pitch * 512.0) as u16),
         },
     ))
@@ -89,19 +90,18 @@ fn two_groups_land_on_note_ports_zero_and_one() {
     list.set_note_ports(&[false, false]);
     add(
         &mut list,
-        fx::note_on(group(0), ch(0), 60, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000),
     );
     add(
         &mut list,
-        fx::note_on(group(1), ch(0), 60, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(1), ch(0)), 60, 0x8000),
     );
     add(
         &mut list,
-        fx::cc(
-            group(1),
-            ch(0),
+        midi::cc(
+            Address::new(group(1), ch(0)),
             tutti_ump::CCNumber::BRIGHTNESS,
-            fx::wide_value(100),
+            widen_value(U7::of(100)).get(),
         ),
     );
     let events = drain(&mut list);
@@ -125,22 +125,24 @@ fn a_group_without_a_note_port_is_dropped_and_counted() {
     list.set_note_ports(&[false]);
     add(
         &mut list,
-        fx::note_on(group(0), ch(0), 60, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000),
     );
     add(
         &mut list,
-        fx::note_on(group(1), ch(0), 61, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(1), ch(0)), 61, 0x8000),
     );
     add(
         &mut list,
-        fx::cc(
-            group(2),
-            ch(0),
+        midi::cc(
+            Address::new(group(2), ch(0)),
             tutti_ump::CCNumber::BRIGHTNESS,
-            fx::wide_value(1),
+            widen_value(U7::of(1)).get(),
         ),
     );
-    add(&mut list, fx::timing_clock(group(1)));
+    add(
+        &mut list,
+        Ump::from(Message::System(group(1), System::TimingClock)),
+    );
     let events = drain(&mut list);
     assert_eq!(events.len(), 2, "{events:?}");
     assert_eq!(note_on(&events[0]).2, 60, "only Group 0's note is heard");
@@ -161,13 +163,13 @@ fn a_detach_then_a_note_on_is_a_new_note_that_alone_hears_the_controller() {
     let mut list = InputEventList::new();
     add(
         &mut list,
-        fx::note_on(group(0), ch(0), 60, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000),
     );
     let first = note_on(&drain(&mut list)[0]).3;
 
     add(
         &mut list,
-        fx::poly_pressure(group(0), ch(0), 60, 0x8000_0000),
+        midi::poly_pressure(Address::new(group(0), ch(0)), 60, 0x8000_0000),
     );
     let before = drain(&mut list);
     assert_eq!(before.len(), 1);
@@ -175,12 +177,19 @@ fn a_detach_then_a_note_on_is_a_new_note_that_alone_hears_the_controller() {
 
     add(
         &mut list,
-        fx::per_note_management(group(0), ch(0), 60, true, false),
+        Ump::from(Message::midi2(
+            Address::new(group(0), ch(0)),
+            Voice2::PerNoteManagement {
+                note: NoteNumber::of(60),
+                detach: true,
+                reset: false,
+            },
+        )),
     );
     assert!(drain(&mut list).is_empty(), "a Detach sends nothing");
     add(
         &mut list,
-        fx::note_on(group(0), ch(0), 60, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000),
     );
     let second = note_on(&drain(&mut list)[0]).3;
     assert_ne!(
@@ -190,7 +199,7 @@ fn a_detach_then_a_note_on_is_a_new_note_that_alone_hears_the_controller() {
 
     add(
         &mut list,
-        fx::poly_pressure(group(0), ch(0), 60, 0x4000_0000),
+        midi::poly_pressure(Address::new(group(0), ch(0)), 60, 0x4000_0000),
     );
     let after = drain(&mut list);
     assert_eq!(after.len(), 1, "{after:?}");
@@ -205,15 +214,18 @@ fn only_a_note_end_stops_a_released_note_hearing_controllers() {
     let mut list = InputEventList::new();
     add(
         &mut list,
-        fx::note_on(group(0), ch(0), 60, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000),
     );
     let id = note_on(&drain(&mut list)[0]).3;
-    add(&mut list, fx::note_off(group(0), ch(0), 60, 0));
+    add(
+        &mut list,
+        midi::note_off(Address::new(group(0), ch(0)), 60, 0),
+    );
     drain(&mut list);
 
     add(
         &mut list,
-        fx::poly_pressure(group(0), ch(0), 60, 0x8000_0000),
+        midi::poly_pressure(Address::new(group(0), ch(0)), 60, 0x8000_0000),
     );
     let tail = drain(&mut list);
     assert_eq!(tail.len(), 1, "a released note's tail still responds");
@@ -222,7 +234,7 @@ fn only_a_note_end_stops_a_released_note_hearing_controllers() {
     list.note_ended(id);
     add(
         &mut list,
-        fx::poly_pressure(group(0), ch(0), 60, 0x4000_0000),
+        midi::poly_pressure(Address::new(group(0), ch(0)), 60, 0x4000_0000),
     );
     assert!(drain(&mut list).is_empty(), "an ended note hears nothing");
 }
@@ -235,17 +247,24 @@ fn values_told_before_a_note_on_are_its_initial_expressions() {
     let mut list = InputEventList::new();
     add(
         &mut list,
-        fx::per_note_controller(group(0), ch(2), 64, 74, 0x8000_0000, true),
+        Ump::from(Message::midi2(
+            Address::new(group(0), ch(2)),
+            Voice2::RegisteredPerNote {
+                note: NoteNumber::of(64),
+                controller: RegisteredPerNoteController::from(74),
+                value: ControlValue::CENTER,
+            },
+        )),
     );
     add(
         &mut list,
-        fx::poly_pressure(group(0), ch(2), 64, 0x4000_0000),
+        midi::poly_pressure(Address::new(group(0), ch(2)), 64, 0x4000_0000),
     );
     assert!(drain(&mut list).is_empty(), "no note sounds yet");
 
     add(
         &mut list,
-        fx::note_on(group(0), ch(2), 64, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(0), ch(2)), 64, 0x8000),
     );
     let events = drain(&mut list);
     assert_eq!(events.len(), 3, "{events:?}");
@@ -271,13 +290,20 @@ fn per_note_pitch_and_the_pitch_attribute_are_tunings() {
     let mut list = InputEventList::new();
     add(
         &mut list,
-        fx::note_on(group(0), ch(0), 60, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000),
     );
     drain(&mut list);
     // 60.25 as 7.25 fixed point: 60 in the top 7 bits, a quarter in the 25.
     add(
         &mut list,
-        fx::per_note_controller(group(0), ch(0), 60, 3, (60 << 25) | (1 << 23), true),
+        Ump::from(Message::midi2(
+            Address::new(group(0), ch(0)),
+            Voice2::RegisteredPerNote {
+                note: NoteNumber::of(60),
+                controller: RegisteredPerNoteController::from(3),
+                value: ControlValue::new((60 << 25) | (1 << 23)),
+            },
+        )),
     );
     let events = drain(&mut list);
     assert_eq!(events.len(), 1, "{events:?}");
@@ -304,13 +330,13 @@ fn a_per_note_bend_is_scaled_by_the_channels_sensitivity() {
     let mut list = InputEventList::new();
     add(
         &mut list,
-        fx::note_on(group(0), ch(3), 60, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(0), ch(3)), 60, 0x8000),
     );
     let id = note_on(&drain(&mut list)[0]).3;
 
     add(
         &mut list,
-        fx::per_note_pitch_bend(group(0), ch(3), 60, 0xC000_0000),
+        midi::per_note_pitch_bend(Address::new(group(0), ch(3)), 60, 0xC000_0000),
     );
     let events = drain(&mut list);
     assert_eq!(events.len(), 1);
@@ -318,9 +344,8 @@ fn a_per_note_bend_is_scaled_by_the_channels_sensitivity() {
 
     add(
         &mut list,
-        fx::registered_rpn(
-            group(0),
-            ch(3),
+        midi::registered(
+            Address::new(group(0), ch(3)),
             Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
             PitchBendSensitivity::of(12).to_rpn_bits(),
         ),
@@ -338,12 +363,12 @@ fn a_per_note_bend_is_scaled_by_the_channels_sensitivity() {
     // Another channel of the Group keeps the default.
     add(
         &mut list,
-        fx::note_on(group(0), ch(4), 60, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(0), ch(4)), 60, 0x8000),
     );
     drain(&mut list);
     add(
         &mut list,
-        fx::per_note_pitch_bend(group(0), ch(4), 60, 0xC000_0000),
+        midi::per_note_pitch_bend(Address::new(group(0), ch(4)), 60, 0xC000_0000),
     );
     near(expression(&drain(&mut list)[0]).2, 24.0);
 
@@ -370,11 +395,18 @@ fn a_pitch_then_a_bend_is_one_tuning_from_the_key() {
         let mut list = InputEventList::new();
         add(
             &mut list,
-            fx::note_on(group(0), ch(0), 60, fx::MID_VELOCITY),
+            midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000),
         );
         drain(&mut list);
-        let pitch = fx::per_note_controller(group(0), ch(0), 60, 3, (60 << 25) | (1 << 24), true);
-        let bend = fx::per_note_pitch_bend(group(0), ch(0), 60, 0xC000_0000);
+        let pitch = Ump::from(Message::midi2(
+            Address::new(group(0), ch(0)),
+            Voice2::RegisteredPerNote {
+                note: NoteNumber::of(60),
+                controller: RegisteredPerNoteController::from(3),
+                value: ControlValue::new((60 << 25) | (1 << 24)),
+            },
+        ));
+        let bend = midi::per_note_pitch_bend(Address::new(group(0), ch(0)), 60, 0xC000_0000);
         let (first, second) = if bend_first {
             (bend, pitch)
         } else {
@@ -397,9 +429,8 @@ fn the_sensitivity_is_per_group() {
     list.set_note_ports(&[false, false]);
     add(
         &mut list,
-        fx::registered_rpn(
-            group(0),
-            ch(0),
+        midi::registered(
+            Address::new(group(0), ch(0)),
             Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
             PitchBendSensitivity::of(12).to_rpn_bits(),
         ),
@@ -407,11 +438,11 @@ fn the_sensitivity_is_per_group() {
     for g in [0, 1] {
         add(
             &mut list,
-            fx::note_on(group(g), ch(0), 60, fx::MID_VELOCITY),
+            midi::note_on(Address::new(group(g), ch(0)), 60, 0x8000),
         );
         add(
             &mut list,
-            fx::per_note_pitch_bend(group(g), ch(0), 60, 0xC000_0000),
+            midi::per_note_pitch_bend(Address::new(group(g), ch(0)), 60, 0xC000_0000),
         );
     }
     let events = drain(&mut list);
@@ -433,18 +464,25 @@ fn a_reset_returns_the_notes_expressions_to_their_defaults() {
     let mut list = InputEventList::new();
     add(
         &mut list,
-        fx::note_on(group(0), ch(0), 60, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000),
     );
     let id = note_on(&drain(&mut list)[0]).3;
     add(
         &mut list,
-        fx::poly_pressure(group(0), ch(0), 60, 0xFFFF_FFFF),
+        midi::poly_pressure(Address::new(group(0), ch(0)), 60, u32::MAX),
     );
     drain(&mut list);
 
     add(
         &mut list,
-        fx::per_note_management(group(0), ch(0), 60, false, true),
+        Ump::from(Message::midi2(
+            Address::new(group(0), ch(0)),
+            Voice2::PerNoteManagement {
+                note: NoteNumber::of(60),
+                detach: false,
+                reset: true,
+            },
+        )),
     );
     let events = drain(&mut list);
     let reset: Vec<(i32, i32, f64)> = events.iter().map(expression).collect();
@@ -455,7 +493,7 @@ fn a_reset_returns_the_notes_expressions_to_their_defaults() {
 
     add(
         &mut list,
-        fx::note_on(group(0), ch(0), 60, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000),
     );
     assert_eq!(drain(&mut list).len(), 1, "the held pressure is gone");
 }
@@ -466,17 +504,17 @@ fn a_reset_forgets_the_per_note_state() {
     let mut list = InputEventList::new();
     add(
         &mut list,
-        fx::poly_pressure(group(0), ch(0), 60, 0x8000_0000),
+        midi::poly_pressure(Address::new(group(0), ch(0)), 60, 0x8000_0000),
     );
     add(
         &mut list,
-        fx::note_on(group(0), ch(0), 61, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(0), ch(0)), 61, 0x8000),
     );
     drain(&mut list);
     list.reset_midi();
     add(
         &mut list,
-        fx::note_on(group(0), ch(0), 60, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000),
     );
     assert_eq!(
         drain(&mut list).len(),
@@ -485,13 +523,17 @@ fn a_reset_forgets_the_per_note_state() {
     );
     add(
         &mut list,
-        fx::poly_pressure(group(0), ch(0), 61, 0x8000_0000),
+        midi::poly_pressure(Address::new(group(0), ch(0)), 61, 0x8000_0000),
     );
     assert!(drain(&mut list).is_empty(), "the old note is forgotten");
 }
 
 fn rpn(group: MidiGroup, channel: MidiChannel, index: u8, value: u32) -> Ump {
-    fx::registered_controller(group, channel, 0, index, value)
+    midi::registered(
+        Address::new(group, channel),
+        Rpn::new(U7::of(0), U7::of(index)),
+        value,
+    )
 }
 
 /// **An RPN is four Control Changes through the stateful narrower** (M2-104
@@ -538,7 +580,10 @@ fn an_nrpn_selects_with_cc_99_and_98() {
     let mut list = InputEventList::new();
     add(
         &mut list,
-        fx::assignable_controller(group(0), ch(0), 5, 9, 0x8000_0000),
+        Ump::from(Message::midi2(
+            Address::new(group(0), ch(0)),
+            Voice2::assignable(U7::of(5), U7::of(9), ControlValue::CENTER),
+        )),
     );
     let bytes: Vec<_> = drain(&mut list).iter().map(midi_bytes).collect();
     assert_eq!(
@@ -558,10 +603,13 @@ fn an_nrpn_selects_with_cc_99_and_98() {
 #[test]
 fn a_bank_is_resent_only_when_it_changes() {
     let mut list = InputEventList::new();
-    let bank = 5 << 7 | 9;
+    let bank = Bank {
+        msb: U7::of(5),
+        lsb: U7::of(9),
+    };
     add(
         &mut list,
-        fx::program_change(group(0), ch(0), 3, Some(bank)),
+        midi::program_change(Address::new(group(0), ch(0)), 3, Some(bank)),
     );
     let bytes: Vec<_> = drain(&mut list).iter().map(midi_bytes).collect();
     assert_eq!(
@@ -570,13 +618,20 @@ fn a_bank_is_resent_only_when_it_changes() {
     );
     add(
         &mut list,
-        fx::program_change(group(0), ch(0), 4, Some(bank)),
+        midi::program_change(Address::new(group(0), ch(0)), 4, Some(bank)),
     );
     let bytes: Vec<_> = drain(&mut list).iter().map(midi_bytes).collect();
     assert_eq!(bytes, [(0, [0xC0, 4, 0])]);
     add(
         &mut list,
-        fx::program_change(group(0), ch(0), 4, Some(6 << 7)),
+        midi::program_change(
+            Address::new(group(0), ch(0)),
+            4,
+            Some(Bank {
+                msb: U7::of(6),
+                lsb: U7::of(0),
+            }),
+        ),
     );
     assert_eq!(drain(&mut list).len(), 3);
 }
@@ -589,7 +644,7 @@ fn a_minted_id_names_no_channel_and_key() {
     let mut list = InputEventList::new();
     add(
         &mut list,
-        fx::note_on(group(0), ch(0), 60, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000),
     );
     let id = note_on(&drain(&mut list)[0]).3;
     assert!(u32::try_from(id).unwrap() > NoteId::MAX_CHANNEL_NOTE);
@@ -605,21 +660,24 @@ fn each_note_port_takes_its_own_dialect() {
     list.set_note_ports(&[false, true]);
     add(
         &mut list,
-        fx::note_on(group(0), ch(0), 60, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(0), ch(0)), 60, 0x8000),
     );
     add(
         &mut list,
-        fx::note_on(group(1), ch(2), 62, fx::MID_VELOCITY),
+        midi::note_on(Address::new(group(1), ch(2)), 62, 0x8000),
     );
     add(
         &mut list,
-        fx::poly_pressure(group(1), ch(2), 62, 0x8000_0000),
+        midi::poly_pressure(Address::new(group(1), ch(2)), 62, 0x8000_0000),
     );
     add(
         &mut list,
-        fx::per_note_pitch_bend(group(1), ch(2), 62, 0xC000_0000),
+        midi::per_note_pitch_bend(Address::new(group(1), ch(2)), 62, 0xC000_0000),
     );
-    add(&mut list, fx::note_off(group(1), ch(2), 62, 0x8000));
+    add(
+        &mut list,
+        midi::note_off(Address::new(group(1), ch(2)), 62, 0x8000),
+    );
     let events = drain(&mut list);
     assert_eq!(events.len(), 4, "{events:?}");
     assert_eq!(note_on(&events[0]).0, 0, "Group 0 is a CLAP note on port 0");

@@ -75,16 +75,17 @@ mod tests {
     use std::sync::Arc;
     use tutti_types::MaxBlock;
 
-    use tutti_fixtures::midi;
     use tutti_graph::contract::drive_input;
     use tutti_graph::{
         Env, Event, ForkMode, ForkSource, Node, Offset, Prepare, TransportChanges,
         TransportPosition,
     };
     use tutti_types::{SampleRate, Samples};
-    use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7};
+    use tutti_ump::{MidiChannel, NoteNumber, NoteVelocity, U7};
 
     use crate::{Settings, SoundFont, SoundFontUnit};
+
+    use tutti_fixtures::midi;
 
     /// The live unit's rate.
     const LIVE: SampleRate = SampleRate::SR_48K;
@@ -116,7 +117,7 @@ mod tests {
     /// at frame 0.
     fn render(mut node: Box<dyn Node>, rate: SampleRate, frames: usize) -> Vec<f32> {
         node.prepare(&Prepare::new(rate, MaxBlock::of(Samples(64))));
-        let note = midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
+        let note = midi::note_on(MidiChannel::FIRST, 60, 0xFFFF);
         let at = Offset::of(Samples(0), Samples(64));
         let first = [Event::midi(at, note)];
         let mut out = Vec::with_capacity(frames);

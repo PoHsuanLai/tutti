@@ -19,6 +19,10 @@
 //! length that is not whole frames or a ragged plane; nothing truncates. Every
 //! count is [`Samples`](tutti_types::Samples), in frames.
 //!
+//! [`Source`] and [`Sink`] are the edges: a stream pulled into, or written from,
+//! an interleaved view of the implementor's format, on a clock the graph does
+//! not keep. A [`Pull`] says whether an empty read is late, finished or broken.
+//!
 //! [`convert()`] changes format, [`interleave`] and [`deinterleave`] change
 //! layout; a mismatch is an error, never a short copy. [`Fold`] turns one
 //! channel topology into another, built once on the control side.
@@ -47,6 +51,7 @@
 #![forbid(unsafe_code)]
 
 mod convert;
+mod edge;
 mod error;
 mod fold;
 mod i24;
@@ -57,6 +62,7 @@ mod sample;
 mod stereo;
 
 pub use convert::{convert, deinterleave, interleave};
+pub use edge::{FiniteSource, Pull, Sink, SinkFailed, Source, Stop};
 pub use error::BufferError;
 pub use fold::{Fold, FoldEnd, FoldError, M3DB};
 pub use i24::{I24, I24OutOfRange};

@@ -1,6 +1,7 @@
 //! A tap's reader is a `Source` (`impl Source for TapReader`), so a pump
 //! or a recorder takes it as it is.
 
+use tutti_buffers::{InterleavedMut, Pull, Source};
 use tutti_graph::{
     Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TapReader, TransportPosition,
     Unforkable,
@@ -8,7 +9,7 @@ use tutti_graph::{
 use tutti_graph::{NodeKey, TapAlign, TapId};
 use tutti_graph::{OutPort, Source as Origin};
 use tutti_types::MaxBlock;
-use tutti_types::{Beat, Bpm, ChannelLayout, Pull, SampleRate, Samples, Source};
+use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 
 /// A stereo source that plays `frames` in order, then silence: the graph the
 /// tap copies out of.
@@ -86,10 +87,15 @@ fn tap_with_ring(frames: &[(f32, f32)], ring: usize) -> TapReader {
     reader
 }
 
+/// A stereo view of `buf`, the tap's width.
+fn stereo(buf: &mut [f32]) -> InterleavedMut<'_> {
+    InterleavedMut::new(buf, ChannelLayout::STEREO).unwrap()
+}
+
 /// Frames the graph rendered come back out in order, interleaved L then R.
 ///
-/// The tap keeps one ring a lane and `Source` speaks a flat interleaved
-/// slice; this is the conversion, so a transposition here would silently
+/// The tap keeps one ring a lane and `Source` speaks an interleaved
+/// view; this is the conversion, so a transposition here would silently
 /// swap every recording's channels.
 #[test]
 fn rendered_frames_come_back_in_order_and_channel_side() {
@@ -97,7 +103,7 @@ fn rendered_frames_come_back_in_order_and_channel_side() {
     let mut tap = tap_with(&frames);
     let mut out = [0.0f32; 8 * 2];
     assert_eq!(
-        Source::pull(&mut tap, &mut out),
+        Source::pull(&mut tap, stereo(&mut out)),
         Pull::Frames(Samples(4)),
         "the count is FRAMES, not samples"
     );
@@ -117,14 +123,17 @@ fn a_poll_never_writes_past_the_output_slice() {
     let mut tap = tap_with(&[(1.0, 1.0); 32]);
     let mut out = [0.0f32; 4 * 2];
     assert_eq!(
-        Source::pull(&mut tap, &mut out),
+        Source::pull(&mut tap, stereo(&mut out)),
         Pull::Frames(Samples(4)),
         "must fill exactly the slice"
     );
 
     // The rest is still queued, not dropped.
     let mut rest = [0.0f32; 32 * 2];
-    assert_eq!(Source::pull(&mut tap, &mut rest), Pull::Frames(Samples(28)));
+    assert_eq!(
+        Source::pull(&mut tap, stereo(&mut rest)),
+        Pull::Frames(Samples(28))
+    );
 }
 
 /// An empty tap yields nothing and says so, without claiming the end.
@@ -138,7 +147,7 @@ fn an_empty_tap_starves_rather_than_ending() {
 
     let mut out = [0.0f32; 4 * 2];
     assert_eq!(
-        Source::pull(&mut tap, &mut out),
+        Source::pull(&mut tap, stereo(&mut out)),
         Pull::Starved,
         "the graph does not end; an empty tap is a gap, not a finish"
     );

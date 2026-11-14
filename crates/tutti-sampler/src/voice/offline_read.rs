@@ -41,6 +41,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::fault::FaultLatch;
+#[cfg(any(
+    feature = "decode-wav",
+    feature = "decode-flac",
+    feature = "decode-mp3",
+    feature = "decode-ogg"
+))]
+use tutti_buffers::Source;
 use tutti_codec::Wave;
 use tutti_types::SamplePosition;
 #[cfg(any(
@@ -50,13 +57,6 @@ use tutti_types::SamplePosition;
     feature = "decode-ogg"
 ))]
 use tutti_types::Samples;
-#[cfg(any(
-    feature = "decode-wav",
-    feature = "decode-flac",
-    feature = "decode-mp3",
-    feature = "decode-ogg"
-))]
-use tutti_types::Source;
 
 use super::Loop;
 use super::interp::{

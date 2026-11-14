@@ -85,6 +85,9 @@ use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
 use crate::tap::{TapReader, TapWriter};
 use crate::wake::Wake;
+
+mod outlets;
+use outlets::{Closed, Outlets};
 use tutti_types::{Amplitude, Mix, ParamCell};
 
 /// Why [`Editor::commit`] failed.
@@ -461,12 +464,8 @@ pub struct Editor {
     /// Keys [`set_latency`](Self::set_latency) changed since the last
     /// commit: any crossfade running or waiting there is cut by it.
     latency_cuts: BTreeSet<NodeKey>,
-    /// Tap producers opened since the last commit, sent with the next.
-    pending_taps: Vec<(TapId, TapWriter)>,
-    /// Each open tap's reader, to see which were dropped.
-    tap_readers: BTreeMap<TapId, (usize, std::sync::Weak<()>)>,
-    /// Each open tap's end latch, raised when every node it read was removed.
-    tap_ends: BTreeMap<TapId, std::sync::Arc<tutti_rt::FaultLatch>>,
+    /// The open taps: each reader's width and end latch.
+    taps: Outlets<TapId, TapWriter, TapOpened>,
     /// Taps taken out of the plan because every node they read was removed,
     /// each with the commit (by `sent`) that leaves them out, once one was
     /// sent; their latch is raised when the executor has applied it.
@@ -474,14 +473,10 @@ pub struct Editor {
     /// Commits the executor has handed back so far: it applied each one
     /// before it did, and every commit is handed back once.
     acked: u64,
-    /// Event tap producers opened since the last commit, sent with the next.
-    pending_event_taps: Vec<(EventTapId, EventTapWriter)>,
-    /// Each open event tap's reader, to see which were dropped.
-    event_tap_readers: BTreeMap<EventTapId, std::sync::Weak<()>>,
-    /// Meter writers opened since the last commit, sent with the next.
-    pending_meters: Vec<(MeterId, MeterWriter)>,
-    /// Each open meter's lane capacity and reader, to see which were dropped.
-    meter_readers: BTreeMap<MeterId, (usize, std::sync::Weak<()>)>,
+    /// The open event taps.
+    event_taps: Outlets<EventTapId, EventTapWriter, ()>,
+    /// The open meters: each one's lane capacity.
+    meters: Outlets<MeterId, MeterWriter, usize>,
     next_gen: BTreeMap<NodeKey, u32>,
     /// Where the compile lifecycle stands: the plan sent last (what the
     /// executor will be running once the queue drains, and what the next
@@ -548,6 +543,14 @@ impl std::fmt::Debug for Editor {
             .field("revision", &self.revision)
             .finish_non_exhaustive()
     }
+}
+
+/// What an open tap's reader was opened with.
+struct TapOpened {
+    /// Its lanes: the writer the executor holds has as many rings.
+    width: usize,
+    /// Raised when every node it read was removed.
+    end: Arc<tutti_rt::FaultLatch>,
 }
 
 /// A panic payload as text.
@@ -672,11 +675,11 @@ impl Editor {
     ) -> Result<TapReader, MissingSource> {
         self.check_sources(&sources)?;
         let (reader, writer) = TapReader::pair(id, sources.len(), capacity);
-        self.pending_taps.retain(|(k, _)| *k != id);
-        self.pending_taps.push((id, writer));
-        self.tap_readers
-            .insert(id, (reader.width(), reader.watch()));
-        self.tap_ends.insert(id, reader.end_latch());
+        let opened = TapOpened {
+            width: reader.width(),
+            end: reader.end_latch(),
+        };
+        self.taps.open(id, writer, opened, reader.watch());
         self.spec_mut()
             .topology
             .taps
@@ -714,11 +717,11 @@ impl Editor {
             .collect();
         self.check_sources(&named)?;
         let (reader, writer) = TapReader::pair(id, width, capacity);
-        self.pending_taps.retain(|(k, _)| *k != id);
-        self.pending_taps.push((id, writer));
-        self.tap_readers
-            .insert(id, (reader.width(), reader.watch()));
-        self.tap_ends.insert(id, reader.end_latch());
+        let opened = TapOpened {
+            width: reader.width(),
+            end: reader.end_latch(),
+        };
+        self.taps.open(id, writer, opened, reader.watch());
         self.spec_mut()
             .topology
             .taps
@@ -770,9 +773,7 @@ impl Editor {
         if !self.spec.topology.taps.contains_key(&id) {
             return Err(CloseError::Tap(id));
         }
-        self.pending_taps.retain(|(k, _)| *k != id);
-        self.tap_readers.remove(&id);
-        self.tap_ends.remove(&id);
+        let _ = self.taps.close(id);
         self.spec_mut().topology.taps.remove(&id);
         Ok(())
     }
@@ -781,12 +782,12 @@ impl Editor {
     /// opened with: the writer the executor holds has that many rings.
     fn check_tap_widths(&self) -> Result<(), CommitError> {
         for (&tap, spec) in &self.spec.topology.taps {
-            match self.tap_readers.get(&tap) {
-                Some(&(opened, _)) if opened != spec.lanes() => {
+            match self.taps.meta(tap) {
+                Some(opened) if opened.width != spec.lanes() => {
                     return Err(CommitError::TapWidth {
                         tap,
                         sources: spec.lanes(),
-                        opened,
+                        opened: opened.width,
                     });
                 }
                 _ => {}
@@ -800,12 +801,7 @@ impl Editor {
     /// nothing for it); this is the control-side tick that takes it out of the
     /// plan. Moves the spec only when it closes one.
     pub fn reap_taps(&mut self) -> usize {
-        let gone: Vec<TapId> = self
-            .tap_readers
-            .iter()
-            .filter(|(_, (_, alive))| alive.strong_count() == 0)
-            .map(|(&id, _)| id)
-            .collect();
+        let gone = self.taps.dropped();
         for &id in &gone {
             // Open: the reader table named it.
             let _ = self.close_tap(id);
@@ -880,9 +876,7 @@ impl Editor {
             }
         }
         let (reader, writer) = EventTapReader::pair(id, capacity, self.prepare.sample_rate());
-        self.pending_event_taps.retain(|(k, _)| *k != id);
-        self.pending_event_taps.push((id, writer));
-        self.event_tap_readers.insert(id, reader.watch());
+        self.event_taps.open(id, writer, (), reader.watch());
         self.spec_mut().topology.event_taps.insert(
             id,
             EventTapSpec {
@@ -903,8 +897,7 @@ impl Editor {
         if !self.spec.topology.event_taps.contains_key(&id) {
             return Err(CloseError::EventTap(id));
         }
-        self.pending_event_taps.retain(|(k, _)| *k != id);
-        self.event_tap_readers.remove(&id);
+        let _ = self.event_taps.close(id);
         self.spec_mut().topology.event_taps.remove(&id);
         Ok(())
     }
@@ -914,12 +907,7 @@ impl Editor {
     /// thread then writes nothing for it); this is the control-side tick that
     /// takes it out of the plan. Moves the spec only when it closes one.
     pub fn reap_event_taps(&mut self) -> usize {
-        let gone: Vec<EventTapId> = self
-            .event_tap_readers
-            .iter()
-            .filter(|(_, alive)| alive.strong_count() == 0)
-            .map(|(&id, _)| id)
-            .collect();
+        let gone = self.event_taps.dropped();
         for &id in &gone {
             // Open: the reader table named it.
             let _ = self.close_event_tap(id);
@@ -968,9 +956,7 @@ impl Editor {
             MeterSpec::Ports { sources, .. } => (sources.len(), sources.len()),
         };
         let (reader, writer) = MeterReader::pair(id, lanes, width);
-        self.pending_meters.retain(|(k, _)| *k != id);
-        self.pending_meters.push((id, writer));
-        self.meter_readers.insert(id, (lanes, reader.watch()));
+        self.meters.open(id, writer, lanes, reader.watch());
         self.spec_mut().topology.meters.insert(id, spec);
         Ok(reader)
     }
@@ -986,8 +972,7 @@ impl Editor {
         if !self.spec.topology.meters.contains_key(&id) {
             return Err(CloseError::Meter(id));
         }
-        self.pending_meters.retain(|(k, _)| *k != id);
-        self.meter_readers.remove(&id);
+        let _ = self.meters.close(id);
         self.spec_mut().topology.meters.remove(&id);
         Ok(())
     }
@@ -997,15 +982,15 @@ impl Editor {
         let t = &self.spec.topology;
         for (&meter, spec) in &t.meters {
             let sources = spec.lanes(t.outputs.len());
-            match self.meter_readers.get(&meter) {
-                Some(&(capacity, _)) if sources > capacity => {
+            match self.meters.meta(meter).copied() {
+                Some(capacity) if sources > capacity => {
                     return Err(CommitError::MeterWidth {
                         meter,
                         sources,
                         capacity,
                     });
                 }
-                Some(&(capacity, _))
+                Some(capacity)
                     if matches!(spec, MeterSpec::Ports { .. }) && sources != capacity =>
                 {
                     return Err(CommitError::MeterWidth {
@@ -1025,12 +1010,7 @@ impl Editor {
     /// measures for nobody); this is the control-side tick that takes it out.
     /// Moves the spec only when it closes one.
     pub fn reap_meters(&mut self) -> usize {
-        let gone: Vec<MeterId> = self
-            .meter_readers
-            .iter()
-            .filter(|(_, (_, alive))| alive.strong_count() == 0)
-            .map(|(&id, _)| id)
-            .collect();
+        let gone = self.meters.dropped();
         for &id in &gone {
             // Open: the reader table named it.
             let _ = self.close_meter(id);
@@ -1067,15 +1047,11 @@ impl Editor {
             wakes: BTreeMap::new(),
             fades: BTreeMap::new(),
             latency_cuts: BTreeSet::new(),
-            pending_taps: Vec::new(),
-            tap_readers: BTreeMap::new(),
-            tap_ends: BTreeMap::new(),
+            taps: Outlets::new(),
             ending_taps: Vec::new(),
             acked: 0,
-            pending_event_taps: Vec::new(),
-            event_tap_readers: BTreeMap::new(),
-            pending_meters: Vec::new(),
-            meter_readers: BTreeMap::new(),
+            event_taps: Outlets::new(),
+            meters: Outlets::new(),
             next_gen: BTreeMap::new(),
             life: Lifecycle::Unplanned,
             committed: None,
@@ -2497,10 +2473,8 @@ impl Editor {
             // does, and its reader is told once the plan without it runs.
             for id in over {
                 t.taps.remove(&id);
-                self.tap_readers.remove(&id);
-                let unsent = self.pending_taps.iter().any(|(k, _)| *k == id);
-                self.pending_taps.retain(|(k, _)| *k != id);
-                if let Some(end) = self.tap_ends.remove(&id) {
+                if let Some(Closed { meta, unsent }) = self.taps.close(id) {
+                    let end = meta.end;
                     if unsent {
                         // The executor never held its writer: nothing more
                         // will be written.
@@ -2991,9 +2965,9 @@ impl Editor {
         }
         self.check_spec()?;
         if self.pending.is_empty()
-            && self.pending_taps.is_empty()
-            && self.pending_event_taps.is_empty()
-            && self.pending_meters.is_empty()
+            && !self.taps.has_pending()
+            && !self.event_taps.has_pending()
+            && !self.meters.has_pending()
             && self.fades.is_empty()
             && self.latency_cuts.is_empty()
             && self.committed.as_ref().is_some_and(|(spec, shapes)| {
@@ -3297,9 +3271,9 @@ impl Editor {
         // A unit handed in whole (`send`'s callers) was never bound: its flag
         // is a fresh one nothing holds.
         let wakes = |key: NodeKey| wake_cells.get(&key).cloned().unwrap_or_default();
-        let taps = std::mem::take(&mut self.pending_taps);
-        let event_taps = std::mem::take(&mut self.pending_event_taps);
-        let meters = std::mem::take(&mut self.pending_meters);
+        let taps = self.taps.take_pending();
+        let event_taps = self.event_taps.take_pending();
+        let meters = self.meters.take_pending();
         let commit = Commit::build(
             self.sent + 1,
             Arc::clone(&plan),

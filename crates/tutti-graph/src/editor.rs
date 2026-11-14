@@ -26,7 +26,7 @@
 //! the box comes back as soon as it is applied. The fade's outgoing unit
 //! comes back on its own, on the fade-return ring, when the fade ends (or
 //! is cut), and `collect` drains that ring too. Each fade a commit starts
-//! takes one of [`FADE_CAPACITY`] slots on it, reserved before the commit
+//! takes one of [`FADE_CAPACITY`](crate::FADE_CAPACITY) slots on it, reserved before the commit
 //! is sent; a commit that would need more is `Backpressure` too — a cap no
 //! session reaches in practice.
 //!
@@ -59,32 +59,36 @@ use crate::{
     TapId, TapSpec,
 };
 use crate::{MAX_NODE_LATENCY, MAX_NODE_TAIL};
-use ringbuf::traits::{Consumer, Producer};
 use tutti_types::{Latency, Samples, Tail};
 
 use tutti_types::At;
 
 use crate::bus_edge::{BusError, BusFold, BusRef, BusSource, Lowering};
-use crate::command::{CommandId, CommandTx, ScheduleError, command_channel};
+use crate::command::{CommandId, ScheduleError, command_channel};
 use crate::compile::{CompileError, Shapes, VerifyError, compile};
 use crate::event::EventKind;
 use crate::event_tap::{EventTapReader, EventTapWriter};
 use crate::exec::Opened;
-use crate::exec::{
-    Channels, Commit, DEFAULT_EVENT_CAPACITY, Executor, FADE_CAPACITY, QUEUE_CAPACITY, channels,
-};
+use crate::exec::{Commit, DEFAULT_EVENT_CAPACITY, Executor, QUEUE_CAPACITY, channels};
 use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
 use crate::gain::{EdgeFade, EdgeGain, GainCell};
 use crate::meter::{MeterReader, MeterWriter};
-use crate::mode::{MixError, ModeCell, ModeError, ModeState, NodeMix, NodeMode};
+use crate::mode::{MixError, ModeCell, ModeError, NodeMix, NodeMode};
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
-use crate::param::{ParamIn, ParamRange, ParamRangeReader, ParamRanges, ParamState};
+use crate::param::{ParamIn, ParamRange, ParamRangeReader};
 use crate::pass::Pass;
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
 use crate::tap::{TapReader, TapWriter};
 use crate::wake::Wake;
+
+mod cells;
+mod link;
+mod outlets;
+use cells::LiveCells;
+use link::Link;
+use outlets::{Closed, Outlets};
 use tutti_types::{Amplitude, Mix, ParamCell};
 
 /// Why [`Editor::commit`] failed.
@@ -437,15 +441,8 @@ pub enum MissingSource {
 /// assert_eq!(output[0], 0.5);
 /// ```
 pub struct Editor {
-    channels: Channels,
-    commands: CommandTx,
-    /// Commits sent and not yet drained back.
-    out: usize,
-    /// Crossfades sent (started or waiting) and not yet drained back from
-    /// the fade-return ring: its slots in use.
-    fades_out: usize,
-    /// Commits sent, ever: the sequence number of the last one.
-    sent: u64,
+    /// The rings to the paired executor.
+    link: Link,
     prepare: Prepare,
     spec: GraphSpec,
     shapes: Shapes,
@@ -461,27 +458,12 @@ pub struct Editor {
     /// Keys [`set_latency`](Self::set_latency) changed since the last
     /// commit: any crossfade running or waiting there is cut by it.
     latency_cuts: BTreeSet<NodeKey>,
-    /// Tap producers opened since the last commit, sent with the next.
-    pending_taps: Vec<(TapId, TapWriter)>,
-    /// Each open tap's reader, to see which were dropped.
-    tap_readers: BTreeMap<TapId, (usize, std::sync::Weak<()>)>,
-    /// Each open tap's end latch, raised when every node it read was removed.
-    tap_ends: BTreeMap<TapId, std::sync::Arc<tutti_rt::FaultLatch>>,
-    /// Taps taken out of the plan because every node they read was removed,
-    /// each with the commit (by `sent`) that leaves them out, once one was
-    /// sent; their latch is raised when the executor has applied it.
-    ending_taps: Vec<(Option<u64>, std::sync::Arc<tutti_rt::FaultLatch>)>,
-    /// Commits the executor has handed back so far: it applied each one
-    /// before it did, and every commit is handed back once.
-    acked: u64,
-    /// Event tap producers opened since the last commit, sent with the next.
-    pending_event_taps: Vec<(EventTapId, EventTapWriter)>,
-    /// Each open event tap's reader, to see which were dropped.
-    event_tap_readers: BTreeMap<EventTapId, std::sync::Weak<()>>,
-    /// Meter writers opened since the last commit, sent with the next.
-    pending_meters: Vec<(MeterId, MeterWriter)>,
-    /// Each open meter's lane capacity and reader, to see which were dropped.
-    meter_readers: BTreeMap<MeterId, (usize, std::sync::Weak<()>)>,
+    /// The open taps: each reader's width and end latch.
+    taps: Outlets<TapId, TapWriter, TapOpened>,
+    /// The open event taps.
+    event_taps: Outlets<EventTapId, EventTapWriter, ()>,
+    /// The open meters: each one's lane capacity.
+    meters: Outlets<MeterId, MeterWriter, usize>,
     next_gen: BTreeMap<NodeKey, u32>,
     /// Where the compile lifecycle stands: the plan sent last (what the
     /// executor will be running once the queue drains, and what the next
@@ -507,20 +489,12 @@ pub struct Editor {
     /// On a **fork** only: the health probe each forked unit's source handed
     /// over, by key (see `src/fork.rs`, "When a forked unit fails").
     fork_health: Vec<(NodeKey, Arc<dyn ForkHealth>)>,
-    /// Per key with declared params: its ports' live ranges
-    /// (`src/param.rs`, `ParamRanges`), shared with the running unit's
-    /// state. Written from the spec by every commit, and by
-    /// [`set_param_range`](Self::set_param_range) at once.
-    param_ranges: BTreeMap<NodeKey, Arc<ParamRanges>>,
-    /// The live base of each weighted lane of the plan sent last
-    /// (`src/gain.rs`), shared with the running executor's lane state.
-    /// Written from the spec by every commit, and by
-    /// [`set_edge_gain`](Self::set_edge_gain) at once.
-    edge_gains: BTreeMap<EdgeId, GainCell>,
-    /// The live mode of each key the plan sent last places
-    /// (`src/mode.rs`), shared with the running unit. Written from the spec
-    /// by every commit, and by [`set_mode`](Self::set_mode) at once.
-    mode_cells: BTreeMap<NodeKey, ModeCell>,
+    /// The cells shared with running units: param ranges, lane gains,
+    /// modes. Written from the spec by every commit, and by the controls
+    /// ([`set_param_range`](Self::set_param_range),
+    /// [`set_edge_gain`](Self::set_edge_gain), [`set_mode`](Self::set_mode)
+    /// ...) at once.
+    cells: LiveCells,
     /// Nodes [`remove_declicked`](Self::remove_declicked) is keeping until
     /// the edges they feed have faded out.
     leaving: BTreeSet<NodeKey>,
@@ -532,9 +506,7 @@ pub struct Editor {
 impl std::fmt::Debug for Editor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Editor")
-            .field("out", &self.out)
-            .field("fades_out", &self.fades_out)
-            .field("sent", &self.sent)
+            .field("link", &self.link)
             .field("prepare", &self.prepare)
             .field("fades", &self.fades)
             .field("latency_cuts", &self.latency_cuts)
@@ -544,10 +516,18 @@ impl std::fmt::Debug for Editor {
             .field("poisoned", &self.poison_cause())
             .field("limits", &self.limits)
             .field("event_capacity", &self.event_capacity)
-            .field("param_ranges", &self.param_ranges.len())
+            .field("param_ranges", &self.cells.ranges.len())
             .field("revision", &self.revision)
             .finish_non_exhaustive()
     }
+}
+
+/// What an open tap's reader was opened with.
+struct TapOpened {
+    /// Its lanes: the writer the executor holds has as many rings.
+    width: usize,
+    /// Raised when every node it read was removed.
+    end: Arc<tutti_rt::FaultLatch>,
 }
 
 /// A panic payload as text.
@@ -672,11 +652,11 @@ impl Editor {
     ) -> Result<TapReader, MissingSource> {
         self.check_sources(&sources)?;
         let (reader, writer) = TapReader::pair(id, sources.len(), capacity);
-        self.pending_taps.retain(|(k, _)| *k != id);
-        self.pending_taps.push((id, writer));
-        self.tap_readers
-            .insert(id, (reader.width(), reader.watch()));
-        self.tap_ends.insert(id, reader.end_latch());
+        let opened = TapOpened {
+            width: reader.width(),
+            end: reader.end_latch(),
+        };
+        self.taps.open(id, writer, opened, reader.watch());
         self.spec_mut()
             .topology
             .taps
@@ -714,11 +694,11 @@ impl Editor {
             .collect();
         self.check_sources(&named)?;
         let (reader, writer) = TapReader::pair(id, width, capacity);
-        self.pending_taps.retain(|(k, _)| *k != id);
-        self.pending_taps.push((id, writer));
-        self.tap_readers
-            .insert(id, (reader.width(), reader.watch()));
-        self.tap_ends.insert(id, reader.end_latch());
+        let opened = TapOpened {
+            width: reader.width(),
+            end: reader.end_latch(),
+        };
+        self.taps.open(id, writer, opened, reader.watch());
         self.spec_mut()
             .topology
             .taps
@@ -770,9 +750,7 @@ impl Editor {
         if !self.spec.topology.taps.contains_key(&id) {
             return Err(CloseError::Tap(id));
         }
-        self.pending_taps.retain(|(k, _)| *k != id);
-        self.tap_readers.remove(&id);
-        self.tap_ends.remove(&id);
+        let _ = self.taps.close(id);
         self.spec_mut().topology.taps.remove(&id);
         Ok(())
     }
@@ -781,12 +759,12 @@ impl Editor {
     /// opened with: the writer the executor holds has that many rings.
     fn check_tap_widths(&self) -> Result<(), CommitError> {
         for (&tap, spec) in &self.spec.topology.taps {
-            match self.tap_readers.get(&tap) {
-                Some(&(opened, _)) if opened != spec.lanes() => {
+            match self.taps.meta(tap) {
+                Some(opened) if opened.width != spec.lanes() => {
                     return Err(CommitError::TapWidth {
                         tap,
                         sources: spec.lanes(),
-                        opened,
+                        opened: opened.width,
                     });
                 }
                 _ => {}
@@ -800,12 +778,7 @@ impl Editor {
     /// nothing for it); this is the control-side tick that takes it out of the
     /// plan. Moves the spec only when it closes one.
     pub fn reap_taps(&mut self) -> usize {
-        let gone: Vec<TapId> = self
-            .tap_readers
-            .iter()
-            .filter(|(_, (_, alive))| alive.strong_count() == 0)
-            .map(|(&id, _)| id)
-            .collect();
+        let gone = self.taps.dropped();
         for &id in &gone {
             // Open: the reader table named it.
             let _ = self.close_tap(id);
@@ -880,9 +853,7 @@ impl Editor {
             }
         }
         let (reader, writer) = EventTapReader::pair(id, capacity, self.prepare.sample_rate());
-        self.pending_event_taps.retain(|(k, _)| *k != id);
-        self.pending_event_taps.push((id, writer));
-        self.event_tap_readers.insert(id, reader.watch());
+        self.event_taps.open(id, writer, (), reader.watch());
         self.spec_mut().topology.event_taps.insert(
             id,
             EventTapSpec {
@@ -903,8 +874,7 @@ impl Editor {
         if !self.spec.topology.event_taps.contains_key(&id) {
             return Err(CloseError::EventTap(id));
         }
-        self.pending_event_taps.retain(|(k, _)| *k != id);
-        self.event_tap_readers.remove(&id);
+        let _ = self.event_taps.close(id);
         self.spec_mut().topology.event_taps.remove(&id);
         Ok(())
     }
@@ -914,12 +884,7 @@ impl Editor {
     /// thread then writes nothing for it); this is the control-side tick that
     /// takes it out of the plan. Moves the spec only when it closes one.
     pub fn reap_event_taps(&mut self) -> usize {
-        let gone: Vec<EventTapId> = self
-            .event_tap_readers
-            .iter()
-            .filter(|(_, alive)| alive.strong_count() == 0)
-            .map(|(&id, _)| id)
-            .collect();
+        let gone = self.event_taps.dropped();
         for &id in &gone {
             // Open: the reader table named it.
             let _ = self.close_event_tap(id);
@@ -968,9 +933,7 @@ impl Editor {
             MeterSpec::Ports { sources, .. } => (sources.len(), sources.len()),
         };
         let (reader, writer) = MeterReader::pair(id, lanes, width);
-        self.pending_meters.retain(|(k, _)| *k != id);
-        self.pending_meters.push((id, writer));
-        self.meter_readers.insert(id, (lanes, reader.watch()));
+        self.meters.open(id, writer, lanes, reader.watch());
         self.spec_mut().topology.meters.insert(id, spec);
         Ok(reader)
     }
@@ -986,8 +949,7 @@ impl Editor {
         if !self.spec.topology.meters.contains_key(&id) {
             return Err(CloseError::Meter(id));
         }
-        self.pending_meters.retain(|(k, _)| *k != id);
-        self.meter_readers.remove(&id);
+        let _ = self.meters.close(id);
         self.spec_mut().topology.meters.remove(&id);
         Ok(())
     }
@@ -997,15 +959,15 @@ impl Editor {
         let t = &self.spec.topology;
         for (&meter, spec) in &t.meters {
             let sources = spec.lanes(t.outputs.len());
-            match self.meter_readers.get(&meter) {
-                Some(&(capacity, _)) if sources > capacity => {
+            match self.meters.meta(meter).copied() {
+                Some(capacity) if sources > capacity => {
                     return Err(CommitError::MeterWidth {
                         meter,
                         sources,
                         capacity,
                     });
                 }
-                Some(&(capacity, _))
+                Some(capacity)
                     if matches!(spec, MeterSpec::Ports { .. }) && sources != capacity =>
                 {
                     return Err(CommitError::MeterWidth {
@@ -1025,12 +987,7 @@ impl Editor {
     /// measures for nobody); this is the control-side tick that takes it out.
     /// Moves the spec only when it closes one.
     pub fn reap_meters(&mut self) -> usize {
-        let gone: Vec<MeterId> = self
-            .meter_readers
-            .iter()
-            .filter(|(_, (_, alive))| alive.strong_count() == 0)
-            .map(|(&id, _)| id)
-            .collect();
+        let gone = self.meters.dropped();
         for &id in &gone {
             // Open: the reader table named it.
             let _ = self.close_meter(id);
@@ -1055,11 +1012,7 @@ impl Editor {
         let (channels, ends) = channels();
         let (commands, command_rx) = command_channel();
         let editor = Self {
-            channels,
-            commands,
-            out: 0,
-            fades_out: 0,
-            sent: 0,
+            link: Link::new(channels, commands),
             prepare,
             spec: GraphSpec::default(),
             shapes: Shapes::new(),
@@ -1067,15 +1020,9 @@ impl Editor {
             wakes: BTreeMap::new(),
             fades: BTreeMap::new(),
             latency_cuts: BTreeSet::new(),
-            pending_taps: Vec::new(),
-            tap_readers: BTreeMap::new(),
-            tap_ends: BTreeMap::new(),
-            ending_taps: Vec::new(),
-            acked: 0,
-            pending_event_taps: Vec::new(),
-            event_tap_readers: BTreeMap::new(),
-            pending_meters: Vec::new(),
-            meter_readers: BTreeMap::new(),
+            taps: Outlets::new(),
+            event_taps: Outlets::new(),
+            meters: Outlets::new(),
             next_gen: BTreeMap::new(),
             life: Lifecycle::Unplanned,
             committed: None,
@@ -1083,9 +1030,7 @@ impl Editor {
             forks: BTreeMap::new(),
             event_capacity: cap,
             fork_health: Vec::new(),
-            param_ranges: BTreeMap::new(),
-            edge_gains: BTreeMap::new(),
-            mode_cells: BTreeMap::new(),
+            cells: LiveCells::new(),
             leaving: BTreeSet::new(),
             revision: 0,
         };
@@ -1145,7 +1090,7 @@ impl Editor {
     /// Whether `executor` is the one this editor sends to: the two were
     /// built together by [`Editor::new`].
     pub fn is_paired_with(&self, executor: &Executor) -> bool {
-        self.commands.same_pair(executor.commands())
+        self.link.is_paired_with(executor)
     }
 
     /// The paired executor's play clock (`Env::play`), as it published it
@@ -1155,7 +1100,7 @@ impl Editor {
     /// 0). What the modulation compiler dates a rate edit's anchor from
     /// (doc 014 §4.3).
     pub fn play_reading(&self) -> crate::PlayReading {
-        self.channels.play.read()
+        self.link.play_reading()
     }
 
     /// The output ports that lost events since the last call, one entry per
@@ -1169,16 +1114,14 @@ impl Editor {
     /// the ring (256 entries) fill, leaves entries out and the total stands.
     /// Drain it from the tick that collects (the session's `Collect` phase).
     pub fn take_event_losses(&mut self) -> impl Iterator<Item = crate::EventLoss> + '_ {
-        std::iter::from_fn(|| self.channels.losses.try_pop())
+        std::iter::from_fn(|| self.link.pop_loss())
     }
 
     /// Refusals since the last call that [`take_event_losses`](Self::take_event_losses)
     /// did not name: a merge's, and those the per-block log (64 places) or the
     /// ring (256 entries) had no room for. Control thread.
     pub fn take_unreported_event_losses(&mut self) -> u64 {
-        self.channels
-            .unreported
-            .swap(0, std::sync::atomic::Ordering::Relaxed)
+        self.link.take_unreported()
     }
 
     /// The graph value.
@@ -1307,14 +1250,14 @@ impl Editor {
 
     /// Crossfades sent and not yet drained back: running, waiting, or
     /// ended and waiting for [`collect`](Self::collect). At most
-    /// [`FADE_CAPACITY`].
+    /// [`FADE_CAPACITY`](crate::FADE_CAPACITY).
     pub fn fades_in_flight(&self) -> usize {
-        self.fades_out
+        self.link.fades_in_flight()
     }
 
     /// Commits sent and not yet drained back.
     pub fn in_flight(&self) -> usize {
-        self.out
+        self.link.in_flight()
     }
 
     /// Whether a [`reprepare`](Self::reprepare) is between its two commits:
@@ -1392,7 +1335,7 @@ impl Editor {
     ///   [`collect`](Self::collect), which reports its key.
     /// - The fade holds no commit: the next [`commit`](Self::commit) and
     ///   [`reprepare`](Self::reprepare) go through while it runs. Each
-    ///   running or waiting fade takes one of [`FADE_CAPACITY`] slots
+    ///   running or waiting fade takes one of [`FADE_CAPACITY`](crate::FADE_CAPACITY) slots
     ///   ([`fades_in_flight`](Self::fades_in_flight)) until `collect` drains
     ///   it.
     /// - New events go to the incoming unit only.
@@ -1777,11 +1720,11 @@ impl Editor {
         self.spec.set_param_range(at, range);
         if at.param == NodeMix::ADDR {
             // The node's mix: its range is the mode cell's.
-            if let Some(cell) = self.mode_cells.get(&at.node) {
+            if let Some(cell) = self.cells.modes.get(at.node) {
                 cell.store_range(range);
             }
-        } else if let Some(cells) = self.param_ranges.get(&at.node) {
-            cells.store(at.param, range);
+        } else {
+            self.cells.ranges.store(at, range);
         }
         // The cells hold it now, so the spec last committed holds it too: a
         // later commit with nothing else to send is the plain comparison,
@@ -1809,11 +1752,9 @@ impl Editor {
     /// nothing writes. Ask again after such a commit (a rebind).
     pub fn param_range_cell(&self, at: ParamIn) -> Option<ParamRangeReader> {
         if at.param == NodeMix::ADDR {
-            return self.mode_cells.get(&at.node).map(ModeCell::range_reader);
+            return self.cells.modes.get(at.node).map(ModeCell::range_reader);
         }
-        self.param_ranges
-            .get(&at.node)
-            .and_then(|cells| cells.reader(at.param))
+        self.cells.ranges.reader(at)
     }
 
     /// Moves edge `id`'s weight to `base` from the next block on, without a
@@ -1846,7 +1787,7 @@ impl Editor {
         self.check_gain_edge(id)?;
         self.touch();
         self.spec.set_edge_gain(id, gain);
-        if let Some(cell) = self.edge_gains.get(&id) {
+        if let Some(cell) = self.cells.gains.get(id) {
             cell.store(base);
         }
         // As for a range: the cell holds it, so the spec last committed
@@ -1885,7 +1826,7 @@ impl Editor {
             ..self.spec.gains.get(&id).copied().unwrap_or_default()
         };
         self.spec.set_edge_gain(id, gain);
-        if let Some(cell) = self.edge_gains.get(&id) {
+        if let Some(cell) = self.cells.gains.get(id) {
             cell.store_fade(fade);
         }
         if let Some((committed, _)) = &mut self.committed
@@ -1942,7 +1883,7 @@ impl Editor {
     /// Control thread. Cheap when nothing ended: a pop of an empty ring.
     pub fn settle_fades(&mut self) -> bool {
         let mut changed = false;
-        while let Some((id, kind)) = self.channels.edge_fades.try_pop() {
+        while let Some((id, kind)) = self.link.pop_edge_fade() {
             changed |= self.settle_edge(id, kind);
         }
         if !self.leaving.is_empty() {
@@ -2154,7 +2095,7 @@ impl Editor {
         self.check_gain_edge(id)?;
         self.touch();
         self.spec.set_edge_gain(id, gain);
-        if let Some(cell) = self.edge_gains.get(&id) {
+        if let Some(cell) = self.cells.gains.get(id) {
             cell.store_range(range);
         }
         if let Some((committed, _)) = &mut self.committed
@@ -2173,7 +2114,7 @@ impl Editor {
     /// entry (and again once a commit drops the entry: the view then reads a
     /// range nothing writes).
     pub fn edge_gain_range_cell(&self, id: EdgeId) -> Option<ParamRangeReader> {
-        self.edge_gains.get(&id).map(GainCell::range_reader)
+        self.cells.gains.get(id).map(GainCell::range_reader)
     }
 
     /// Edge `id`'s live base: the very cell [`set_edge_gain`](Self::set_edge_gain)
@@ -2183,7 +2124,7 @@ impl Editor {
     /// base without touching the spec: [`edge_gain`](Self::edge_gain) reads
     /// the cell, never the spec's copy, once there is one.
     pub fn edge_gain_cell(&self, id: EdgeId) -> Option<ParamCell> {
-        self.edge_gains.get(&id).map(GainCell::knob)
+        self.cells.gains.get(id).map(GainCell::knob)
     }
 
     /// Whether `key` has a pass: where its input goes when it does not run (a
@@ -2261,7 +2202,7 @@ impl Editor {
         }
         self.touch();
         self.spec.set_mode(key, mode);
-        if let Some(cell) = self.mode_cells.get(&key) {
+        if let Some(cell) = self.cells.modes.get(key) {
             cell.store(mode);
         }
         // As for a range: the cell holds it, so the spec last committed holds
@@ -2314,7 +2255,7 @@ impl Editor {
         }
         self.touch();
         self.spec.set_mix(key, mix);
-        if let Some(cell) = self.mode_cells.get(&key) {
+        if let Some(cell) = self.cells.modes.get(key) {
             cell.store_mix(mix);
         }
         if let Some((committed, _)) = &mut self.committed {
@@ -2329,8 +2270,9 @@ impl Editor {
     /// knob), the spec's before; it is the base a driving lane modulates
     /// around, not the lane's value.
     pub fn mix(&self, key: NodeKey) -> Mix {
-        self.mode_cells
-            .get(&key)
+        self.cells
+            .modes
+            .get(key)
             .filter(|_| self.spec.topology.nodes.contains_key(&key))
             .map_or_else(|| self.spec.mix(key), ModeCell::load_mix)
     }
@@ -2341,7 +2283,7 @@ impl Editor {
     /// one writer. `None` until a commit has placed the unit. Writing it moves
     /// the mix without touching the spec: [`mix`](Self::mix) reads the cell.
     pub fn mix_cell(&self, key: NodeKey) -> Option<ParamCell> {
-        self.mode_cells.get(&key).map(ModeCell::knob)
+        self.cells.modes.get(key).map(ModeCell::knob)
     }
 
     /// Edge `id`'s base, if the edge has an entry: the live cell's once a
@@ -2350,65 +2292,14 @@ impl Editor {
     /// before.
     pub fn edge_gain(&self, id: EdgeId) -> Option<Amplitude> {
         let gain = self.spec.gains.get(&id)?;
-        Some(self.edge_gains.get(&id).map_or(gain.base, GainCell::load))
+        Some(self.cells.gains.get(id).map_or(gain.base, GainCell::load))
     }
 
-    /// Writes `base`, the spec's, into `cell` when the spec's base moved
-    /// since the last commit (a spec edit that bypassed
-    /// [`set_edge_gain`](Self::set_edge_gain)). Otherwise the cell is left as
-    /// it is: it is the lane's knob and its one writer's, and the spec's copy
-    /// may be behind it.
-    fn carry_base(
-        committed: &Option<(GraphSpec, Shapes)>,
-        id: EdgeId,
-        cell: &GainCell,
-        base: Amplitude,
-    ) {
-        let seen = committed
-            .as_ref()
-            .and_then(|(spec, _)| spec.gains.get(&id))
-            .map(|g| g.base);
-        if seen.is_none_or(|s| s.get().to_bits() != base.get().to_bits()) {
-            cell.store(base);
-        }
-    }
-
-    /// Writes `mix`, the spec's, into `cell` when the spec's mix moved since
-    /// the last commit (a spec edit that bypassed [`set_mix`](Self::set_mix)).
-    /// Otherwise the cell is left as it is: it is a driving lane's knob and
-    /// its one writer's, and the spec's copy may be behind it.
-    fn carry_mix(
-        committed: &Option<(GraphSpec, Shapes)>,
-        node: NodeKey,
-        cell: &ModeCell,
-        mix: Mix,
-    ) {
-        let seen = committed.as_ref().map(|(spec, _)| spec.mix(node));
-        if seen.is_none_or(|s| s.get().to_bits() != mix.get().to_bits()) {
-            cell.store_mix(mix);
-        }
-    }
-
-    /// Write every live range cell, and every edge gain's range, from the spec,
-    /// and a base the spec moved; and every live mode.
+    /// Write every live cell from the spec: every range and mode, and a base
+    /// or mix the spec moved since the last commit.
     fn sync_ranges(&self) {
-        for (&node, cell) in &self.mode_cells {
-            cell.store(self.spec.mode(node));
-            Self::carry_mix(&self.committed, node, cell, self.spec.mix(node));
-            cell.store_range(mix_range_of(&self.spec, node));
-        }
-        for (id, cell) in &self.edge_gains {
-            if let Some(g) = self.spec.gains.get(id) {
-                Self::carry_base(&self.committed, *id, cell, g.base);
-                cell.store_range(g.range);
-                cell.store_fade(g.fade);
-            }
-        }
-        for (&node, cells) in &self.param_ranges {
-            for &param in cells.declared().as_slice() {
-                cells.store(param, range_of(&self.spec, ParamIn { node, param }));
-            }
-        }
+        let committed = self.committed.as_ref().map(|(spec, _)| spec);
+        self.cells.sync(&self.spec, committed);
     }
 
     /// Removes `key` and every edge that touches it. Output channels it fed
@@ -2497,16 +2388,14 @@ impl Editor {
             // does, and its reader is told once the plan without it runs.
             for id in over {
                 t.taps.remove(&id);
-                self.tap_readers.remove(&id);
-                let unsent = self.pending_taps.iter().any(|(k, _)| *k == id);
-                self.pending_taps.retain(|(k, _)| *k != id);
-                if let Some(end) = self.tap_ends.remove(&id) {
+                if let Some(Closed { meta, unsent }) = self.taps.close(id) {
+                    let end = meta.end;
                     if unsent {
                         // The executor never held its writer: nothing more
                         // will be written.
                         end.raise();
                     } else {
-                        self.ending_taps.push((None, end));
+                        self.link.end_tap(end);
                     }
                 }
             }
@@ -2593,9 +2482,7 @@ impl Editor {
     /// half, this re-prepares the units it carries and sends the second.
     pub fn collect(&mut self) -> Vec<NodeKey> {
         let mut keys = Vec::new();
-        while let Some(done) = self.channels.returned.try_pop() {
-            self.out -= 1;
-            self.acked += 1;
+        while let Some(done) = self.link.pop_returned() {
             if done.is_suspend() {
                 self.resume(done);
                 continue;
@@ -2604,18 +2491,9 @@ impl Editor {
             drop(done);
         }
         // The executor applies a commit before it hands the box back, so a
-        // tap the commit left out has had its last block written. The ring
-        // that carried the box orders those writes before this raise.
-        let acked = self.acked;
-        self.ending_taps.retain(|(at, end)| match at {
-            Some(sent) if *sent <= acked => {
-                end.raise();
-                false
-            }
-            _ => true,
-        });
-        while let Some(x) = self.channels.faded.try_pop() {
-            self.fades_out -= 1;
+        // tap the commit left out has had its last block written.
+        self.link.end_applied_taps();
+        while let Some(x) = self.link.pop_faded() {
             keys.extend(std::iter::repeat_n(x.key(), x.units()));
             drop(x);
         }
@@ -2623,12 +2501,9 @@ impl Editor {
     }
 
     /// `Backpressure` if the crossfades `delta` starts would take more than
-    /// [`FADE_CAPACITY`] slots on the fade-return ring.
+    /// [`FADE_CAPACITY`](crate::FADE_CAPACITY) slots on the fade-return ring.
     fn fade_room(&self, delta: &Delta) -> Result<(), CommitError> {
-        if self.fades_out + starting(delta) > FADE_CAPACITY {
-            return Err(CommitError::Backpressure);
-        }
-        Ok(())
+        self.link.check_fade_room(starting(delta))
     }
 
     /// Where `key`'s forks come from, and the generation of the unit that
@@ -2729,9 +2604,7 @@ impl Editor {
         if self.is_repreparing() {
             return Err(CommitError::Repreparing);
         }
-        if self.out >= QUEUE_CAPACITY {
-            return Err(CommitError::Backpressure);
-        }
+        self.link.check_room()?;
         // A re-prepare recompiles the spec as it stands, so it is a commit
         // of that spec too.
         self.limits.block(prepare.max_block().get())?;
@@ -2779,12 +2652,8 @@ impl Editor {
             return Err(CommitError::Poisoned { cause });
         }
         let units = self.life.plan().map_or(0, |p| p.units().len());
-        let suspend = Commit::suspend(self.sent + 1, prepare, units);
-        if self.channels.to_executor.try_push(suspend).is_err() {
-            unreachable!("the queue has a free slot for every credit");
-        }
-        self.sent += 1;
-        self.out += 1;
+        let suspend = Commit::suspend(self.link.next_seq(), prepare, units);
+        self.link.send_suspend(suspend);
         self.prepare = prepare;
         self.life = Lifecycle::Repreparing {
             plan: self.life.take().into_plan(),
@@ -2947,7 +2816,7 @@ impl Editor {
     /// Validates, compiles against the plan sent last, and sends the result
     /// with the units it places. Returns `Backpressure` — having compiled and sent
     /// nothing — when [`QUEUE_CAPACITY`] commits are out, or when the fades
-    /// it starts would put more than [`FADE_CAPACITY`] in flight. A running
+    /// it starts would put more than [`FADE_CAPACITY`](crate::FADE_CAPACITY) in flight. A running
     /// fade holds neither: its commit comes back when applied, and its slot
     /// on the fade-return ring is its own.
     ///
@@ -2986,14 +2855,12 @@ impl Editor {
         if self.is_repreparing() {
             return Err(CommitError::Repreparing);
         }
-        if self.out >= QUEUE_CAPACITY {
-            return Err(CommitError::Backpressure);
-        }
+        self.link.check_room()?;
         self.check_spec()?;
         if self.pending.is_empty()
-            && self.pending_taps.is_empty()
-            && self.pending_event_taps.is_empty()
-            && self.pending_meters.is_empty()
+            && !self.taps.has_pending()
+            && !self.event_taps.has_pending()
+            && !self.meters.has_pending()
             && self.fades.is_empty()
             && self.latency_cuts.is_empty()
             && self.committed.as_ref().is_some_and(|(spec, shapes)| {
@@ -3095,9 +2962,7 @@ impl Editor {
         if self.is_repreparing() {
             return Err(CommitError::Repreparing);
         }
-        if self.out >= QUEUE_CAPACITY {
-            return Err(CommitError::Backpressure);
-        }
+        self.link.check_room()?;
         self.limits.outputs(plan.global_outputs())?;
         self.fade_room(&delta)?;
         plan.verify_fades(self.base().map(|p| &**p), &delta)
@@ -3172,7 +3037,7 @@ impl Editor {
         {
             return Err(ScheduleError::ResolutionTooCoarse { to, sink });
         }
-        self.commands.send(self.sent, at, to, kind)
+        self.link.schedule(at, to, kind)
     }
 
     /// Takes back scheduled command `id`, if it has not landed — freeing its
@@ -3190,7 +3055,7 @@ impl Editor {
         if self.poison_cause().is_some() {
             return Err(ScheduleError::Poisoned);
         }
-        self.commands.cancel(id)
+        self.link.cancel(id)
     }
 
     /// Takes back every command scheduled so far that has not landed.
@@ -3203,18 +3068,16 @@ impl Editor {
         if self.poison_cause().is_some() {
             return Err(ScheduleError::Poisoned);
         }
-        self.commands.cancel_all()
+        self.link.cancel_all()
     }
 
     /// Scheduled commands sent and not yet delivered.
     pub fn commands_outstanding(&self) -> usize {
-        self.commands.outstanding() as usize
+        self.link.commands_outstanding()
     }
 
-    /// Enqueue, then advance. The push cannot fail: at most `out` boxes sit in
-    /// a queue of `QUEUE_CAPACITY`, and `out < QUEUE_CAPACITY` was checked.
-    /// Its crossfades take their slots on the fade-return ring here
-    /// (checked by `fade_room`).
+    /// Builds the commit of `plan` and sends it: the caller checked the
+    /// link's room (`check_room`, `fade_room`), so the send cannot fail.
     fn send(
         &mut self,
         plan: Plan,
@@ -3223,85 +3086,29 @@ impl Editor {
         bus_weights: &BusLanes,
     ) {
         self.touch();
-        self.fades_out += starting(&delta);
-        debug_assert!(self.fades_out <= FADE_CAPACITY);
+        let fades = starting(&delta);
         let plan = Arc::new(plan);
-        let (ranges, spec) = (&mut self.param_ranges, &self.spec);
+        let committed = self.committed.as_ref().map(|(spec, _)| spec);
+        let spec = &self.spec;
+        let (ranges, modes_cells) = (&mut self.cells.ranges, &mut self.cells.modes);
         let params = |key: NodeKey, ports: usize, max: usize| {
-            if ports == 0 {
-                ranges.remove(&key);
-                return ParamState::default();
-            }
             let declared = plan.unit(key).map(|u| u.shape.params);
-            // The key's range cells, kept for a unit declaring the same
-            // params (a crossfade keeps the running state, which reads
-            // them); fresh ones, from the spec, for another list.
-            let list = declared.unwrap_or(crate::param::ParamPorts::NONE);
-            let cells = ranges
-                .entry(key)
-                .and_modify(|c| {
-                    if c.declared() != list {
-                        *c = ParamRanges::new(list);
-                    }
-                })
-                .or_insert_with(|| ParamRanges::new(list));
-            for &param in list.as_slice() {
-                cells.store(param, range_of(spec, ParamIn { node: key, param }));
-            }
-            ParamState::new(ports, max, Some(Arc::clone(cells)))
+            ranges.state(key, ports, max, declared, spec)
         };
-        // One cell per weighted lane of the plan, kept across commits for an
-        // edge that stays, and written from the spec.
-        let committed = &self.committed;
-        let lanes: BTreeSet<EdgeId> = plan.sum_lanes.iter().flatten().copied().collect();
-        self.edge_gains.retain(|id, _| lanes.contains(id));
-        let gains: BTreeMap<EdgeId, GainCell> = lanes
-            .into_iter()
-            .map(|id| {
-                // A lane a bus edge made: the fold's static weight, in a cell
-                // of its own that nothing writes and no one is handed.
-                if let Some(&(w, fade)) = bus_weights.get(&id) {
-                    let cell = GainCell::new(w, EdgeGain::DEFAULT_RANGE);
-                    cell.store_fade(fade);
-                    return (id, cell);
-                }
-                let gain = self.spec.gains.get(&id).copied().unwrap_or_default();
-                let cell = self
-                    .edge_gains
-                    .entry(id)
-                    .or_insert_with(|| GainCell::new(gain.base, gain.range));
-                Self::carry_base(committed, id, cell, gain.base);
-                cell.store_range(gain.range);
-                cell.store_fade(gain.fade);
-                (id, cell.clone())
-            })
-            .collect();
-        // A unit's mode cell, kept for a key that stays and written from the
-        // spec: a unit placed now starts steady in the spec's mode.
-        let (mode_cells, spec, max_block) = (
-            &mut self.mode_cells,
-            &self.spec,
-            plan.prepare.max_block().get(),
-        );
-        let modes = |key: NodeKey| {
-            let cell = mode_cells
-                .entry(key)
-                .or_insert_with(|| ModeCell::new(NodeMode::Active, spec.mix(key)));
-            cell.store(spec.mode(key));
-            Self::carry_mix(committed, key, cell, spec.mix(key));
-            cell.store_range(mix_range_of(spec, key));
-            let shape = &plan.unit(key).expect("a placed unit is in its plan").shape;
-            ModeState::new(cell.clone(), shape, max_block)
-        };
+        let gains = self
+            .cells
+            .gains
+            .for_plan(&plan, spec, committed, bus_weights);
+        let modes = |key: NodeKey| modes_cells.state(key, &plan, spec, committed);
         let wake_cells = &self.wakes;
         // A unit handed in whole (`send`'s callers) was never bound: its flag
         // is a fresh one nothing holds.
         let wakes = |key: NodeKey| wake_cells.get(&key).cloned().unwrap_or_default();
-        let taps = std::mem::take(&mut self.pending_taps);
-        let event_taps = std::mem::take(&mut self.pending_event_taps);
-        let meters = std::mem::take(&mut self.pending_meters);
+        let taps = self.taps.take_pending();
+        let event_taps = self.event_taps.take_pending();
+        let meters = self.meters.take_pending();
         let commit = Commit::build(
-            self.sent + 1,
+            self.link.next_seq(),
             Arc::clone(&plan),
             delta,
             units,
@@ -3315,22 +3122,8 @@ impl Editor {
                 meters,
             },
         );
-        // A mix's range is the spec's for every unit the plan keeps, as the
-        // gains' are (a unit placed now has it from `modes`).
-        for (&key, cell) in &self.mode_cells {
-            cell.store_range(mix_range_of(&self.spec, key));
-        }
-        self.param_ranges.retain(|k, _| plan.unit(*k).is_some());
-        self.mode_cells.retain(|k, _| plan.unit(*k).is_some());
-        if self.channels.to_executor.try_push(commit).is_err() {
-            unreachable!("the queue has a free slot for every credit");
-        }
-        self.sent += 1;
-        self.out += 1;
-        // A tap removed since the last commit is left out of this one.
-        for (at, _) in &mut self.ending_taps {
-            at.get_or_insert(self.sent);
-        }
+        self.cells.keep_placed(&plan, &self.spec);
+        self.link.send(commit, fades);
         self.life = Lifecycle::Running(plan);
     }
 }

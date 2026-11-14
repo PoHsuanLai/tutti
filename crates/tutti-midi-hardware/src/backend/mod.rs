@@ -54,7 +54,9 @@ mod platform;
 mod platform;
 
 // The platform's surface: `active`, and the types its OS exports publicly,
-// of which a platform may have none.
+// of which a platform may have none. `active` returns a boxed trait object
+// rather than an `impl Trait` so the return type does not change per platform:
+// a caller stores it in one field.
 #[allow(
     unused_imports,
     reason = "a platform with no public types of its own re-exports only `active`"

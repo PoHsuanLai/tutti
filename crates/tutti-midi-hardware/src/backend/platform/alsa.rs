@@ -4,9 +4,6 @@ use crate::endpoints::MidiEndpoints;
 use crate::error::Error;
 
 /// Returns this platform's MIDI backend.
-///
-/// Returns a boxed trait object rather than an `impl Trait` so the return type
-/// does not change per platform: a caller stores it in one field.
 pub(crate) fn active() -> Box<dyn MidiEndpoints> {
     Box::new(super::alsa::AlsaEndpoints::new())
 }

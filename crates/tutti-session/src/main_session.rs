@@ -195,7 +195,7 @@ impl MainPlugin<'_> {
     /// [`PresetError::Unsupported`] when the plugin has no preset surface;
     /// [`PresetError::Lost`] when it is gone.
     pub fn presets(&self) -> Result<crate::Presets<'_>, PresetError> {
-        crate::Presets::of(&self.hosted.handle, self.main)
+        crate::Presets::of(self.hosted, self.main)
     }
 
     /// The plugin's editor.

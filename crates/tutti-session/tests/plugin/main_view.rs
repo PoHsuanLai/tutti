@@ -232,3 +232,23 @@ fn a_removed_plugin_is_dropped_by_the_main_view_not_by_update() {
     let _ = s.main(main_thread()).update();
     assert_eq!(s.retired_plugins(), 0, "the view's update drops it");
 }
+
+/// **A plugin removed with its editor open has the editor closed** when the
+/// main view empties the graveyard.
+#[test]
+fn a_removed_plugin_has_its_open_editor_closed_by_the_main_view() {
+    let (mut s, node, fake) = session_with_editor();
+    s.main(main_thread())
+        .plugin(node)
+        .unwrap()
+        .editor()
+        .open(&StandInWindow, ContentScale::IDENTITY)
+        .unwrap();
+    s.remove(node).unwrap();
+    assert!(
+        !fake.calls().contains(&Call::CloseEditor),
+        "not before the main view"
+    );
+    let _ = s.main(main_thread()).update();
+    assert!(fake.calls().contains(&Call::CloseEditor));
+}

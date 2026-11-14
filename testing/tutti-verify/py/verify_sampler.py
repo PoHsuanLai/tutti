@@ -1,6 +1,6 @@
 """Independent verification of tutti-sampler output.
 
-Judges WAVs rendered by `examples/render_cases.rs` using scipy/numpy only. The
+Judges WAVs rendered by `src/bin/render_sampler_cases.rs` using scipy/numpy only. The
 expected values are derived here from the case NAME and first principles (an
 octave is 2x, a fifth is 2**(7/12)), never read from the Rust source — the point
 is a second opinion that cannot inherit the implementation's assumptions.

@@ -7,9 +7,9 @@ definitions of what they compute, re-derived with scipy.
 cargo xtask verify-audio                 # renders + judges everything, this included
 # or directly:
 cargo run --locked --release \
-    -p tutti-dsp --example render_dsp_cases -- /tmp/tutti-dsp
+    -p tutti-verify --bin render_dsp_cases -- /tmp/tutti-dsp
 uv run python \
-    crates/tutti-dsp/examples/verify_dsp.py /tmp/tutti-dsp
+    testing/tutti-verify/py/verify_dsp.py /tmp/tutti-dsp
 ```
 
 ## Why this exists

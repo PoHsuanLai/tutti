@@ -19,6 +19,8 @@ members = [
     # Its own member so the contenders it measures stay out of arc-lend's
     # dev-dependencies. Unpublished; nothing depends on it.
     "testing/arc-lend-compare",
+    # The audio cases the Python judges verify (`cargo xtask verify-audio`).
+    "testing/tutti-verify",
     "crates/tutti-engine",
     "crates/tutti-transport",
     "crates/tutti-metering",

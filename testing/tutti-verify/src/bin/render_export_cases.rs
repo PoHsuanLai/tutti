@@ -1,7 +1,7 @@
 //! Render a matrix of export cases to files, for independent analysis.
 //!
 //! The companion to `verify_export.py`, and the export-side counterpart of
-//! `tutti-sampler`'s `examples/render_cases.rs`. Same division of labour: this
+//! `render_sampler_cases.rs`. Same division of labour: this
 //! half only *produces* audio and encodes the case parameters in the filename;
 //! the Python half re-derives what each file should contain from that name and
 //! first principles, and judges it. Nothing here asserts anything, so this
@@ -16,7 +16,7 @@
 //! quality — passband flatness, aliasing rejection — needs a spectral analysis
 //! that a hand-rolled DFT in a test would be reimplementing badly.
 //!
-//! Run: `cargo run --release -p tutti-export --example render_export_cases -- <outdir>`
+//! Run: `cargo run --release -p tutti-verify --bin render_export_cases -- <outdir>`
 
 use tutti_codec::{FlacLevel, Format, Pcm, Quality};
 use tutti_dsp::DitherShape;

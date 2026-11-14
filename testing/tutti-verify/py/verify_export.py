@@ -381,8 +381,9 @@ def check_channels(d):
         else:
             print("ok")
 
-    # A mono graph widened to quad puts its signal in channel 0 and leaves the
-    # rest silent -- NOT four copies, which would add 6 dB on any downmix.
+    # A mono graph widened to quad lands on the front pair (L and R, each at the
+    # source's level) and leaves the surrounds silent: the fold's rule for a
+    # mono source into a 2- or 4-wide layout.
     p = d / "chan_mono_to_quad.wav"
     if p.exists():
         x, rate = load(p)
@@ -390,10 +391,12 @@ def check_channels(d):
         print(f"{'chan_mono_to_quad':28} {x.shape[1]:3d}", end="  ")
         if x.shape[1] != 4:
             print(fail("chan_mono_to_quad", f"{x.shape[1]} channels, expected 4"))
-        elif peaks[0] < 0.4:
-            print(fail("chan_mono_to_quad", f"channel 0 peak {peaks[0]:.3f} -- signal missing"))
-        elif max(peaks[1:]) > 1e-3:
-            print(fail("chan_mono_to_quad", f"extras not silent: {peaks[1:]}"))
+        elif min(peaks[0], peaks[1]) < 0.4:
+            print(fail("chan_mono_to_quad", f"front pair peaks {peaks[:2]} -- signal missing"))
+        elif not np.array_equal(x[:, 0], x[:, 1]):
+            print(fail("chan_mono_to_quad", "L and R differ; both carry the source at gain 1"))
+        elif max(peaks[2:]) > 1e-3:
+            print(fail("chan_mono_to_quad", f"surrounds not silent: {peaks[2:]}"))
         else:
             print(f"ok (peaks {[round(v, 3) for v in peaks]})")
 

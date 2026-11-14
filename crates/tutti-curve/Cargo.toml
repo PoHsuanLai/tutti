@@ -22,5 +22,8 @@ tutti-types = { version = "0.0.1", path = "../tutti-types" }
 # The `Error` derive of the crate's error types.
 thiserror = { workspace = true }
 
+[dev-dependencies]
+tutti-fixtures = { path = "../../testing/tutti-fixtures" }
+
 [package.metadata.docs.rs]
 rustdoc-args = ["--cfg", "docsrs"]

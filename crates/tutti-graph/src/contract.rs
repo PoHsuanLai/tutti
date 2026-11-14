@@ -1240,7 +1240,7 @@ fn transport_for(start: Option<u64>, bs: u64, n: usize) -> (TransportPosition, T
         return (rolling(bs), changes);
     }
     if s < bs + n as u64 {
-        let at = crate::time::Offset::new((s - bs) as usize, Samples(n)).expect("inside");
+        let at = crate::time::Offset::of(Samples(usize::try_from(s - bs).unwrap()), Samples(n));
         changes.push(at, rolling(s)).expect("one change");
     }
     (stopped, changes)

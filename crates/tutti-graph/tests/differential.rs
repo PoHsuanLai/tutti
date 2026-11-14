@@ -750,7 +750,7 @@ fn transport_case(seed: u64, which: usize) -> Result<(), TestCaseError> {
             let mut changes = tutti_graph::TransportChanges::NONE;
             for w in bounds[1..].windows(2) {
                 let to = script.block(w[1] - w[0], &mut rng);
-                let at = tutti_graph::Offset::new(w[0], tutti_types::Samples(n)).expect("inside");
+                let at = tutti_graph::Offset::of(Samples(w[0]), tutti_types::Samples(n));
                 changes.push(at, to).expect("ordered, distinct, few");
             }
             if rng.chance(30) {

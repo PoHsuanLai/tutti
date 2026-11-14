@@ -42,12 +42,11 @@
 
 use crate::support::{EncodeConfig, ExportConfig, RenderConfig};
 
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::codecs::audio::AudioDecoderOptions;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 use tutti_types::Seconds;
 
 use crate::support::render_to_file;
@@ -131,34 +130,41 @@ fn decode(path: &std::path::Path, ext: &str) -> (u32, usize, Vec<f32>) {
     let mut hint = Hint::new();
     hint.with_extension(ext);
 
-    let probed = symphonia::default::get_probe()
-        .format(
+    let mut format = symphonia::default::get_probe()
+        .probe(
             &hint,
             mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
         .expect("probe format");
-    let mut format = probed.format;
-    let track = format.default_track().expect("default track").clone();
+    let track = format
+        .default_track(TrackType::Audio)
+        .expect("default track")
+        .clone();
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .expect("audio parameters")
+        .clone();
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(&params, &AudioDecoderOptions::default().gapless(false))
         .expect("make decoder");
 
-    let rate = track.codec_params.sample_rate.unwrap_or(0);
-    let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(0);
+    let rate = params.sample_rate.unwrap_or(0);
+    let channels = params.channels.as_ref().map_or(0, |c| c.count());
 
     let mut out: Vec<f32> = Vec::new();
-    while let Ok(packet) = format.next_packet() {
-        if packet.track_id() != track.id {
+    let mut interleaved: Vec<f32> = Vec::new();
+    while let Ok(Some(packet)) = format.next_packet() {
+        if packet.track_id != track.id {
             continue;
         }
         match decoder.decode(&packet) {
             Ok(audio) => {
-                let spec = *audio.spec();
-                let mut buf = SampleBuffer::<f32>::new(audio.capacity() as u64, spec);
-                buf.copy_interleaved_ref(audio);
-                out.extend_from_slice(buf.samples());
+                audio.copy_to_vec_interleaved::<f32>(&mut interleaved);
+                out.extend_from_slice(&interleaved);
             }
             Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
             Err(_) => break,
@@ -420,25 +426,36 @@ fn decode_flac_verified(path: &std::path::Path) -> (Vec<f32>, usize, Option<bool
     let mut hint = Hint::new();
     hint.with_extension("flac");
     let mut format = symphonia::default::get_probe()
-        .format(
+        .probe(
             &hint,
             mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
-        .expect("probe format")
-        .format;
-    let track = format.default_track().expect("default track").clone();
+        .expect("probe format");
+    let track = format
+        .default_track(TrackType::Audio)
+        .expect("default track")
+        .clone();
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .expect("audio parameters")
+        .clone();
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions { verify: true })
+        .make_audio_decoder(
+            &params,
+            &AudioDecoderOptions::default().gapless(false).verify(true),
+        )
         .expect("make decoder");
-    let channels = track.codec_params.channels.map_or(0, |c| c.count());
+    let channels = params.channels.as_ref().map_or(0, |c| c.count());
     let mut out = Vec::new();
-    while let Ok(packet) = format.next_packet() {
+    let mut interleaved: Vec<f32> = Vec::new();
+    while let Ok(Some(packet)) = format.next_packet() {
         let audio = decoder.decode(&packet).expect("a valid frame");
-        let mut buf = SampleBuffer::<f32>::new(audio.capacity() as u64, *audio.spec());
-        buf.copy_interleaved_ref(audio);
-        out.extend_from_slice(buf.samples());
+        audio.copy_to_vec_interleaved::<f32>(&mut interleaved);
+        out.extend_from_slice(&interleaved);
     }
     (out, channels, decoder.finalize().verify_ok)
 }

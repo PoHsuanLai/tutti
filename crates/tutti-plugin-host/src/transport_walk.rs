@@ -289,7 +289,7 @@ impl TransportWalk {
                 Source::Predicted(_) => {}
             }
             let frame = at + (p - from);
-            let Some(offset) = Offset::new(p, Samples(call.frames)) else {
+            let Some(offset) = Offset::new(Samples(p), Samples(call.frames)) else {
                 continue;
             };
             let t = call.cx.transport_at(offset);

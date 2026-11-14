@@ -16,20 +16,10 @@ use super::prose::prose;
 use super::{Report, Tree};
 
 /// Directories whose prose cites other projects' files, with the reason.
-const FOREIGN: &[(&str, &str)] = &[
-    (
-        "crates/arc-lend/",
-        "cites the sources of the cells it is measured against",
-    ),
-    (
-        "testing/arc-lend-compare/",
-        "cites the sources of the cells it compares",
-    ),
-    (
-        "crates/tutti-nodes/tests/filters/oracle_biquad.rs",
-        "cites the `biquad` crate it is checked against",
-    ),
-];
+const FOREIGN: &[(&str, &str)] = &[(
+    "crates/tutti-nodes/tests/filters/oracle_biquad.rs",
+    "cites the `biquad` crate it is checked against",
+)];
 
 const ROOTS: [&str; 5] = ["crates", "testing", "xtask", "docs", "vendor"];
 
@@ -177,7 +167,6 @@ mod tests {
     fn foreign_sources_headers_and_code_are_not_read() {
         assert!(
             run(&[
-                ("crates/arc-lend/src/lib.rs", "// `src/cache.rs:159`\n"),
                 (
                     "crates/tutti-nodes/tests/filters/oracle_biquad.rs",
                     "// `coefficients.rs:302`\n"

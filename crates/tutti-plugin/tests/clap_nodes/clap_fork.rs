@@ -1388,7 +1388,7 @@ fn midi_past_the_chunks_capacity_is_counted() {
                     (i % 128) as u8,
                     0xFFFF,
                 );
-                Event::midi(Offset::new(i, Samples(512)).expect("inside"), on)
+                Event::midi(Offset::of(Samples(i), Samples(512)), on)
             })
             .collect()
     };

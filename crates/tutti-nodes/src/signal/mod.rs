@@ -40,7 +40,7 @@ struct PlayWalk {
 impl PlayWalk {
     fn new(cx: &Cx<'_>, len: usize) -> Self {
         let first = cx.play_at(Offset::ZERO);
-        let last = Offset::new(len - 1, cx.env.block_len).unwrap_or(Offset::ZERO);
+        let last = Offset::new(Samples(len - 1), cx.env.block_len).unwrap_or(Offset::ZERO);
         let straight = cx.play_at(last) == first.after(Samples(len - 1));
         Self { first, straight }
     }
@@ -50,7 +50,7 @@ impl PlayWalk {
         if self.straight {
             self.first.after(Samples(i))
         } else {
-            cx.play_at(Offset::new(i, cx.env.block_len).unwrap_or(Offset::ZERO))
+            cx.play_at(Offset::new(Samples(i), cx.env.block_len).unwrap_or(Offset::ZERO))
         }
     }
 

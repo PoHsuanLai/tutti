@@ -562,7 +562,7 @@ impl<'a> Io<'a> {
 
     /// Frame `index` of this block as an [`Offset`], when it is inside it.
     pub fn offset(&self, index: usize) -> Option<Offset> {
-        Offset::new(index, Samples(self.frames))
+        Offset::new(Samples(index), Samples(self.frames))
     }
 }
 

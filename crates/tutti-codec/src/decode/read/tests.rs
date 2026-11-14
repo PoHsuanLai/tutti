@@ -30,8 +30,7 @@ fn bytes_that_are_no_audio_are_an_error() {
 /// demuxers refuse a zero rate themselves, so the track's parameters are.)
 #[test]
 fn a_track_with_no_sample_rate_is_refused() {
-    use symphonia::core::codecs::CodecParameters;
-    let mut params = CodecParameters::new();
+    let mut params = AudioCodecParameters::new();
     assert!(matches!(
         sample_rate_of(&params),
         Err(DecodeError::NoSampleRate)

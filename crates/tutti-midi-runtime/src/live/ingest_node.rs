@@ -379,9 +379,8 @@ impl Device {
     /// starts at `first` and is `block_len` long.
     fn lapse(&mut self, now: Frame, first: Frame, block_len: Samples, staging: &mut Staging<'_>) {
         while let Some((group, ran_out)) = self.sensing.next_lapse(now) {
-            let at = ran_out.since(first).map_or(0, |s| s.get());
-            let at = Offset::new(at.min(block_len.get().saturating_sub(1)), block_len)
-                .unwrap_or(Offset::ZERO);
+            let at = ran_out.since(first).unwrap_or(Samples::ZERO);
+            let at = Offset::new(at, block_len).unwrap_or(Offset::last(block_len));
             self.release(Some(group), at, staging);
         }
     }

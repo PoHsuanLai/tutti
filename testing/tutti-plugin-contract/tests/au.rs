@@ -42,7 +42,6 @@ mod ramped {
     /// A ramped event reaches the unit as sent, and the level moves linearly from
     /// the start value over the duration and holds the end value: `AUComponent.h`,
     /// `AudioUnitParameterEvent`, `kParameterEvent_Ramped`.
-    /// Spec: au.select.AudioUnitScheduleParameters, au.param.event.Ramped
     #[test]
     fn a_ramped_event_moves_the_level_linearly_over_its_duration() {
         let mut a = level_unit();
@@ -76,7 +75,6 @@ mod ramped {
 
     /// A ramp that outlasts its block goes on in the next one, from where the
     /// first left it.
-    /// Spec: au.param.event.Ramped
     #[test]
     fn a_ramp_continues_into_the_next_block() {
         let mut a = level_unit();

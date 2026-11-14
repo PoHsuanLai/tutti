@@ -62,7 +62,7 @@ macro_rules! contract {
             unlisted_parameter_is_none,
             active_write_applied,
             automation_point_offset,
-            automation_points_are_not_ramps,
+            automation_segment_and_step,
             note_at_offset,
             arrival_is_ordered_and_sized,
             transport_reaches_the_plugin,

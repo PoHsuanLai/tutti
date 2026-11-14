@@ -360,14 +360,21 @@ pub fn automation_point_offset<F: Format>() {
     }
 }
 
-/// Two points of one parameter reach the plugin as two points, never as a ramp
-/// between them: the queue's points are values at offsets (`AUComponent.h`
-/// leaves a ramp to a `Ramped` event, with its own duration), so the output
-/// holds the first value until the second point.
+/// A segment between two points moves the parameter linearly and a step jumps:
+/// the points are linear breakpoints. A format that ramps natively receives the
+/// segment as one ramp with its start value, end value, start offset and
+/// length, and the step as a point; a format that takes points receives the
+/// points.
 /// Spec: clap.event.param_value, vst3.IParamValueQueue.getPoint, vst3.IParamValueQueue.getPointCount, au.select.AudioUnitScheduleParameters, au.param.event.Immediate, au.param.event.Ramped
-pub fn automation_points_are_not_ramps<F: Format>() {
+pub fn automation_segment_and_step<F: Format>() {
+    let [(from_at, from), (to_at, to)] = spec::SEGMENT;
+    let step = spec::SEGMENT_STEP;
     let mut a = active_in::<F>(Mode::Level);
-    let points = changes(&[(Param::Level, 8, 0.25), (Param::Level, 40, 0.75)]);
+    let points = changes(&[
+        (Param::Level, from_at, from),
+        (Param::Level, to_at, to),
+        (Param::Level, to_at, step),
+    ]);
     let out = a.render(
         &silence(BLOCK),
         BLOCK,
@@ -375,21 +382,50 @@ pub fn automation_points_are_not_ramps<F: Format>() {
     );
     tutti_plugin_types::Control::flush_edits(a.controller_mut(), &main_thread());
     let t = transcript::<F, _>(a.controller_mut());
-    assert_eq!(t.of(Kind::Ramp).count(), 0, "the host sent a ramp");
     let sent: Vec<(u32, f64)> = t.of(Kind::Param).map(|e| (e.offset, e.value)).collect();
+    let level = Param::Level.id().get();
     match F::PARAM_TIMING {
-        ParamTiming::SampleAccurate => {
-            assert_eq!(sent, [(8, 0.25), (40, 0.75)]);
+        ParamTiming::Ramped => {
+            let ramps: Vec<_> = t
+                .of(Kind::Ramp)
+                .map(|e| {
+                    let r = e.ramp.expect("a ramp carries its span");
+                    (e.offset, e.id, e.value, r.duration, r.end)
+                })
+                .collect();
+            assert_eq!(
+                ramps,
+                [(from_at as u32, level, from, (to_at - from_at) as u32, to)]
+            );
+            assert_eq!(sent, [(to_at as u32, step)], "the step is a point");
             for (i, &v) in out[0].iter().enumerate() {
-                let want = match i {
-                    0..8 => 0.5,
-                    8..40 => 0.25,
-                    _ => 0.75,
+                let i = i as i32;
+                let want = if i < from_at {
+                    0.5
+                } else if i < to_at {
+                    (from + (to - from) * f64::from(i - from_at) / f64::from(to_at - from_at))
+                        as f32
+                } else {
+                    step as f32
                 };
                 assert_eq!(v, want, "frame {i}");
             }
         }
-        ParamTiming::BlockHead => assert_eq!(sent, [(0, 0.75)]),
+        ParamTiming::SampleAccurate => {
+            assert_eq!(t.of(Kind::Ramp).count(), 0, "the host sent a ramp");
+            assert_eq!(
+                sent,
+                [
+                    (from_at as u32, from),
+                    (to_at as u32, to),
+                    (to_at as u32, step)
+                ]
+            );
+        }
+        ParamTiming::BlockHead => {
+            assert_eq!(t.of(Kind::Ramp).count(), 0, "the host sent a ramp");
+            assert_eq!(sent, [(0, step)]);
+        }
     }
 }
 
@@ -450,6 +486,14 @@ pub fn arrival_is_ordered_and_sized<F: Format>() {
         // cannot tell a host that keeps the last point on purpose from one that
         // loses the first by accident. Kept, so a change in either direction is seen.
         ParamTiming::BlockHead => assert_eq!(points, [(0, 0.75)]),
+        ParamTiming::Ramped => {
+            assert!(points.is_empty(), "the segment arrives as a ramp");
+            let ramps: Vec<_> = t
+                .of(Kind::Ramp)
+                .map(|e| (e.offset, e.ramp.map(|r| (r.duration, r.end))))
+                .collect();
+            assert_eq!(ramps, [(3, Some((22, 0.75)))]);
+        }
     }
     assert_eq!(t.of(Kind::NoteOn).count(), 2);
     assert_eq!(t.of(Kind::NoteOff).count(), 1);

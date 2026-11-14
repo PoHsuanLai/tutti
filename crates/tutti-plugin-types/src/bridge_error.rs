@@ -64,15 +64,6 @@ pub enum BridgeError {
         format: &'static str,
     },
 
-    /// The plugin returned a format-defined failure code.
-    #[error("Plugin error at {stage}: code {code:#x}")]
-    FormatCode {
-        /// How far the load got before the plugin refused.
-        stage: LoadStage,
-        /// The format's own result code, rendered in hex.
-        code: i32,
-    },
-
     /// A plugin bundle exists but holds no binary this architecture can load.
     #[error(
         "Could not resolve plugin bundle to a binary: {path}\n  \
@@ -102,13 +93,6 @@ pub enum BridgeError {
          TUTTI_PLUGIN_PROBE=/path/to/plugin-probe"
     )]
     ProbeNotFound,
-
-    /// No catalog entry matches the requested name.
-    #[error("No plugin named {name:?} in catalog")]
-    PluginNotFound {
-        /// The name that was looked up.
-        name: String,
-    },
 
     /// The catalog records this plugin as having brought a scan down.
     ///

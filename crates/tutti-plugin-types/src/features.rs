@@ -186,12 +186,6 @@ impl FeatureReport {
         }
     }
 
-    /// Creates a report in which every capability was probed, with the given
-    /// answers.
-    pub fn all_probed(features: Features) -> Self {
-        Self::new(Features::all(), features)
-    }
-
     /// Returns `Some(answer)` when the loader probed this capability, [`None`]
     /// when it did not.
     ///
@@ -400,14 +394,6 @@ mod tests {
             assert_eq!(r.get(f), None);
             assert!(!r.enabled(f));
         }
-    }
-
-    /// `all_probed` leaves no capability unanswered.
-    #[test]
-    fn all_probed_answers_every_capability() {
-        let r = FeatureReport::all_probed(Features::EDITOR);
-        assert_eq!(r.get(Features::EDITOR), Some(true));
-        assert_eq!(r.get(Features::MIDI_IN), Some(false));
     }
 
     /// Both halves survive the postcard wire the IPC peers speak. A `probed`

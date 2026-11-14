@@ -627,12 +627,6 @@ impl ParameterChanges {
     pub fn queue(&self, param_id: ParamId) -> Option<&ParameterQueue> {
         self.queues.iter().find(|q| q.param_id == param_id)
     }
-
-    /// Returns the queue addressed by `param_id` for mutation, if one has been
-    /// created.
-    pub fn queue_mut(&mut self, param_id: ParamId) -> Option<&mut ParameterQueue> {
-        self.queues.iter_mut().find(|q| q.param_id == param_id)
-    }
 }
 
 #[cfg(all(test, feature = "serde"))]

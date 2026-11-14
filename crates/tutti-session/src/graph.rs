@@ -2054,9 +2054,13 @@ impl Graph {
     ///   input);
     /// - a [`Key`] (or [`NodeKey`]) into a key, or into [`Root`]: **a main
     ///   bus**, channel `c` of the source into channel `c` of the sink. The two
-    ///   must be the same width, and a bus into the root may be narrower than
-    ///   it (it feeds the first channels); a connection never truncates or
-    ///   zero-fills, so a width change is a bus edge;
+    ///   must be the same width. A bus into the root may be narrower than it:
+    ///   it is placed by speaker, on the topology the root was declared with,
+    ///   else on the engine's order for the root's width
+    ///   ([`Fold::to_width`](tutti_types::Fold::to_width)), so a mono source
+    ///   feeds both channels of a stereo root at gain 1.0. A placement that
+    ///   would weight a channel (a centre into a root with none) is refused:
+    ///   a weighted fold is a bus edge. A connection never truncates;
     /// - a [`BusSource`] into a [`BusRef`] (`key.bus_out(i)`,
     ///   `key.bus_in(i)`) or into [`Root`]: **a bus edge**, a fold between two
     ///   declared topologies, lowered at the commit to one weighted lane per
@@ -2251,6 +2255,10 @@ impl Graph {
             Ok::<_, ConnectError>((first, bus.width()))
         };
         let (out_first, out_width) = main(&out_buses, from)?;
+        let out_topology = out_buses
+            .main_bus()
+            .map(|(_, bus)| bus.topology)
+            .ok_or(ConnectError::NoMainBus(from))?;
         match to {
             MainSink::Node(to) => {
                 if from == to {
@@ -2284,9 +2292,43 @@ impl Graph {
                         root_width,
                     });
                 }
-                Ok((0..out_width)
-                    .map(|c| (OutPort::new(from, out_first + c), Root::output(c)))
-                    .collect())
+                if out_width == root_width {
+                    return Ok((0..out_width)
+                        .map(|c| (OutPort::new(from, out_first + c), Root::output(c)))
+                        .collect());
+                }
+                // A narrower bus is placed on the root by speaker: the root's
+                // declared topology, else the engine's order for its width. A
+                // bus that names no speaker is read in the engine's order for
+                // its width, as `Fold::to_width` reads it.
+                let source = tutti_types::ChannelTopology::from(out_topology);
+                let fold = match self.root_topology() {
+                    Some(root) => {
+                        let placed = if source.is_unassigned() {
+                            tutti_types::ChannelTopology::assumed(source.layout()).unwrap_or(source)
+                        } else {
+                            source
+                        };
+                        tutti_types::Fold::between(&placed, root)
+                    }
+                    None => tutti_types::Fold::to_width(
+                        &source,
+                        // The root's width is a `ChannelLayout`'s: every call
+                        // that sizes it takes one.
+                        ChannelLayout::try_from(root_width).expect("a root width fits a layout"),
+                    ),
+                }
+                .map_err(|cause| ConnectError::RootFold { from, cause })?;
+                let mut wires = Vec::new();
+                for c in 0..root_width {
+                    for (k, weight) in fold.contributions(c) {
+                        if weight != 1.0 {
+                            return Err(ConnectError::RootWeighted { from });
+                        }
+                        wires.push((OutPort::new(from, out_first + k), Root::output(c)));
+                    }
+                }
+                Ok(wires)
             }
         }
     }

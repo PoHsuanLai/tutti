@@ -86,9 +86,11 @@ use crate::wake::Wake;
 mod cells;
 mod link;
 mod outlets;
+mod placements;
 use cells::LiveCells;
 use link::Link;
 use outlets::{Closed, Outlets};
+use placements::Placements;
 use tutti_types::{Amplitude, Mix, ParamCell};
 
 /// Why [`Editor::commit`] failed.
@@ -446,25 +448,16 @@ pub struct Editor {
     prepare: Prepare,
     spec: GraphSpec,
     shapes: Shapes,
-    pending: BTreeMap<NodeKey, Box<dyn Node>>,
-    /// The [`Wake`] each key's latest placed unit was prepared with. A commit
-    /// hands the executor a clone with the unit, and a re-prepare hands the
-    /// unit this same one again; the executor's clone is dropped with the
-    /// unit, on the control side.
-    wakes: BTreeMap<NodeKey, Wake>,
-    /// Crossfades for the pending units [`replace`](Self::replace) placed,
-    /// attached to the next commit's delta.
-    fades: BTreeMap<NodeKey, Fade>,
-    /// Keys [`set_latency`](Self::set_latency) changed since the last
-    /// commit: any crossfade running or waiting there is cut by it.
-    latency_cuts: BTreeSet<NodeKey>,
+    /// Each key's record: the unit waiting for the next commit, its wake
+    /// and fork source, the crossfade or latency cut the commit carries,
+    /// whether it is leaving, and its generation count.
+    placements: Placements,
     /// The open taps: each reader's width and end latch.
     taps: Outlets<TapId, TapWriter, TapOpened>,
     /// The open event taps.
     event_taps: Outlets<EventTapId, EventTapWriter, ()>,
     /// The open meters: each one's lane capacity.
     meters: Outlets<MeterId, MeterWriter, usize>,
-    next_gen: BTreeMap<NodeKey, u32>,
     /// Where the compile lifecycle stands: the plan sent last (what the
     /// executor will be running once the queue drains, and what the next
     /// commit is compiled against), a re-prepare between its two commits,
@@ -478,11 +471,6 @@ pub struct Editor {
     committed: Option<(GraphSpec, Shapes)>,
     /// What the executor's host can take.
     limits: Limits,
-    /// Where each forkable node's forks come from, handed over at insert
-    /// (see `src/fork.rs`), with the generation of the unit that handed it
-    /// over. A key without one is not forkable, and neither is one whose
-    /// generation has moved on without a new source (`fork` checks).
-    forks: BTreeMap<NodeKey, (u32, Box<dyn ForkSource>)>,
     /// Events per event slot per block, as the executor was built with: a
     /// fork gets the same.
     event_capacity: usize,
@@ -495,9 +483,6 @@ pub struct Editor {
     /// [`set_edge_gain`](Self::set_edge_gain), [`set_mode`](Self::set_mode)
     /// ...) at once.
     cells: LiveCells,
-    /// Nodes [`remove_declicked`](Self::remove_declicked) is keeping until
-    /// the edges they feed have faded out.
-    leaving: BTreeSet<NodeKey>,
     /// [`revision`](Self::revision): moved by every call that can change
     /// what a reader of the editor sees.
     revision: u64,
@@ -508,9 +493,7 @@ impl std::fmt::Debug for Editor {
         f.debug_struct("Editor")
             .field("link", &self.link)
             .field("prepare", &self.prepare)
-            .field("fades", &self.fades)
-            .field("latency_cuts", &self.latency_cuts)
-            .field("next_gen", &self.next_gen)
+            .field("placements", &self.placements)
             .field("planned", &self.life.plan().is_some())
             .field("committed", &self.committed)
             .field("poisoned", &self.poison_cause())
@@ -1016,22 +999,16 @@ impl Editor {
             prepare,
             spec: GraphSpec::default(),
             shapes: Shapes::new(),
-            pending: BTreeMap::new(),
-            wakes: BTreeMap::new(),
-            fades: BTreeMap::new(),
-            latency_cuts: BTreeSet::new(),
+            placements: Placements::new(),
             taps: Outlets::new(),
             event_taps: Outlets::new(),
             meters: Outlets::new(),
-            next_gen: BTreeMap::new(),
             life: Lifecycle::Unplanned,
             committed: None,
             limits: Limits::NONE,
-            forks: BTreeMap::new(),
             event_capacity: cap,
             fork_health: Vec::new(),
             cells: LiveCells::new(),
-            leaving: BTreeSet::new(),
             revision: 0,
         };
         (editor, Executor::new(prepare, cap, ends, command_rx))
@@ -1421,7 +1398,7 @@ impl Editor {
         // an unforkable unit makes the key unforkable. Only past the checks,
         // so a refused replace changes nothing.
         self.place(key, kind, unit, wake, shape, fork);
-        self.fades.insert(key, fade);
+        self.placements.set_fade(key, fade);
         Ok(controls)
     }
 
@@ -1486,7 +1463,7 @@ impl Editor {
         });
         self.place(key, kind, unit, wake, shape, fork);
         if fits {
-            self.fades.insert(key, fade);
+            self.placements.set_fade(key, fade);
         }
         Ok(controls)
     }
@@ -1503,30 +1480,16 @@ impl Editor {
         fork: Option<Box<dyn ForkSource>>,
     ) {
         self.touch();
-        // A later placement at a key takes an earlier fade back: the fade
-        // was for the unit this one supersedes.
-        self.fades.remove(&key);
-        self.latency_cuts.remove(&key);
-        let generation = {
-            let g = self.next_gen.entry(key).or_insert(0);
-            let this = *g;
-            *g += 1;
-            this
-        };
+        // A later placement at a key takes an earlier fade back (the fade
+        // was for the unit this one supersedes), and a unit that hands no
+        // fork source over makes the key unforkable.
+        let generation = self.placements.place(key, unit, wake, fork);
         let spec = NodeSpec::new(kind, shape.audio_in(), shape.audio_out())
             .with_latency(shape.latency.samples())
             .with_tail(shape.tail);
         self.spec.topology.nodes.insert(key, spec);
         self.spec.generations.insert(key, generation);
         self.shapes.insert(key, shape);
-        self.pending.insert(key, unit);
-        self.wakes.insert(key, wake);
-        // The unit's fork source, or none: a unit that hands none over makes
-        // the key unforkable, even if the one it supersedes was.
-        match fork {
-            Some(fork) => self.forks.insert(key, (generation, fork)),
-            None => self.forks.remove(&key),
-        };
     }
 
     /// Changes `key`'s declared processing latency at runtime — a plugin whose
@@ -1599,8 +1562,7 @@ impl Editor {
         // A hard edit for a crossfade: its two units must share the latency
         // the plan compensates, so a fade running or waiting here is cut by
         // the next commit, and a replace not yet committed lands as a swap.
-        self.fades.remove(&key);
-        self.latency_cuts.insert(key);
+        self.placements.cut_latency(key);
         Ok(())
     }
 
@@ -1886,15 +1848,14 @@ impl Editor {
         while let Some((id, kind)) = self.link.pop_edge_fade() {
             changed |= self.settle_edge(id, kind);
         }
-        if !self.leaving.is_empty() {
-            let gone: Vec<NodeKey> = self
-                .leaving
-                .iter()
-                .copied()
+        let leaving = self.placements.leaving();
+        if !leaving.is_empty() {
+            let gone: Vec<NodeKey> = leaving
+                .into_iter()
                 .filter(|&k| !self.feeds_anything(k))
                 .collect();
             for key in gone {
-                self.leaving.remove(&key);
+                self.placements.stop_leaving(key);
                 self.remove(key);
                 changed = true;
             }
@@ -1979,7 +1940,7 @@ impl Editor {
     /// [`remove_declicked`](Self::remove_declicked) until its output fades.
     #[must_use]
     pub fn is_leaving(&self, key: NodeKey) -> bool {
-        self.leaving.contains(&key)
+        self.placements.is_leaving(key)
     }
 
     /// [`remove`](Self::remove) with the node's output edges faded out
@@ -2052,7 +2013,7 @@ impl Editor {
         for (from, to) in feeds {
             self.spec.set_bus_fade(from, to, EdgeFade::Out);
         }
-        self.leaving.insert(key);
+        self.placements.leave(key);
         false
     }
 
@@ -2455,11 +2416,7 @@ impl Editor {
         self.spec.mixes.remove(&key);
         self.spec.generations.remove(&key);
         self.shapes.remove(&key);
-        self.pending.remove(&key);
-        self.wakes.remove(&key);
-        self.fades.remove(&key);
-        self.latency_cuts.remove(&key);
-        self.forks.remove(&key);
+        self.placements.forget(key);
     }
 
     /// `Err(Poisoned)` once a re-prepare has failed with its units out.
@@ -2509,9 +2466,7 @@ impl Editor {
     /// Where `key`'s forks come from, and the generation of the unit that
     /// handed it over, if it is forkable.
     pub(crate) fn fork_source(&self, key: NodeKey) -> Option<(u32, &dyn ForkSource)> {
-        self.forks
-            .get(&key)
-            .map(|(generation, f)| (*generation, f.as_ref()))
+        self.placements.fork_source(key)
     }
 
     /// Watch `health` for the forked unit at `key` (`Editor::fork` only).
@@ -2620,7 +2575,7 @@ impl Editor {
             .map(|p| p.key)
             .chain(delta.replace.iter().map(|(_, new)| new.key));
         for node in needed {
-            if !self.pending.contains_key(&node) {
+            if !self.placements.has_unit(node) {
                 return Err(CommitError::MissingUnit { node });
             }
         }
@@ -2629,14 +2584,13 @@ impl Editor {
         // `prepare`, which poisons the editor (the uncommitted units are lost
         // with it; nothing has been sent, so the executor keeps running).
         self.touch();
-        let mut pending = std::mem::take(&mut self.pending);
+        let mut pending = self.placements.take_units();
         // The re-prepare restarts every unit from silence, so there is
         // nothing to fade from: a pending replace lands as a plain swap.
-        self.fades.clear();
-        self.latency_cuts.clear();
+        self.placements.clear_fades_and_cuts();
         let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             for (&key, unit) in &mut pending {
-                if let Some(wake) = self.wakes.get(&key) {
+                if let Some(wake) = self.placements.wake(key) {
                     unit.bind_wake(wake.clone());
                 }
                 unit.prepare(&prepare);
@@ -2736,7 +2690,7 @@ impl Editor {
             if !survives {
                 continue;
             }
-            if let Some(wake) = self.wakes.get(&key) {
+            if let Some(wake) = self.placements.wake(key) {
                 unit.bind_wake(wake.clone());
             }
             unit.prepare(&prepare);
@@ -2857,12 +2811,10 @@ impl Editor {
         }
         self.link.check_room()?;
         self.check_spec()?;
-        if self.pending.is_empty()
+        if !self.placements.is_staged()
             && !self.taps.has_pending()
             && !self.event_taps.has_pending()
             && !self.meters.has_pending()
-            && self.fades.is_empty()
-            && self.latency_cuts.is_empty()
             && self.committed.as_ref().is_some_and(|(spec, shapes)| {
                 *shapes == self.shapes && spec.same_but_ranges(&self.spec)
             })
@@ -2893,15 +2845,15 @@ impl Editor {
         delta.fades = delta
             .replace
             .iter()
-            .filter_map(|&(_, new)| self.fades.get(&new.key).map(|&f| (new.key, f)))
+            .filter_map(|&(_, new)| self.placements.fade(new.key).map(|f| (new.key, f)))
             .collect();
         // The keys `set_latency` changed that this delta keeps: their
         // crossfades are cut (see `Delta::cuts`).
         let base = self.life.plan().map(|p| &**p);
         delta.cuts = self
-            .latency_cuts
-            .iter()
-            .filter_map(|&key| {
+            .placements
+            .latency_cuts()
+            .filter_map(|key| {
                 let now = plan.unit(key)?;
                 let was = base?.unit(key)?;
                 (was.generation == now.generation && was.idx == now.idx).then_some(Placement {
@@ -2924,16 +2876,15 @@ impl Editor {
             .collect();
         // Check before taking anything, so a failed commit leaves every
         // pending unit where it was.
-        if let Some(&node) = needed.iter().find(|k| !self.pending.contains_key(k)) {
+        if let Some(&node) = needed.iter().find(|&&k| !self.placements.has_unit(k)) {
             return Err(CommitError::MissingUnit { node });
         }
         self.fade_room(&delta)?;
-        self.latency_cuts.clear();
         let units: BTreeMap<NodeKey, Box<dyn Node>> = needed
             .into_iter()
-            .map(|k| (k, self.pending.remove(&k).expect("checked above")))
+            .map(|k| (k, self.placements.take_unit(k).expect("checked above")))
             .collect();
-        self.fades.clear();
+        self.placements.clear_fades_and_cuts();
         self.send(plan, delta, units, &weights);
         self.sync_ranges();
         self.committed = Some((self.spec.clone(), self.shapes.clone()));
@@ -3100,10 +3051,10 @@ impl Editor {
             .gains
             .for_plan(&plan, spec, committed, bus_weights);
         let modes = |key: NodeKey| modes_cells.state(key, &plan, spec, committed);
-        let wake_cells = &self.wakes;
+        let placements = &self.placements;
         // A unit handed in whole (`send`'s callers) was never bound: its flag
         // is a fresh one nothing holds.
-        let wakes = |key: NodeKey| wake_cells.get(&key).cloned().unwrap_or_default();
+        let wakes = |key: NodeKey| placements.wake(key).cloned().unwrap_or_default();
         let taps = self.taps.take_pending();
         let event_taps = self.event_taps.take_pending();
         let meters = self.meters.take_pending();

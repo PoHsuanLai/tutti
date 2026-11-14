@@ -863,14 +863,11 @@ fn parse(response: &PeResponse) -> Result<PeJson, ResourceFailure> {
 
 /// The data of a reply: JSON, or the bytes of its media type.
 fn decode(resource: &PeResource, response: &PeResponse) -> Result<PeData, ResourceFailure> {
-    match response.header.media_type.as_ref() {
-        Some(media_type) => Ok(PeData::decode_bytes(
-            resource,
-            Some(media_type),
-            &response.body,
-        )?),
-        None => Ok(PeData::decode(resource, &parse(response)?)?),
-    }
+    let data = match response.header.media_type.as_ref() {
+        Some(media_type) => PeData::decode_bytes(resource, Some(media_type), &response.body)?,
+        None => PeData::decode(resource, &parse(response)?)?,
+    };
+    Ok(data.read_header(&response.header.extra)?)
 }
 
 fn read_full(

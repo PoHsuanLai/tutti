@@ -34,10 +34,12 @@
 //! The Resources ride on that: [`PeData`] is the Property Data of a standard Resource
 //! (ResourceList, DeviceInfo, ChannelList, JSONSchema, ModeList, CurrentMode,
 //! ChannelMode, BasicChannelRx and Tx, ProgramList, LocalOn, ExternalSync, AllCtrlList,
-//! ChCtrlList, CtrlMapList), typed; [`ResourceInitiator`] makes checked Get, Set and
+//! ChCtrlList, CtrlMapList, StateList, State), typed; [`ResourceInitiator`] makes checked Get, Set and
 //! Subscribe calls over [`PeInitiator`], walks paginated lists and keeps the data of a
 //! Subscription; [`ResourceResponder`] serves a [`ResourceStore`] and tells subscribers
 //! what changes. [`PartialUpdate`] is a Partial Set or `partial` update, applied to the data.
+//! A device's states are saved with [`ResourceInitiator::get_state`] as a [`SavedState`],
+//! which [`ResourceInitiator::restore_state`] sends back to the device it came from only.
 //!
 //! ```
 //! use tutti_midi_device::{PeHeader, MaxSysexSize, PeRequest, ResourceName};
@@ -129,19 +131,21 @@ pub use reassemble::{
 };
 pub use resource::{
     ActionError, CallError, CallId, CanSet, CcIndex, ChangeKind, ClusterKind, ColumnSource,
-    ConfirmIcon, ConfirmType, Confirmation, CtrlControl, CtrlKind, CtrlRange, CtrlValueKind,
-    CustomResource, DefaultMapNotCc, EntryError, LinkRole, ListedTwice, MAX_LIST_ENTRIES, ModeId,
-    NotVendorName, OpaqueBody, PaginationFault, ParamPath, PeAllCtrlEntry, PeAllCtrlList,
-    PeBankProgram, PeBasicChannelRx, PeBasicChannelTx, PeChCtrlEntry, PeChCtrlList, PeChannel,
-    PeChannelEntry, PeChannelList, PeChannelMode, PeCluster, PeColumn, PeController, PeCtrl,
-    PeCtrlMapEntry, PeCtrlMapList, PeCurrentMode, PeData, PeDataError, PeDataFault, PeDeviceInfo,
-    PeExtensions, PeExternalSync, PeJsonSchema, PeLink, PeLocalOn, PeMidiMode, PeModeEntry,
-    PeModeList, PeOpaque, PeProgramEntry, PeProgramList, PeResource, PeResourceList, PeText,
+    CommonState, ConfirmIcon, ConfirmType, Confirmation, CtrlControl, CtrlKind, CtrlRange,
+    CtrlValueKind, CustomResource, DefaultMapNotCc, EntryError, LinkRole, ListedTwice,
+    MAX_LIST_ENTRIES, ModeId, NotVendorName, OpaqueBody, PaginationFault, ParamPath,
+    PeAllCtrlEntry, PeAllCtrlList, PeBankProgram, PeBasicChannelRx, PeBasicChannelTx,
+    PeChCtrlEntry, PeChCtrlList, PeChannel, PeChannelEntry, PeChannelList, PeChannelMode,
+    PeCluster, PeColumn, PeController, PeCtrl, PeCtrlMapEntry, PeCtrlMapList, PeCurrentMode,
+    PeData, PeDataError, PeDataFault, PeDeviceInfo, PeExtensions, PeExternalSync, PeJsonSchema,
+    PeLink, PeLocalOn, PeMidiMode, PeModeEntry, PeModeList, PeOpaque, PeProgramEntry,
+    PeProgramList, PeResource, PeResourceList, PeState, PeStateEntry, PeStateList, PeText,
     Priority, PublishError, RequestRefused, ResIdUse, ResourceAction, ResourceDefaults,
     ResourceEntry, ResourceEvent, ResourceFailure, ResourceGet, ResourceInitiator,
     ResourceResponder, ResourceSet, ResourceStore, ResourceTarget, ResponderAction, ResponderEvent,
-    ResponderSettings, RoleName, SelectorAction, SetBody, SignificantBits, SimpleAction, StepCount,
-    StoreError, TypeHint, UpdateKind,
+    ResponderSettings, RestoreError, RoleName, SavedState, SelectorAction, SetBody,
+    SignificantBits, SimpleAction, StateId, StateRev, StateSize, StepCount, StoreError, TypeHint,
+    UnixSeconds, UpdateKind, WrongDevice,
 };
 pub use tree::{PE_JSON_MAX_DEPTH, PeDecimal, PeJson, PeJsonError, PeObject};
 pub use value::{PeExtra, PeExtraError};

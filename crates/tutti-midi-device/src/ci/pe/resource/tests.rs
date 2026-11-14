@@ -629,7 +629,7 @@ fn a_resource_without_a_type_is_opaque_json() {
     };
     assert!(opaque.json().unwrap().as_object().is_some());
     let state =
-        PeResource::from_name(&super::super::limits::ResourceName::new("StateList").unwrap());
+        PeResource::from_name(&super::super::limits::ResourceName::new("TuningList").unwrap());
     assert!(matches!(state, PeResource::Unmodelled(_)));
     assert!(matches!(ok(state, "[]"), PeData::Opaque(_)));
     assert!(PeOpaque::new(PeResource::LocalOn, PeJson::Bool(true)).is_none());

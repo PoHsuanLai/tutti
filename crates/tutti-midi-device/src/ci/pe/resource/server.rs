@@ -844,6 +844,7 @@ impl ResourceResponder {
             bytes = PeJson::Array(items).encode();
         }
         reply.media_type = media_type;
+        data.write_header(&mut reply.extra);
         reply.mutual_encoding = (encoding != PeEncoding::Ascii).then_some(encoding);
         let body = encode_body(encoding, &bytes)
             .map_err(|e| refusal(PeStatus::UnsupportedMedia, e.to_string()))?;

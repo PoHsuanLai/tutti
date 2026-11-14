@@ -110,10 +110,13 @@ pub enum PeResource {
     ChCtrlList,
     /// `CtrlMapList`: the named values of a controller (M2-117 §4).
     CtrlMapList,
+    /// `StateList`: the states of the device (M2-111 §2).
+    StateList,
+    /// `State`: one state of the device, to save and to restore (M2-111 §3).
+    State,
     /// A manufacturer-specific Resource.
     Custom(CustomResource),
-    /// A Resource with a name no variant has, for example one of the Device
-    /// State resources (M2-111).
+    /// A Resource with a name no variant has.
     Unmodelled(ResourceName),
 }
 
@@ -128,7 +131,7 @@ pub enum ResIdUse {
     Declared,
 }
 
-const STANDARD: [(PeResource, &str); 15] = [
+const STANDARD: [(PeResource, &str); 17] = [
     (PeResource::ResourceList, "ResourceList"),
     (PeResource::DeviceInfo, "DeviceInfo"),
     (PeResource::ChannelList, "ChannelList"),
@@ -144,6 +147,8 @@ const STANDARD: [(PeResource, &str); 15] = [
     (PeResource::AllCtrlList, "AllCtrlList"),
     (PeResource::ChCtrlList, "ChCtrlList"),
     (PeResource::CtrlMapList, "CtrlMapList"),
+    (PeResource::StateList, "StateList"),
+    (PeResource::State, "State"),
 ];
 
 impl PeResource {
@@ -199,14 +204,16 @@ impl PeResource {
     }
 
     /// How an inquiry for the Resource names an entry. `ProgramList`,
-    /// `ChCtrlList`, `CtrlMapList` and JSONSchema each have a set of entries
+    /// `ChCtrlList`, `CtrlMapList`, JSONSchema and `State` each have a set of entries
     /// and so need a `resId`.
     #[must_use]
     pub fn res_id_use(&self) -> ResIdUse {
         match self {
-            Self::ProgramList | Self::ChCtrlList | Self::CtrlMapList | Self::JsonSchema => {
-                ResIdUse::Required
-            }
+            Self::ProgramList
+            | Self::ChCtrlList
+            | Self::CtrlMapList
+            | Self::JsonSchema
+            | Self::State => ResIdUse::Required,
             Self::Custom(_) | Self::Unmodelled(_) => ResIdUse::Declared,
             _ => ResIdUse::Unused,
         }
@@ -223,7 +230,8 @@ impl PeResource {
             require_res_id: self.res_id_use() == ResIdUse::Required,
         };
         match self {
-            Self::CurrentMode
+            Self::State
+            | Self::CurrentMode
             | Self::BasicChannelRx
             | Self::BasicChannelTx
             | Self::LocalOn

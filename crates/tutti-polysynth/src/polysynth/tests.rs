@@ -8,10 +8,7 @@ use crate::{
 use std::num::NonZeroUsize;
 use tutti_curve::Law;
 use tutti_fixtures::midi;
-use tutti_midi_protocol::{
-    MpeMode, MpeZoneConfig, MpeZones, PitchBendSensitivity, bend_to_signed_f32,
-    velocity_to_unit_f32,
-};
+use tutti_midi_protocol::{bend_to_signed_f32, velocity_to_unit_f32};
 use tutti_midi_protocol::{widen_bend, widen_value, widen_velocity};
 use tutti_types::{Amplitude, Hz, Resonance, Seconds, Spread};
 use tutti_ump::{
@@ -19,22 +16,6 @@ use tutti_ump::{
     U14, Ump, Voice1, Voice2,
 };
 use tutti_ump::{BendValue, ControlValue};
-
-/// MPE's lower zone as RP-053 allows it with no upper zone: master channel 0
-/// and every other channel its member, with the default bend ranges.
-fn lower_zone() -> MpeMode {
-    MpeMode::Zones(
-        MpeZones::new(
-            MpeZoneConfig::lower(
-                MpeZoneConfig::MAX_MEMBERS,
-                PitchBendSensitivity::MPE_MASTER_DEFAULT,
-                PitchBendSensitivity::MPE_MEMBER_DEFAULT,
-            ),
-            None,
-        )
-        .expect("a lower zone alone is a layout"),
-    )
-}
 
 /// A synth driven by hand the way a graph drives it
 /// (`tutti_graph::contract::drive_input`): what these tests queue with
@@ -1056,7 +1037,6 @@ fn test_mpe_per_voice_pitch_bend() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1104,50 +1084,12 @@ fn test_mpe_per_voice_pitch_bend() {
     );
 }
 
-/// **A zone's member bend range is the per-note default** (RP-053): a full
-/// per-note bend on a synth whose zone says 12 semitones sweeps 12 semitones,
-/// not the 48 of a zone with the default member range.
+/// The per-note range is the MPE convention, 48 semitones, until a channel's
+/// RPN 0/7 says otherwise.
 #[test]
-fn a_zones_member_range_sets_the_per_note_bend_range() {
-    let swept = |member_semitones: u8| {
-        let zone = MpeZoneConfig::lower(
-            MpeZoneConfig::MAX_MEMBERS,
-            PitchBendSensitivity::MPE_MASTER_DEFAULT,
-            PitchBendSensitivity::of(member_semitones),
-        )
-        .unwrap();
-        let mut synth = synth(SynthConfig {
-            oscillator: OscillatorType::Sine,
-            mpe: MpeMode::Zones(MpeZones::new(Some(zone), None).unwrap()),
-            ..Default::default()
-        });
-        queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
-        let mut output = [0.0f32; 2];
-        synth.tick(&[], &mut output);
-        let bend = midi::per_note_pitch_bend(MidiChannel::of(1), 60, u32::MAX);
-        queue_midi(&mut synth, &[bend]);
-        synth.tick(&[], &mut output);
-        synth
-            .voices
-            .iter()
-            .find(|v| v.is_active())
-            .unwrap()
-            .per_note_bend()
-            .get()
-    };
-    assert!((swept(12) - 12.0).abs() < 0.01, "{}", swept(12));
-    assert!((swept(48) - 48.0).abs() < 0.01, "{}", swept(48));
-}
-
-/// Without zones the per-note range is the MPE convention, 48 semitones:
-/// single-channel rotation has no member range to name.
-#[test]
-fn without_zones_the_per_note_bend_range_is_48_semitones() {
+fn the_per_note_bend_range_is_48_semitones() {
     let mut synth = synth(SynthConfig {
         oscillator: OscillatorType::Sine,
-        mpe: MpeMode::SingleChannelRotation {
-            channel: MidiChannel::of(1),
-        },
         ..Default::default()
     });
     queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
@@ -1181,7 +1123,6 @@ fn test_midi2_per_note_pitch_bend_addresses_one_voice() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1236,7 +1177,6 @@ fn test_midi2_per_note_management_reset_zeroes_only_addressed_voice() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1302,7 +1242,6 @@ fn test_pitch_7_25_retunes_only_the_addressed_note() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1364,7 +1303,6 @@ fn test_per_note_management_detach_freezes_the_note() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1426,7 +1364,6 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1467,7 +1404,6 @@ fn hand_mpe() -> Hand {
         polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
         oscillator: OscillatorType::Sine,
-        mpe: lower_zone(),
         ..Default::default()
     })
 }
@@ -1601,7 +1537,6 @@ fn test_reset_all_controllers_spares_per_note() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1650,7 +1585,6 @@ fn test_midi2_registered_per_note_controller_brightness_sets_only_addressed_slid
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1716,7 +1650,6 @@ fn test_midi2_per_note_gain_addresses_only_one_voice() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1778,7 +1711,6 @@ fn test_mpe_per_voice_pressure() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1832,7 +1764,6 @@ fn test_mpe_per_voice_slide() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1867,7 +1798,7 @@ fn test_mpe_per_voice_slide() {
 }
 
 #[test]
-fn test_mpe_disabled_global_pitch_bend() {
+fn a_channel_bend_is_the_channels_and_sets_no_per_note_pitch() {
     let mut synth = synth(SynthConfig {
         polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
@@ -1881,7 +1812,7 @@ fn test_mpe_disabled_global_pitch_bend() {
         ..Default::default()
     });
 
-    // MPE is disabled (default) - pitch bend should be global
+    // A channel bend is the channel's: it moves every note on it.
     let note1 = ev_note_on(0, 60, 100);
     let note2 = ev_note_on(0, 64, 100);
     queue_midi(&mut synth, &[note1, note2]);
@@ -1901,7 +1832,7 @@ fn test_mpe_disabled_global_pitch_bend() {
             assert!(wheel.abs() > 0.5, "precondition: the wheel moved");
             assert!(
                 (voice.per_note_bend().get() - wheel).abs() < 0.01,
-                "Non-MPE mode should not set a per-note pitch bend"
+                "a channel bend should not set a per-note pitch bend"
             );
             assert!(voice.tuned().is_none());
         }
@@ -1920,7 +1851,6 @@ fn test_mpe_pressure_affects_amplitude() {
             sustain: Amplitude(1.0),
             release: Seconds(0.1),
         },
-        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -1966,7 +1896,6 @@ fn test_mpe_note_on_resets_expression() {
             sustain: Amplitude(1.0),
             release: Seconds(0.05),
         },
-        mpe: lower_zone(),
         ..Default::default()
     });
 
@@ -2000,114 +1929,6 @@ fn test_mpe_note_on_resets_expression() {
     assert!(
         voice.mpe_state().pressure.get().abs() < 0.01,
         "New note should have reset MPE pressure"
-    );
-}
-
-/// Whether MPE is on must be *askable*.
-///
-/// It was construction-only with no getter, while the per-note setters accept
-/// unconditionally and `apply_mpe_modulation` drops everything at render
-/// time. Since the pitch-bend-sensitivity RPN *is* live either way, a host
-/// could send an MCM, watch sensitivity apply, and reasonably conclude MPE
-/// was on — with no way to find out otherwise.
-#[test]
-fn mpe_is_observable() {
-    let off = PolySynth::new(SynthConfig {
-        mpe: MpeMode::Disabled,
-        ..Default::default()
-    });
-    assert_eq!(off.mpe(), &MpeMode::Disabled);
-
-    let on = PolySynth::new(SynthConfig {
-        mpe: lower_zone(),
-        ..Default::default()
-    });
-    assert_eq!(on.mpe(), &lower_zone());
-}
-
-/// Enabling MPE at runtime reaches voices that are already sounding.
-///
-/// Per-note expression sent while disabled is dropped at render, so the
-/// setter has to affect live voices for a mid-performance enable to mean
-/// anything.
-#[test]
-fn enabling_mpe_applies_to_a_sounding_voice() {
-    let mut synth = Hand::new(PolySynth::new(SynthConfig {
-        polyphony: NonZeroUsize::new(4).unwrap(),
-        oscillator: OscillatorType::Sine,
-        mpe: MpeMode::Disabled,
-        ..Default::default()
-    }));
-
-    let mut output = [0.0f32; 2];
-    queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
-    synth.tick(&[], &mut output);
-    assert_eq!(synth.active_voice_count(), 1);
-
-    synth.set_mpe(lower_zone());
-    assert_eq!(synth.mpe(), &lower_zone());
-    assert!(
-        synth
-            .voices
-            .iter()
-            .find(|v| v.is_active())
-            .unwrap()
-            .mpe_enabled(),
-        "the sounding voice must adopt the new mode, or a mid-performance \
-         enable silently does nothing until the next note"
-    );
-}
-
-/// Disabling MPE clears per-note state rather than merely ignoring it.
-///
-/// The setters store unconditionally, so expression received while disabled
-/// would otherwise sit latent and snap into effect the instant MPE is turned
-/// back on — a sounding note jumping in pitch from a bend it received much
-/// earlier.
-#[test]
-fn disabling_mpe_clears_latent_per_note_state() {
-    let mut synth = Hand::new(PolySynth::new(SynthConfig {
-        polyphony: NonZeroUsize::new(4).unwrap(),
-        oscillator: OscillatorType::Sine,
-        mpe: lower_zone(),
-        ..Default::default()
-    }));
-
-    let mut output = [0.0f32; 2];
-    queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
-    synth.tick(&[], &mut output);
-
-    // Bend the sounding note well off centre.
-    let bend = midi::per_note_pitch_bend(MidiChannel::of(1), 60, u32::MAX);
-    queue_midi(&mut synth, &[bend]);
-    synth.tick(&[], &mut output);
-    assert!(
-        synth
-            .voices
-            .iter()
-            .find(|v| v.is_active())
-            .unwrap()
-            .per_note_bend()
-            .get()
-            .abs()
-            > 0.01,
-        "precondition: the bend applied while MPE was on"
-    );
-
-    synth.set_mpe(MpeMode::Disabled);
-
-    assert!(
-        synth
-            .voices
-            .iter()
-            .find(|v| v.is_active())
-            .unwrap()
-            .per_note_bend()
-            .get()
-            .abs()
-            < 0.01,
-        "per-note state survived being disabled — it would snap back into \
-         effect on the next enable"
     );
 }
 
@@ -2675,7 +2496,6 @@ fn mpe_synth() -> PolySynth {
     PolySynth::new(SynthConfig {
         polyphony: NonZeroUsize::new(4).unwrap(),
         voice_mode: VoiceMode::Poly,
-        mpe: lower_zone(),
         ..Default::default()
     })
 }
@@ -2883,32 +2703,18 @@ fn reset_all_controllers_keeps_the_sound_controllers() {
     assert_eq!(wheel(&s), 0.0);
 }
 
-/// The MPE switch is live: turning it on after construction makes the master
-/// channel's bend reach every channel, and turning it off takes that back.
+/// A channel's bend is its own: the synth holds no MPE zone, so a bend on
+/// channel 0 reaches no other channel (the MPE transform copies a manager's
+/// bend onto each member channel, as that channel's own message).
 #[test]
-fn the_mpe_switch_reaches_the_note_logic_while_the_synth_runs() {
-    let bend = |synth: &mut PolySynth, channel: u8| {
-        synth.apply_midi(ump(Message::Midi2(
-            address(channel),
-            Voice2::PitchBend(BendValue::MAX),
-        )));
-    };
+fn a_channels_bend_reaches_no_other_channel() {
     let mut synth = poly_synth();
-    synth.set_mpe(lower_zone());
-    bend(&mut synth, 0);
-    assert_ne!(synth.bends[5].0, 0.0, "a master bend reaches channel 5");
-    synth.set_mpe(MpeMode::Disabled);
-    bend(&mut synth, 15);
-    assert_ne!(synth.bends[15].0, 0.0, "and its own channel");
-    // Off again, a bend on channel 0 stays on channel 0.
     synth.apply_midi(ump(Message::Midi2(
         address(0),
         Voice2::PitchBend(BendValue::MIN),
     )));
-    assert_ne!(
-        synth.bends[5].0, synth.bends[0].0,
-        "channel 5 keeps the bend it had"
-    );
+    assert_ne!(synth.bends[0].0, 0.0, "channel 0 moved");
+    assert_eq!(synth.bends[5].0, 0.0, "channel 5 did not");
 }
 
 /// Letting go of the sounding key in a mono synth returns to the most recent
@@ -3293,7 +3099,6 @@ fn portamento_on_glides_from_the_previous_key() {
 #[test]
 fn a_per_note_pitch_survives_a_glide() {
     let mut s = steady(|c| {
-        c.mpe = lower_zone();
         c.portamento = Some(PortamentoConfig {
             mode: PortamentoMode::Always,
             curve: Law::Linear,
@@ -3340,7 +3145,7 @@ fn a_per_note_pitch_survives_a_glide() {
 /// per-note controller told the first note is that note's, not the new one's.
 #[test]
 fn a_legato_move_returns_the_voice_to_the_new_keys_own_pitch() {
-    let mut s = steady(|c| c.mpe = lower_zone());
+    let mut s = steady(|_| {});
     let mut out = [0.0f32; 2];
     queue_midi(
         &mut s,

@@ -11,8 +11,13 @@
 //! messages**. A channel pitch bend on a member channel becomes a Per-Note Pitch
 //! Bend addressed to the note that channel holds; channel pressure becomes a
 //! per-note (Poly) Pressure; CC74 becomes an Assignable Per-Note Controller.
-//! Master-channel messages (global) and already-native per-note messages pass
-//! through unchanged. Downstream nodes then only ever see native per-note MIDI-2.
+//! A Manager Channel's messages pass, and the zone-wide ones (pedals, the
+//! panics, Reset All Controllers) and its Pitch Bend and bend range are also
+//! sent on each member channel of its zone, so a receiver that reads one channel
+//! at a time needs no zone. Already-native per-note messages pass through
+//! unchanged. Downstream nodes then only ever see native per-note MIDI-2, and
+//! no zone: this transform is the one place the zones are held, and the one
+//! receiver of the MPE Configuration Message.
 //!
 //! # Where expression state lives
 //!
@@ -25,8 +30,7 @@
 //! per-note messages ahead of the Note On they belong to (which a per-note
 //! receiver, `tutti_voicing::PerNoteState`, starts the note with). A manager's
 //! pressure and CC 74 are combined into each note of its zone (the greater
-//! of the two, `combined`); a manager's bend is the instrument's, summed with
-//! each member's (`tutti_voicing::Voicing`). The transform forgets a note at
+//! of the two, `combined`). The transform forgets a note at
 //! its note-off, and a channel's values when it enters or leaves MPE control.
 //!
 //! # The receive rules are a value
@@ -57,9 +61,23 @@
 //! Pressure on a member channel is not filtered: it cannot be told from a
 //! native per-note pressure message.
 //!
-//! A manager channel's pedals, All Notes Off and Reset All Controllers apply
-//! to the whole zone and a member's to its own channel; the instrument
-//! (`tutti_voicing::Voicing`) applies that, not this transform.
+//! # What a manager's messages become
+//!
+//! A manager channel's Damper and Sostenuto pedals, All Sound Off (where the
+//! rules take it there), All Notes Off and Reset All Controllers apply to the
+//! whole zone (M1-100 section 2.3.1) and a member's to its own channel. The
+//! transform sends each of them on the manager and on every member channel of
+//! its zone; the instrument (`tutti_voicing::Voicing`) reads one channel's
+//! message as that channel's own and holds no zone.
+//!
+//! A manager's Pitch Bend moves every note of its zone (RP-053): it goes on and
+//! is copied onto each member channel as that channel's own Pitch Bend, over a
+//! sensitivity that is the manager's (its Pitch Bend Sensitivity, RPN #00/00, is
+//! copied onto each member likewise, and re-sent when it changes). A member's
+//! own bend is a per-note bend, which a receiver sums with its channel's
+//! (M2-104 section 7.4.13), so a note sounds both, each over its own range. A
+//! member's Reset All Controllers centres the copy with its own wheel, so the
+//! manager's bend is sent to it again after the reset; the sensitivity stays.
 //!
 //! # Changing the zones
 //!
@@ -74,7 +92,8 @@
 //! # Bend ranges
 //!
 //! A pitch-bend sensitivity (RPN #00/00) on the master channel sets the
-//! master channel's own bend range, and passes through. On a member channel
+//! master channel's own bend range, and passes through (and is copied onto each
+//! member channel, which carries the master's bend over it). On a member channel
 //! it sets the range of every member channel's bends (MPE, RP-053 §2.4),
 //! which this transform has just made per-note bends: so it becomes a
 //! per-note bend sensitivity (RPN #00/07, M2-104 §7.4.13) on each of the
@@ -136,8 +155,9 @@ fn send_rpns(
 /// The pitch-bend ranges a zone starts at: a receiver of an MPE Configuration
 /// Message (M1-100 section 2.2.5) or of an enabled MPE Profile (M2-120 section
 /// 3.5) sets them. As this transform's output carries them: RPN #00/00 on the
-/// manager, which passes through as a channel bend range, and RPN #00/07 on
-/// each member, whose bends it makes per-note.
+/// manager, which passes through as a channel bend range, RPN #00/00 on each
+/// member with the manager's, since the manager's bend is copied onto it (the
+/// member's own bend is per-note, over RPN #00/07).
 fn send_zone_defaults(
     zone: &ZoneView,
     group: MidiGroup,
@@ -156,10 +176,35 @@ fn send_zone_defaults(
         group,
         offset,
         zone.member_channels(),
+        Rpn::PITCH_BEND_SENSITIVITY,
+        zone.manager_range.to_rpn_bits(),
+        out,
+    );
+    send_rpns(
+        group,
+        offset,
+        zone.member_channels(),
         Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
         zone.member_range.to_rpn_bits(),
         out,
     );
+}
+
+/// Whether `voice` is one of the messages that affect every sounding note
+/// across a zone's Manager Channel and its Member Channels, and are sent only
+/// on the Manager Channel (M1-100 section 2.3.1): the Damper and Sostenuto
+/// pedals, All Sound Off (which MPE 1.1 prohibits on the Manager Channel and
+/// the Profile takes there: `receive` has dropped it before this asks), Reset
+/// All Controllers and All Notes Off.
+fn zone_wide(voice: &Voice2) -> bool {
+    matches!(voice, Voice2::ControlChange { controller, .. } if [
+        CCNumber::SUSTAIN,
+        CCNumber::SOSTENUTO,
+        CCNumber::ALL_SOUND_OFF,
+        CCNumber::RESET_ALL,
+        CCNumber::ALL_NOTES_OFF,
+    ]
+    .contains(controller))
 }
 
 /// What a receiver does with a message its table has no use for there.
@@ -282,7 +327,9 @@ fn profile_receive(role: Role, voice: &Voice2, mono: bool) -> Receive {
 /// whether or not a note sounds (M1-100 sections 2.2.6 to 2.2.8).
 #[derive(Debug, Clone, Copy, Default)]
 struct Told {
-    /// Pitch Bend, the 32-bit word.
+    /// Pitch Bend, the 32-bit word. A member's own, which its next note starts
+    /// with; a manager's, which every member of its zone carries as its
+    /// channel bend.
     bend: Option<u32>,
     /// Channel Pressure.
     pressure: Option<u32>,
@@ -511,9 +558,23 @@ enum Role {
     Member,
 }
 
-/// A per-note message on `address`, at `offset`.
-fn per_note(address: Address, offset: Offset, voice: Voice2) -> UmpAt {
+/// A MIDI 2.0 message `voice` on `address`, at `offset`.
+fn message(address: Address, offset: Offset, voice: Voice2) -> UmpAt {
     (offset, Ump::from(Message::Midi2(address, voice)))
+}
+
+/// `voice` on each of `members` of `group`, at `offset`: a Manager Channel's
+/// message copied onto its zone.
+fn to_members(
+    group: MidiGroup,
+    members: impl Iterator<Item = MidiChannel>,
+    offset: Offset,
+    voice: Voice2,
+    out: &mut impl FnMut(UmpAt),
+) {
+    for channel in members {
+        out(message(Address { group, channel }, offset, voice));
+    }
 }
 
 impl MpeIngest {
@@ -637,6 +698,8 @@ impl MpeIngest {
     ///   what it was last told (M1-100 sections 2.2.6 to 2.2.8);
     /// - a manager-channel pressure/CC74 passes, and also reaches each note
     ///   its zone holds, combined with the note's own (`combined`);
+    /// - a manager-channel pitch bend, bend sensitivity and zone-wide message
+    ///   (`zone_wide`) pass, and are also sent on each member channel;
     /// - a member-channel bend sensitivity (RPN #00/00) becomes a per-note
     ///   bend sensitivity (RPN #00/07) on each of the zone's member channels;
     /// - an MPE Configuration Message is absorbed, the channels it takes into
@@ -725,18 +788,20 @@ impl MpeIngest {
         self.translate_zoned(event, address, voice, out)
     }
 
-    /// A bend sensitivity (RPN #00/00) that sets the bend range of a zone's
-    /// member channels, as a per-note bend sensitivity (RPN #00/07) on each of
-    /// them, sent through `out`; whether the event is taken (`true`) or still
-    /// goes on (`false`). Anything else sends nothing and goes on.
+    /// A bend sensitivity (RPN #00/00) in a zone, as the messages it sets the
+    /// bend ranges by, sent through `out`; whether the event is taken (`true`)
+    /// or still goes on (`false`). Anything else sends nothing and goes on.
     ///
-    /// Under MPE 1.1 it is a member channel's, taken: the last Pitch Bend
-    /// Sensitivity received on any Member Channel applies to all of them
-    /// (M1-100 section 2.2.5), and the manager's passes through as its own
-    /// range. Under the Profile it is the manager's, which sets the range of
-    /// the manager and every member alike (M2-120 section 3.5), so it fans
-    /// out and goes on as the manager's own; a member's is prohibited and
-    /// ignored by the receive table.
+    /// The manager's is its own range and goes on; it is also each member's
+    /// channel bend range (RPN #00/00 on each member), since the manager's bend
+    /// is copied onto them. Under the Profile it sets the manager and every
+    /// member alike (M2-120 section 3.5), so it is also a per-note bend
+    /// sensitivity (RPN #00/07) on each member. Under MPE 1.1 a member's is
+    /// the range of every member's own bends (M1-100 section 2.2.5, "the last
+    /// Pitch Bend Sensitivity received on any Member Channel applies to all of
+    /// them"), which the transform has made per-note: it is taken, and a
+    /// per-note sensitivity on each member in its place. Under the Profile a
+    /// member's is prohibited and ignored by the receive table.
     fn member_bend_range(
         &self,
         event: &UmpAt,
@@ -753,12 +818,23 @@ impl MpeIngest {
         let Some(zone) = self.groups[address.group.index()].zone_of(address.channel) else {
             return false;
         };
-        let (fans_out, taken) = match (zone.spec, zone.role_of(address.channel)) {
-            (MpeSpec::Mpe11, Role::Member) => (true, true),
-            (MpeSpec::Profile, Role::Master) => (true, false),
-            (MpeSpec::Mpe11, Role::Master) | (MpeSpec::Profile, Role::Member) => (false, false),
+        let role = zone.role_of(address.channel);
+        if role == Role::Master {
+            out(*event);
+            send_rpns(
+                address.group,
+                event.0,
+                zone.member_channels(),
+                Rpn::PITCH_BEND_SENSITIVITY,
+                value.get(),
+                out,
+            );
+        }
+        let per_note = match (zone.spec, role) {
+            (MpeSpec::Mpe11, Role::Member) | (MpeSpec::Profile, Role::Master) => true,
+            (MpeSpec::Mpe11, Role::Master) | (MpeSpec::Profile, Role::Member) => false,
         };
-        if fans_out {
+        if per_note {
             send_rpns(
                 address.group,
                 event.0,
@@ -768,7 +844,8 @@ impl MpeIngest {
                 out,
             );
         }
-        taken
+        // The manager's went on above, ahead of its copies.
+        role == Role::Master || zone.spec == MpeSpec::Mpe11
     }
 
     /// Apply an MPE Configuration Message: it configures the zone whose master
@@ -846,6 +923,21 @@ impl MpeIngest {
         let slot = usize::from(ch.get());
         let manager = state.told[usize::from(master.get())];
         let at = event.0;
+        if role == Role::Master && zone_wide(&voice) {
+            // The Manager Channel's message is the whole zone's: it goes on,
+            // and each member channel is told it too, so a receiver that reads
+            // one channel at a time does the right thing.
+            out(*event);
+            to_members(group, zone.member_channels(), at, voice, out);
+            if matches!(voice, Voice2::ControlChange { controller, .. } if controller == CCNumber::RESET_ALL)
+            {
+                // The reset centres every wheel of the zone, the copies included.
+                for channel in core::iter::once(master).chain(zone.member_channels()) {
+                    state.told[channel.index()].bend = None;
+                }
+            }
+            return None;
+        }
         match voice {
             // M2-104 7.4.2: a MIDI 2.0 Note On at velocity 0 is a Note On, and
             // binds its channel like any other (the translator before this
@@ -864,7 +956,7 @@ impl MpeIngest {
                     // own, summed with the member's).
                     let told = state.told[slot];
                     if let Some(value) = told.bend {
-                        out(per_note(
+                        out(message(
                             address,
                             at,
                             Voice2::PerNotePitchBend {
@@ -874,7 +966,7 @@ impl MpeIngest {
                         ));
                     }
                     if let Some(value) = combined(told.pressure, manager.pressure) {
-                        out(per_note(
+                        out(message(
                             address,
                             at,
                             Voice2::PolyPressure {
@@ -884,7 +976,7 @@ impl MpeIngest {
                         ));
                     }
                     if let Some(value) = combined(told.brightness, manager.brightness) {
-                        out(per_note(address, at, assignable(note, value)));
+                        out(message(address, at, assignable(note, value)));
                     }
                 }
                 // The note itself always flows through unchanged.
@@ -901,14 +993,26 @@ impl MpeIngest {
                 Some(*event)
             }
             Voice2::PitchBend(value) => match role {
-                // Master-channel bend is global: the instrument sums it with
-                // each member's (Appendix C.5), and tracks it with no note
-                // sounding.
-                Role::Master => Some(*event),
+                // Master-channel bend is global (Appendix C.5): it goes on, and
+                // each member channel carries it as its own channel bend, which
+                // a receiver sums with the member's per-note bend (M2-104
+                // section 7.4.13), and tracks with no note sounding.
+                Role::Master => {
+                    state.told[slot].bend = Some(value.get());
+                    out(*event);
+                    to_members(
+                        group,
+                        zone.member_channels(),
+                        at,
+                        Voice2::PitchBend(value),
+                        out,
+                    );
+                    None
+                }
                 Role::Member => {
                     state.told[slot].bend = Some(value.get());
                     let note = state.held.note_on(ch)?;
-                    Some(per_note(
+                    Some(message(
                         address,
                         at,
                         Voice2::PerNotePitchBend { note, value },
@@ -930,7 +1034,7 @@ impl MpeIngest {
                                     group,
                                     channel: member,
                                 };
-                                out(per_note(
+                                out(message(
                                     to,
                                     at,
                                     Voice2::PolyPressure {
@@ -945,7 +1049,7 @@ impl MpeIngest {
                     Role::Member => {
                         let note = state.held.note_on(ch)?;
                         let value = combined(Some(value.get()), manager.pressure)?;
-                        Some(per_note(
+                        Some(message(
                             address,
                             at,
                             Voice2::PolyPressure {
@@ -971,7 +1075,7 @@ impl MpeIngest {
                                     group,
                                     channel: member,
                                 };
-                                out(per_note(to, at, assignable(note, value)));
+                                out(message(to, at, assignable(note, value)));
                             }
                         }
                         Some(*event)
@@ -980,9 +1084,26 @@ impl MpeIngest {
                         let note = state.held.note_on(ch)?;
                         let value = combined(Some(value.get()), manager.brightness)?;
                         // CC74 -> Assignable Per-Note Controller index 74 (the MPE slide).
-                        Some(per_note(address, at, assignable(note, value)))
+                        Some(message(address, at, assignable(note, value)))
                     }
                 }
+            }
+            Voice2::ControlChange { controller, .. }
+                if role == Role::Member && controller == CCNumber::RESET_ALL =>
+            {
+                // The member's wheel is centred, and with it the copy of the
+                // manager's bend it carries: the manager's wheel has not
+                // moved, so it is told again after the reset.
+                state.told[slot].bend = None;
+                out(*event);
+                if let Some(value) = manager.bend {
+                    out(message(
+                        address,
+                        at,
+                        Voice2::PitchBend(BendValue::new(value)),
+                    ));
+                }
+                None
             }
             Voice2::ControlChange { controller, .. } => {
                 // Section 2.2.4.3: a Mode message to the lowest numbered

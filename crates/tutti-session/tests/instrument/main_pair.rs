@@ -5,8 +5,8 @@ use crate::instrument_support::Rig;
 use tutti_graph::{
     Cx, ForkByClone, Instrument, IntoNode, Io, Node, NodeParts, Prepare, Shape, Status,
 };
+use tutti_session::SessionNode;
 use tutti_session::{AddedInstrument, Losses, Root};
-use tutti_session::{SessionInstrument, SessionNode};
 use tutti_types::ChannelLayout;
 
 /// Output `c` is the constant `c + 1`, whatever it is played.
@@ -41,11 +41,6 @@ impl Instrument for Dressed {
     }
 }
 impl SessionNode for Dressed {}
-impl SessionInstrument for Dressed {
-    fn bind_mpe(self, _mode: tutti_midi_protocol::MpeMode) -> Self {
-        self
-    }
-}
 
 #[test]
 fn the_pair_a_node_names_is_the_one_played() {
@@ -94,11 +89,6 @@ fn a_pair_past_the_outputs_is_refused() {
         }
     }
     impl SessionNode for Short {}
-    impl SessionInstrument for Short {
-        fn bind_mpe(self, _mode: tutti_midi_protocol::MpeMode) -> Self {
-            self
-        }
-    }
     let mut session = crate::instrument_support::rig::offline_session();
     match session.add_instrument(Short) {
         Err(tutti_session::Error::NotInstrument {

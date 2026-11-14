@@ -865,7 +865,8 @@ impl Session {
     /// The session's own declarations on `node` go with it: its modulation
     /// ranges, automation and the routes into it (`mods`, feature
     /// `modulation`), and, when it is a clip or live input of the
-    /// session's (`midi`, feature `midi`), that. A clip or live input
+    /// session's (`midi`, feature `midi`), that; a clip's MPE transform goes
+    /// with the clip. A clip or live input
     /// feeding `node` stays, to be re-aimed (`Midi::retarget`) or removed.
     ///
     /// # Errors
@@ -884,20 +885,37 @@ impl Session {
     /// last call, through this session's [`remove`](Self::remove) or the
     /// graph's own: modulation, MIDI routes, the capture of an input.
     fn forget_removed(&mut self) {
-        for node in self.graph.take_removed() {
-            #[cfg(feature = "modulation")]
-            self.mods.own.forget_node(node);
-            #[cfg(feature = "midi")]
-            self.midi_state.forget_node(node);
-            #[cfg(all(feature = "device", feature = "audio-io"))]
-            self.inputs.forget(node);
-            #[cfg(not(any(
-                feature = "modulation",
-                feature = "midi",
-                all(feature = "device", feature = "audio-io")
-            )))]
-            let _ = node;
+        // Until nothing more goes: a clip's transform removed with its clip
+        // is a removal too.
+        loop {
+            let removed = self.graph.take_removed();
+            if removed.is_empty() {
+                break;
+            }
+            for node in removed {
+                self.forget_node(node);
+            }
         }
+    }
+
+    /// What the session holds of `node`, which left the graph, goes.
+    fn forget_node(&mut self, node: NodeKey) {
+        #[cfg(feature = "modulation")]
+        self.mods.own.forget_node(node);
+        #[cfg(feature = "midi")]
+        if let Some(pair) = self.midi_state.forget_node(node) {
+            // A clip and its transform are one wiring: the other goes too
+            // (it is in the graph unless the caller removed it first).
+            let _ = self.graph.remove(pair);
+        }
+        #[cfg(all(feature = "device", feature = "audio-io"))]
+        self.inputs.forget(node);
+        #[cfg(not(any(
+            feature = "modulation",
+            feature = "midi",
+            all(feature = "device", feature = "audio-io")
+        )))]
+        let _ = node;
     }
 
     /// The session's own modulation declarations, read: its routes and

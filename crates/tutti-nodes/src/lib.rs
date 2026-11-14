@@ -336,8 +336,8 @@ mod reconcile;
 pub use reconcile::{Applied, Feed, ModHost, Modulation, ReconcileError, Target};
 mod convolution;
 pub use convolution::{
-    ConvolverNode, IrChannelConfig, generate_room_ir, generate_room_ir_into, generate_test_ir,
-    generate_test_ir_into,
+    ConvolverError, ConvolverNode, IrChannelConfig, generate_room_ir, generate_room_ir_into,
+    generate_test_ir, generate_test_ir_into,
 };
 
 // Test and stimulus nodes (`Const`, `Osc`, `Through`, `Split`, `Sink`): what a

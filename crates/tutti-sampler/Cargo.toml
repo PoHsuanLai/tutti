@@ -71,7 +71,7 @@ tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
 tutti-dsp = { version = "0.0.1", path = "../tutti-dsp", default-features = false }
 
 tracing = "0.1"
-thiserror = "2"
+thiserror = { workspace = true }
 serde = { version = "1", optional = true, features = ["derive"] }
 
 # Lock-free

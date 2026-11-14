@@ -17,12 +17,14 @@ pub enum FoldEnd {
 }
 
 /// Why two topologies cannot be folded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum FoldError {
     /// The topology has no channels.
+    #[error("the {0:?} topology has no channels")]
     Empty(FoldEnd),
     /// Source channel `channel` (speaker `speaker`) has no place in the
     /// destination and no rule folds it elsewhere.
+    #[error("source channel {channel} ({speaker:?}) has no place in the destination")]
     Unplaced {
         /// The source channel index.
         channel: usize,
@@ -31,6 +33,7 @@ pub enum FoldError {
     },
     /// A channel is [`Unknown`](Speaker::Unknown) and the topologies differ, so
     /// nothing can be said about where it goes.
+    #[error("{end:?} channel {channel} has an unknown position")]
     Unnamed {
         /// Which topology holds it.
         end: FoldEnd,
@@ -38,6 +41,7 @@ pub enum FoldError {
         channel: usize,
     },
     /// A speaker appears twice, so which channel feeds it is ambiguous.
+    #[error("{end:?} feeds {speaker:?} from two channels")]
     Duplicate {
         /// Which topology holds it.
         end: FoldEnd,
@@ -47,6 +51,7 @@ pub enum FoldError {
     /// An unassigned side meets another at a different width. The only rule is a
     /// one to one relabelling of equal widths; by index is
     /// [`Fold::by_index`], asked for by name.
+    #[error("cannot fold {src:?} into {dst:?}: unassigned channels only relabel at equal width")]
     Unassigned {
         /// The source width.
         src: ChannelLayout,
@@ -54,8 +59,10 @@ pub enum FoldError {
         dst: ChannelLayout,
     },
     /// [`Fold::assuming_smpte`] was given a width the engine has no order for.
+    #[error("{0:?} has no SMPTE order")]
     NoSmpteOrder(ChannelLayout),
     /// [`Fold::select`] named a channel the source does not have.
+    #[error("channel {channel} is not in a {width:?} source")]
     NoSuchChannel {
         /// The selected channel.
         channel: usize,
@@ -63,9 +70,11 @@ pub enum FoldError {
         width: ChannelLayout,
     },
     /// [`Fold::select`] was given more channels than a width can count.
+    #[error("{0} channels is more than a width can count")]
     TooWide(usize),
     /// A graph root's channels were declared at one width and the root is, or
     /// was asked to be, another: the declaration owns the root's width.
+    #[error("the root is declared {declared:?} wide and cannot be {requested:?}")]
     RootWidth {
         /// The width the root was declared with.
         declared: ChannelLayout,
@@ -73,42 +82,6 @@ pub enum FoldError {
         requested: ChannelLayout,
     },
 }
-
-impl core::fmt::Display for FoldError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Empty(end) => write!(f, "the {end:?} topology has no channels"),
-            Self::Unplaced { channel, speaker } => write!(
-                f,
-                "source channel {channel} ({speaker:?}) has no place in the destination"
-            ),
-            Self::Unnamed { end, channel } => {
-                write!(f, "{end:?} channel {channel} has an unknown position")
-            }
-            Self::Duplicate { end, speaker } => {
-                write!(f, "{end:?} feeds {speaker:?} from two channels")
-            }
-            Self::Unassigned { src, dst } => write!(
-                f,
-                "cannot fold {src:?} into {dst:?}: unassigned channels only relabel at equal width"
-            ),
-            Self::NoSmpteOrder(layout) => write!(f, "{layout:?} has no SMPTE order"),
-            Self::NoSuchChannel { channel, width } => {
-                write!(f, "channel {channel} is not in a {width:?} source")
-            }
-            Self::TooWide(n) => write!(f, "{n} channels is more than a width can count"),
-            Self::RootWidth {
-                declared,
-                requested,
-            } => write!(
-                f,
-                "the root is declared {declared:?} wide and cannot be {requested:?}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for FoldError {}
 
 /// Frames per chunk of the planar group sum's stack scratch.
 const CHUNK: usize = 64;

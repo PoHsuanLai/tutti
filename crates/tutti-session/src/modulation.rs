@@ -300,15 +300,17 @@ pub enum RouteError {
 /// Why the session refused modulation. What it names is in the keys the
 /// declarer used: a host's own (design 015 §4.7), or the reconciler's for the session's own
 /// declarations, which a [`Problem`] puts in terms of nodes and params.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ModRefusal {
     /// The declarations do not apply (doc 014 §8.2). The graph keeps what
     /// the last apply that succeeded built.
+    #[error("{0}")]
     Apply(ReconcileError),
     /// A host passed its declarations ([`ModInput`](crate::ModInput)) while
     /// [`Session::mods_mut`](crate::Session::mods_mut) holds some: a session has one
     /// declarer. Nothing applied.
+    #[error("a host passed its modulation while the session holds its own: one declarer")]
     TwoDeclarers,
 }
 
@@ -370,19 +372,6 @@ impl ModRefusal {
         }
     }
 }
-
-impl std::fmt::Display for ModRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Apply(e) => e.fmt(f),
-            Self::TwoDeclarers => f.write_str(
-                "a host passed its modulation while the session holds its own: one declarer",
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ModRefusal {}
 
 /// The targets of a set of declarations, as `tutti_modulation` takes them, from a
 /// host's ranges and automations: a range and an automation on one target

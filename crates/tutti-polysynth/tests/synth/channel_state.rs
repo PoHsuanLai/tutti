@@ -6,7 +6,7 @@
 //! render. MIDI 1.0 behaviours are cited by section name of the MIDI 1.0
 //! Detailed Specification and of Recommended Practice RP-015.
 
-mod support;
+use crate::support;
 
 use std::num::NonZeroUsize;
 use support::{BLOCK, Hand};

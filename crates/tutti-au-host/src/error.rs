@@ -31,7 +31,7 @@ pub enum AuError {
     // Boxed for the reason `PresetIo` is: two inline `String`s re-open the
     // `result_large_err` hole on an activation's `Result<_, AuError>`.
     #[error("Failed to load AudioUnit {}: {} - {}", .0.component, .0.stage, .0.reason)]
-    LoadFailed(Box<LoadFailedError>),
+    LoadFailed(Box<LoadFailure>),
 
     /// An AudioToolbox call returned a non-zero `OSStatus`. `function` names
     /// the failing call (for diagnostics), and `code` is the raw status.
@@ -169,7 +169,7 @@ pub enum AuError {
     // past clippy's `result_large_err` threshold. A preset diagnostic must not
     // tax the render path's result size.
     #[error("preset file I/O failed for {}: {}", .0.path, .0.message)]
-    PresetIo(Box<PresetFileError>),
+    PresetIo(Box<PresetFileFailure>),
     /// A `.aupreset` file is not a usable preset: not a property list at all, a
     /// plist whose root is not a dictionary, a truncated file, or a dictionary
     /// missing the identity keys a host needs to validate it.
@@ -179,7 +179,7 @@ pub enum AuError {
     /// means the file is broken, that one means the user picked the wrong file.
     // Boxed for the same size reason as `PresetIo`.
     #[error("{} is not a valid .aupreset: {}", .0.path, .0.message)]
-    InvalidPreset(Box<PresetFileError>),
+    InvalidPreset(Box<PresetFileFailure>),
     /// A `.aupreset` file is well-formed but belongs to a **different** AU.
     ///
     /// Refused rather than applied, and this is the variant the whole
@@ -213,7 +213,7 @@ pub enum AuError {
 
 /// The component, phase and cause a [`AuError::LoadFailed`] reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LoadFailedError {
+pub struct LoadFailure {
     /// The component the load was attempted against, as its decoded
     /// `type/subtype/manufacturer` four-char triple.
     pub component: String,
@@ -233,7 +233,7 @@ pub struct LoadFailedError {
 /// than in a field is what lets a caller `match` on it without inspecting a
 /// string.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PresetFileError {
+pub struct PresetFileFailure {
     /// The offending path (or a `<…>` placeholder when the dictionary came from an
     /// AU rather than a file).
     pub path: String,

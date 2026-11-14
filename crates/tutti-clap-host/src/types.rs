@@ -509,7 +509,7 @@ bitflags! {
 /// This host can encode only [`Clap`](Self::Clap) and [`Midi`](Self::Midi);
 /// the other two are recognised when a plugin names them but never sent. See
 /// [`NotePortInfo::dialect_to_send`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NoteDialect {
     /// CLAP native note events.
     Clap,
@@ -610,7 +610,7 @@ impl Color {
 pub use tutti_clap_ffi::AutomationState as ParamAutomationState;
 
 /// Ambisonic channel ordering (Furse-Malham or Ambisonic Channel Number).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AmbisonicOrdering {
     /// Furse-Malham ordering.
     Fuma,
@@ -619,7 +619,7 @@ pub enum AmbisonicOrdering {
 }
 
 /// Ambisonic normalization scheme.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AmbisonicNormalization {
     /// maxN.
     MaxN,

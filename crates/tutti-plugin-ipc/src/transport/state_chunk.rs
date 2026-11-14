@@ -65,11 +65,12 @@ impl Default for Reassembler {
 /// it is serving; the caller maps it to the right typed error for its side.
 ///
 /// Exhaustive: the plugin server maps each cause to its own message.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ChunkError {
     /// A chunk arrived out of order, repeated, or after `last`. The sequence is
     /// not what the sender believes, and reassembling anyway would hand the
     /// plugin a corrupt blob to parse.
+    #[error("state chunk {got} arrived where {expected} was expected")]
     OutOfOrder {
         /// The `seq` that arrived.
         got: u32,
@@ -80,11 +81,13 @@ pub enum ChunkError {
     /// a sequence of them makes no progress: a peer could keep a reader taking
     /// them forever while the byte limit never trips. Refusing
     /// them bounds a sequence by its bytes.
+    #[error("state chunk {seq} is empty and not the last")]
     Empty {
         /// The `seq` of the empty chunk.
         seq: u32,
     },
     /// The accumulated total exceeded [`MAX_STATE_BYTES`].
+    #[error("state is {bytes} bytes, over the {limit}-byte limit")]
     TooLarge {
         /// Total after this chunk — what the state would have been.
         bytes: usize,

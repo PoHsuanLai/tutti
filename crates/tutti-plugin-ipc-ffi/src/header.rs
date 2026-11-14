@@ -173,7 +173,7 @@ pub(crate) const VALIDATE_ORDERING: Ordering = Ordering::Acquire;
 /// Which direction a sequence belongs to. The two arrays are structurally
 /// identical, so an untyped index would make "host writes the server's array" a
 /// silent bug rather than a compile error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Direction {
     /// Host → server. The host publishes, the server checks.
     Input,

@@ -19,7 +19,7 @@
 //! neutral and rides in either.
 
 /// The protocol a list's channel voice messages are in (`MIDIProtocolID`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Wire {
     /// `kMIDIProtocol_1_0`: MIDI 1.0 in universal packets, type `0x2`.
     Midi1,
@@ -103,7 +103,7 @@ pub fn event_list_available() -> bool {
 }
 
 /// What [`EventList::push`] did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[must_use]
 pub enum Pushed {
     /// The packet is in the list.

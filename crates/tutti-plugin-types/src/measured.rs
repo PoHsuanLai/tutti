@@ -64,7 +64,7 @@ pub struct ProbeConfig {
 }
 
 /// Why a figure was not judged.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[non_exhaustive]
 pub enum NotChecked {

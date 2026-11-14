@@ -201,7 +201,7 @@ impl InstrumentRegion {
     /// The start address offset, in frames. Signed, a relative count (SF2 2.04
     /// section 9.3): no unit type covers a count that can be negative.
     #[must_use]
-    pub fn start_address_offset(&self) -> i32 {
+    pub(crate) fn start_address_offset(&self) -> i32 {
         self.address_offset(
             InstrumentGenerator::StartAddressCoarseOffset,
             InstrumentGenerator::StartAddressOffset,
@@ -210,7 +210,7 @@ impl InstrumentRegion {
 
     /// The end address offset, in frames.
     #[must_use]
-    pub fn end_address_offset(&self) -> i32 {
+    pub(crate) fn end_address_offset(&self) -> i32 {
         self.address_offset(
             InstrumentGenerator::EndAddressCoarseOffset,
             InstrumentGenerator::EndAddressOffset,
@@ -219,7 +219,7 @@ impl InstrumentRegion {
 
     /// The loop start address offset, in frames.
     #[must_use]
-    pub fn start_loop_address_offset(&self) -> i32 {
+    pub(crate) fn start_loop_address_offset(&self) -> i32 {
         self.address_offset(
             InstrumentGenerator::StartLoopAddressCoarseOffset,
             InstrumentGenerator::StartLoopAddressOffset,
@@ -228,7 +228,7 @@ impl InstrumentRegion {
 
     /// The loop end address offset, in frames.
     #[must_use]
-    pub fn end_loop_address_offset(&self) -> i32 {
+    pub(crate) fn end_loop_address_offset(&self) -> i32 {
         self.address_offset(
             InstrumentGenerator::EndLoopAddressCoarseOffset,
             InstrumentGenerator::EndLoopAddressOffset,

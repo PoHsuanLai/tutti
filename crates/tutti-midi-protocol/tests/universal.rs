@@ -2,8 +2,8 @@
 //! and the instrument's edge that reassembles, filters by device id and reads.
 
 use tutti_midi_protocol::{
-    Addressed, Addressee, GeneralMidi, Heard, NotSysexDeviceId, Read, Recipient, SysexDeviceId,
-    Universal, UniversalReader, read,
+    Addressed, Addressee, GeneralMidi, Heard, MtcFullMessage, MtcRate, NotSysexDeviceId, Read,
+    Recipient, SysexDeviceId, Universal, UniversalReader, read,
 };
 use tutti_ump::{
     Address, DeviceIdentity, ManufacturerId, Message, MidiChannel, MidiGroup, NoteNumber,
@@ -112,6 +112,49 @@ fn master_fine_and_coarse_tuning_follow_ca25() {
     assert!(matches!(coarse(0), Universal::MasterCoarseTuning(_)));
     assert_eq!(value(coarse(0x40)), 0x40);
     assert_eq!(value(coarse(0x7F)), 0x7F);
+}
+
+/// M1 p.53 and T-9: the MTC Full Message is `F0 7F <id> 01 01 hr mn sc fr F7`
+/// with `hr` as `0rrhhhhh`: the two rate bits sit above the five hour bits.
+#[test]
+fn an_mtc_full_message_reads_its_position_and_rate_code() {
+    let full = |hr, mn, sc, fr| heard(&[0xF0, 0x7F, 0x7F, 0x01, 0x01, hr, mn, sc, fr, 0xF7]);
+    for (code, rate) in [
+        (0u8, MtcRate::Fps24),
+        (1, MtcRate::Fps25),
+        (2, MtcRate::Fps2997Df),
+        (3, MtcRate::Fps30),
+    ] {
+        let a = full(code << 5 | 23, 59, 58, 17);
+        assert_eq!(a.to, Recipient::AllCall);
+        assert_eq!(
+            a.message,
+            Universal::MtcFullMessage(MtcFullMessage::new(rate, 23, 59, 58, 17).unwrap())
+        );
+    }
+}
+
+/// A position no clock reads is not a Full Message: the frame field is below
+/// the rate's label count, and the hours below 24.
+#[test]
+fn an_mtc_full_message_out_of_range_is_unread() {
+    let bytes = |hr, mn, sc, fr| [0xF0, 0x7F, 0x7F, 0x01, 0x01, hr, mn, sc, fr, 0xF7];
+    for (hr, mn, sc, fr) in [
+        (24u8, 0u8, 0u8, 0u8),
+        (0, 60, 0, 0),
+        (0, 0, 60, 0),
+        (0, 0, 0, 24),
+        (1 << 5, 0, 0, 25),
+        (3 << 5, 0, 0, 30),
+    ] {
+        assert_eq!(
+            parse(&bytes(hr, mn, sc, fr)),
+            Read::Unread,
+            "{hr} {mn} {sc} {fr}"
+        );
+    }
+    assert!(MtcFullMessage::new(MtcRate::Fps25, 0, 0, 0, 24).is_some());
+    assert!(MtcFullMessage::new(MtcRate::Fps25, 0, 0, 0, 25).is_none());
 }
 
 /// A message that is not one this crate reads is a typed outcome, never a

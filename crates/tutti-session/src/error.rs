@@ -4,7 +4,7 @@ use thiserror::Error;
 
 /// Why [`Session::open_heard_tap`](crate::Session::open_heard_tap) or
 /// [`Session::close_heard_tap`](crate::Session::close_heard_tap) refused.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Error)]
 #[non_exhaustive]
 pub enum HeardTapError {
     /// The session has no engine, so nothing renders to tap (a detached
@@ -55,7 +55,7 @@ pub enum ScheduleError {
 }
 
 /// The session refused to set the project tempo. Nothing is published.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Error)]
 #[non_exhaustive]
 pub enum TempoError {
     /// The session follows a live tempo (`Midi::follow_tempo`, feature
@@ -298,6 +298,16 @@ pub enum MidiError {
     /// `Midi::unfollow_tempo` with no tempo being followed.
     #[error("the session is not following a tempo")]
     NotFollowing,
+
+    /// `Midi::unfollow_clock` with no clock being followed.
+    #[error("the session is not following a MIDI clock")]
+    NotFollowingClock,
+
+    /// A tempo has one source: `Midi::follow_tempo` and a Beat Clock
+    /// `Midi::follow_clock` each publish the tempo map, so one is refused while
+    /// the other is followed.
+    #[error("another follower already publishes the tempo; unfollow it first")]
+    TempoSourceTaken,
 
     /// The hardware input's routes have one declarer: the session's own
     /// (`Midi::route`, `Midi::set_route_fallback`) or a host's

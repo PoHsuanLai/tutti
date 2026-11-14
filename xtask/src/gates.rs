@@ -14,6 +14,7 @@ mod conformance;
 mod decode_boundary;
 mod doc_features;
 mod doc_refs;
+mod errors;
 mod ffi;
 mod guards;
 mod hosting;
@@ -99,6 +100,8 @@ pub(crate) enum Gate {
     Layout,
     /// `unsafe` lives only in the crates that hold it.
     Ffi,
+    /// Every error type derives `thiserror::Error`.
+    Errors,
     /// Every host callback runs under the panic guard.
     Guards,
     /// Every hosting impl is listed in the plugin contract.
@@ -126,6 +129,7 @@ impl Gate {
             Gate::SubmodulePins => "gate check-submodule-pins".to_owned(),
             Gate::Layout => "gate check-layout".to_owned(),
             Gate::Ffi => "gate check-ffi".to_owned(),
+            Gate::Errors => "gate check-errors".to_owned(),
             Gate::Guards => "gate check-guards".to_owned(),
             Gate::Hosting => "gate check-hosting".to_owned(),
             Gate::Session => "gate check-session".to_owned(),
@@ -149,6 +153,7 @@ impl Gate {
             }
             Gate::Layout => layout::check(&tree, &RealCargo(root.to_path_buf())),
             Gate::Ffi => ffi::check(&tree),
+            Gate::Errors => errors::check(&tree, errors::ALLOW),
             Gate::Guards => guards::check(&tree, guards::MIN_SEEN),
             Gate::Hosting => hosting::check(&tree),
             Gate::Session => session::check(&tree, &RealCargo(root.to_path_buf())),

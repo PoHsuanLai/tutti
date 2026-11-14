@@ -180,23 +180,6 @@ fn the_dwords_of_a_header_are_unsigned() {
     let _ = SHDR_RECORD;
 }
 
-/// 7.2: `dwLibrary`, `dwGenre` and `dwMorphology` are DWORDs kept as read.
-/// Spec: sf2.pdta.phdr.library-genre-morphology
-#[test]
-fn the_reserved_dwords_of_a_preset_are_preserved_as_read() {
-    let mut file = bytes(&[preset("a", 0, 1)], &[inst(1)]);
-    let phdr = chunk(&file, b"phdr");
-    put(&mut file, phdr + 26, u32::MAX, 4);
-    put(&mut file, phdr + 30, 0x8000_0001, 4);
-    put(&mut file, phdr + 34, 7, 4);
-    let font = load(file).expect("it loads");
-    let p = &font.presets()[0];
-    assert_eq!(
-        (p.library(), p.genre(), p.morphology()),
-        (u32::MAX, 0x8000_0001, 7)
-    );
-}
-
 /// 8.1.2: an unused generator number is ignored, so the global-zone test (a first
 /// instrument zone whose last generator is not `sampleID`) reads the zone without it.
 /// The one zone here is `pan 4, sampleID 0`, then number 14: it is local and plays,

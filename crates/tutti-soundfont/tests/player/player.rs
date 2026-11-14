@@ -985,7 +985,7 @@ fn a_per_note_bend_spans_the_per_note_sensitivity() {
                 0,
                 Voice2::PerNotePitchBend {
                     note: tutti_ump::NoteNumber::of(69),
-                    value: BendValue::new(u32::MAX),
+                    value: BendValue::MAX,
                 },
             );
         },

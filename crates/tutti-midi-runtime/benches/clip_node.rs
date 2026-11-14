@@ -10,13 +10,14 @@
 //! block. The executor is built outside the timed region.
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use tutti_fixtures::midi::{note_off, note_on};
+
+use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{Editor, Executor, Prepare, TransportPosition};
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_types::MaxBlock;
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{MidiChannel, Ump};
 
 const FRAMES_PER_BEAT: f64 = 24_000.0;
 const BLOCK: usize = 512;
@@ -31,12 +32,12 @@ fn key(i: u32) -> (MidiChannel, u8) {
 
 fn on(i: u32) -> Ump {
     let (c, n) = key(i);
-    note_on(MidiGroup::FIRST, c, n, 0xFFFF)
+    midi::note_on(c, n, 0xFFFF)
 }
 
 fn off(i: u32) -> Ump {
     let (c, n) = key(i);
-    note_off(MidiGroup::FIRST, c, n, 0)
+    midi::note_off(c, n, 0)
 }
 
 fn dense() -> Vec<TimedMidiEvent> {

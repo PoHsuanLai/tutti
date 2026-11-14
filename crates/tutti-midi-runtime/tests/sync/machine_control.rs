@@ -5,10 +5,10 @@
 //! p.39, the time code of pp.8 and 10 (a drop-frame minute skips two labels)
 //! and the commands of pp.20 to 28.
 
-use tutti_fixtures::midi;
 use tutti_midi_protocol::{MtcRate, Recipient, SysexDeviceId};
 use tutti_midi_runtime::{MachineControlEvent, MachineControlFollower, MachineControlSender};
 use tutti_types::{Frame, SampleRate, Seconds};
+use tutti_ump::{MidiGroup, Sysex7Packets};
 
 const OURS: SysexDeviceId = SysexDeviceId::of(5);
 
@@ -20,7 +20,7 @@ fn feed(
     let mut payload = vec![0x7F, device, 0x06];
     payload.extend_from_slice(commands);
     let mut heard = Vec::new();
-    for ump in midi::sysex7_packets(&payload) {
+    for ump in Sysex7Packets::from_payload(MidiGroup::FIRST, &payload).expect("a 7-bit payload") {
         follower.step(ump, &mut |e| heard.push(e));
     }
     heard

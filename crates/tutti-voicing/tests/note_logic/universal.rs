@@ -82,7 +82,7 @@ fn the_master_tuning_sums_with_the_channels_own_tuning_and_wheel() {
     assert_eq!(on(0), 5.0, "+2 master and +3 channel");
     assert_eq!(on(1), 2.0);
     // A full wheel up on channel 1 spans the default 2 semitones.
-    let bend = step(&mut core, 1, Voice2::PitchBend(BendValue::new(u32::MAX)));
+    let bend = step(&mut core, 1, Voice2::PitchBend(BendValue::MAX));
     assert!((retunes(&bend)[0].1 - 4.0).abs() < 1e-3);
 }
 
@@ -96,7 +96,7 @@ fn the_percussion_channel_is_not_retuned() {
     let r = retunes(&say(&mut core, Addressee::All, COARSE(0x4C)));
     assert_eq!(r.len(), 15);
     assert!(r.iter().all(|&(c, b)| c != 9 && b == 12.0));
-    let bend = step(&mut core, 9, Voice2::PitchBend(BendValue::new(u32::MAX)));
+    let bend = step(&mut core, 9, Voice2::PitchBend(BendValue::MAX));
     assert!((retunes(&bend)[0].1 - 2.0).abs() < 1e-3, "the wheel alone");
 }
 
@@ -161,7 +161,7 @@ fn dirty(core: &mut Voicing, bend_range: u32) {
     step(core, 0, cc(1, 90));
     step(core, 0, cc(10, 0));
     step(core, 0, cc(64, 127));
-    step(core, 0, Voice2::PitchBend(BendValue::new(u32::MAX)));
+    step(core, 0, Voice2::PitchBend(BendValue::MAX));
     step(
         core,
         0,
@@ -210,7 +210,7 @@ fn general_midi_on_mutes_and_returns_every_channel_to_its_defaults() {
     assert_eq!(c.pan(), core.channel(MidiChannel::of(7)).pan());
     // The range is General MIDI's, not the 12 the instrument was built with
     // nor the 24 a message set: a full wheel is 2 semitones.
-    let bend = step(&mut core, 0, Voice2::PitchBend(BendValue::new(u32::MAX)));
+    let bend = step(&mut core, 0, Voice2::PitchBend(BendValue::MAX));
     assert!((retunes(&bend)[0].1 - 2.0).abs() < 1e-3);
     // The pedal is up: a key down and up releases at once.
     step(&mut core, 0, note_on(64));
@@ -219,7 +219,7 @@ fn general_midi_on_mutes_and_returns_every_channel_to_its_defaults() {
         0,
         Voice2::NoteOff {
             note: NoteNumber::of(64),
-            velocity: NoteVelocity::new(0x8000),
+            velocity: NoteVelocity::CENTER,
             attribute: Attribute::None,
         },
     );
@@ -238,7 +238,7 @@ fn general_midi_off_returns_to_the_instruments_own_status() {
         Addressee::All,
         Universal::GeneralMidi(GeneralMidi::Off),
     );
-    let bend = step(&mut core, 0, Voice2::PitchBend(BendValue::new(u32::MAX)));
+    let bend = step(&mut core, 0, Voice2::PitchBend(BendValue::MAX));
     assert!((retunes(&bend)[0].1 - 12.0).abs() < 1e-3);
 }
 

@@ -6,7 +6,6 @@
 
 use tutti_types::MaxBlock;
 
-use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Editor, EventEdge, EventIn, EventOut, ParamIn, ParamRange, Prepare, Renderer, TransportPosition,
@@ -20,7 +19,7 @@ use tutti_types::{
     Beat, BeatsPerCycle, Bpm, CentsSpan, Depth, PhaseIncrement, SampleRate, Samples, Seconds,
     Spread, UnitParam,
 };
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{Message, MidiChannel, NoteNumber, NoteVelocity, Voice2};
 
 const RATE: f64 = 48_000.0;
 const BLOCK: usize = 256;
@@ -91,7 +90,10 @@ fn render_with_knob(synth: PolySynth, drive: Option<Drive>) -> ([Vec<f32>; 2], O
     ));
     let note = TimedMidiEvent::new(
         Beat(0.0),
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
+        Message::midi2(
+            MidiChannel::FIRST,
+            Voice2::note_on(NoteNumber::of(60), NoteVelocity::MAX),
+        ),
     )
     .unwrap();
     ed.insert(NodeKey(1), "clip", MidiClipNode::new([note]));

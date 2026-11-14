@@ -13,6 +13,7 @@ publish = false
 [dependencies]
 tutti-plugin-types = { path = "../../crates/tutti-plugin-types" }
 tutti-fixtures = { path = "../tutti-fixtures", features = ["plugin", "vst3-cpp", "au"] }
+tutti-midi-protocol = { path = "../../crates/tutti-midi-protocol" }
 tutti-ump = { path = "../../crates/tutti-ump", default-features = false }
 tutti-graph = { path = "../../crates/tutti-graph" }
 tutti-clap-host = { path = "../../crates/tutti-clap-host" }

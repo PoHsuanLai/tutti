@@ -51,10 +51,10 @@ use tutti_graph::UmpAt;
 use crate::support::au::Au;
 use tutti_au_host::BusDirection;
 use tutti_au_host::parameters::{self, ParamAddress};
-use tutti_fixtures::midi;
 use tutti_graph::Offset;
 
 use crate::support::corpus;
+use tutti_fixtures::midi;
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
 /// Serializes AU instantiation across these tests.
@@ -212,10 +212,7 @@ fn instrument_render_with_midi_does_not_allocate() {
     let mut au = corpus::DLS_SYNTH.open(tutti_types::SampleRate::SR_48K, BLOCK);
     let mut b = Bufs::new();
 
-    au.send_midi(&[(
-        Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
-    )]);
+    au.send_midi(&[(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0xC000))]);
     for _ in 0..WARMUP {
         b.render(&mut au);
     }
@@ -245,10 +242,7 @@ fn send_midi_decode_does_not_allocate() {
     let mut au = corpus::DLS_SYNTH.open(tutti_types::SampleRate::SR_48K, BLOCK);
     let mut b = Bufs::new();
 
-    au.send_midi(&[(
-        Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
-    )]);
+    au.send_midi(&[(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0xC000))]);
     for _ in 0..WARMUP {
         b.render(&mut au);
     }
@@ -259,35 +253,22 @@ fn send_midi_decode_does_not_allocate() {
             au.send_midi(&[
                 (
                     Offset::ZERO,
-                    midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0xC000),
+                    midi::note_on(MidiChannel::FIRST, note, 0xC000),
                 ),
                 (
                     Offset::ZERO,
-                    midi::cc(
-                        MidiGroup::FIRST,
-                        MidiChannel::FIRST,
-                        CCNumber::VOLUME,
-                        0x4000_0000,
-                    ),
+                    midi::cc(MidiChannel::FIRST, CCNumber::VOLUME, 0x4000_0000),
                 ),
                 (
                     Offset::ZERO,
-                    midi::pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 0x4000_0000),
+                    midi::pitch_bend(MidiChannel::FIRST, 0x4000_0000),
                 ),
                 // No legacy channel-voice form: exercises the skip arm.
                 (
                     Offset::ZERO,
-                    midi::per_note_pitch_bend(
-                        MidiGroup::FIRST,
-                        MidiChannel::FIRST,
-                        note,
-                        0x4000_0000,
-                    ),
+                    midi::per_note_pitch_bend(MidiChannel::FIRST, note, 0x4000_0000),
                 ),
-                (
-                    Offset::ZERO,
-                    midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0),
-                ),
+                (Offset::ZERO, midi::note_off(MidiChannel::FIRST, note, 0)),
             ]);
             b.render(&mut au);
         }

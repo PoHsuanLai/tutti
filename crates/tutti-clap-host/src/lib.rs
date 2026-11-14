@@ -64,7 +64,8 @@
 //! ```rust,no_run
 //! # let main = tutti_plugin_types::MainThread::claim().expect("on the UI thread");
 //! use tutti_graph::Offset;
-//! use tutti_ump::{MidiChannel, MidiGroup};
+//! use tutti_fixtures::midi;
+//! use tutti_ump::{MidiChannel, NoteVelocity};
 //! use tutti_clap_host::{
 //!     AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, TransportInfo,
 //! };
@@ -90,7 +91,7 @@
 //! let mut buffer = AudioBuffer32::new(&inputs, &mut outputs, 48_000.0);
 //!
 //! let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
-//! let midi = [(Offset::ZERO, tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384))];
+//! let midi = [(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 16384))];
 //! processor.process(&mut AudioBufferMut::F32(buffer), &ClapProcessContext {
 //!     midi: &midi,
 //!     transport: Some(&transport),

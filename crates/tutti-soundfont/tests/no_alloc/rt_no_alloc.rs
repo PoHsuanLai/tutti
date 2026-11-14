@@ -28,6 +28,7 @@ use tutti_graph::UmpAt;
 use crate::support::Hand;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
+use tutti_midi_protocol::widen_velocity;
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Polyphony, Settings, SoundFontUnit};
 use tutti_types::Samples;
@@ -61,18 +62,12 @@ fn at(offset: usize) -> Offset {
 }
 
 fn note_on(key: u8, offset: usize) -> UmpAt {
-    let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
-    (
-        at(offset),
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, key, velocity),
-    )
+    let velocity = widen_velocity(U7::of(100)).get(); // 7-bit 100, widened (M2-115)
+    (at(offset), midi::note_on(MidiChannel::FIRST, key, velocity))
 }
 
 fn note_off(key: u8, offset: usize) -> UmpAt {
-    (
-        at(offset),
-        midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, key, 0),
-    )
+    (at(offset), midi::note_off(MidiChannel::FIRST, key, 0))
 }
 
 #[test]
@@ -216,8 +211,8 @@ fn soundfont_every_decoded_message_is_allocation_free() {
     };
     let note = NoteNumber::of(60);
     let ev = |m: Message| Ump::from(m);
-    let m1 = |v| midi::m1(address.channel, v);
-    let m2 = |v| midi::m2(address.channel, v);
+    let m1 = |v| Ump::from(Message::midi1(address.channel, v));
+    let m2 = |v| Ump::from(Message::midi2(address.channel, v));
     let events = [
         m1(Voice1::NoteOn {
             note,
@@ -244,7 +239,7 @@ fn soundfont_every_decoded_message_is_allocation_free() {
         }),
         m2(Voice2::NoteOn {
             note,
-            velocity: NoteVelocity::new(0x8000),
+            velocity: NoteVelocity::CENTER,
             attribute: Attribute::Pitch(60 << 9),
         }),
         // Nonzero, and narrows to 0: floored at 1, not a Note Off.
@@ -381,11 +376,8 @@ fn cc(channel: u8, controller: CCNumber, value: u8) -> Ump {
 }
 
 fn drum(key: u8, offset: usize) -> UmpAt {
-    let velocity = tutti_fixtures::midi::wide_velocity(100); // 7-bit 100, widened (M2-115)
-    (
-        at(offset),
-        midi::note_on(MidiGroup::FIRST, MidiChannel::of(9), key, velocity),
-    )
+    let velocity = widen_velocity(U7::of(100)).get(); // 7-bit 100, widened (M2-115)
+    (at(offset), midi::note_on(MidiChannel::of(9), key, velocity))
 }
 
 /// The note logic's paths allocate nothing: a pool that is full and gives up a
@@ -517,8 +509,7 @@ fn soundfont_mts_is_allocation_free() {
     }
     round.push((
         at(0),
-        midi::registered_rpn(
-            MidiGroup::FIRST,
+        midi::registered(
             MidiChannel::FIRST,
             tutti_ump::Rpn::new(U7::of(0), U7::of(3)),
             1 << 25,

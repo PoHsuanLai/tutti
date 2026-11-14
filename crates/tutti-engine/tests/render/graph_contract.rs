@@ -19,7 +19,7 @@ use tutti_transport::{MotionEvent, Transport};
 use tutti_types::Latency;
 use tutti_types::MaxBlock;
 use tutti_types::{At, Beat, ChannelLayout, Frame, InterleavedMut, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::MidiChannel;
 
 const SR: f64 = 48_000.0;
 /// Frames per beat at the transport's default 120 BPM.
@@ -28,12 +28,7 @@ const FPB: u64 = 24_000;
 const D: usize = 300;
 /// A MIDI 2.0 Note On, key 60, velocity 0xC800, group 0, channel 0.
 fn note_on() -> EventKind {
-    EventKind::Midi(midi::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        0xC800,
-    ))
+    EventKind::Midi(midi::note_on(MidiChannel::FIRST, 60, 0xC800))
 }
 
 /// An engine over a graph of two `Pulse`s — `(direct, pdc)` — whose global

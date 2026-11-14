@@ -24,7 +24,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use common::{Kind, TestNode, prepare};
-use tutti_fixtures::midi::m1_note_on;
+
+use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Buses, CrossfadeCurve, Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Fade, Io, Law,
@@ -32,7 +33,7 @@ use tutti_graph::{
 };
 use tutti_graph::{Edge, FeedbackFrom, InPort, OutPort, Source};
 use tutti_types::{At, Beat, ChannelLayout, Frame, Latency, Samples, Tail};
-use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
+use tutti_ump::{Message, MidiChannel, NoteNumber, U7, Ump, Voice1};
 
 /// Run `exec`'s blocks on a [`common::TestPool`] of `workers` participants
 /// whose every participant runs its share inside `assert_no_alloc` — the
@@ -201,11 +202,7 @@ fn process_is_allocation_free_in_steady_state_on(workers: usize) {
         let kind = if k % 3 == 0 {
             EventKind::Ramp(ParamRamp::foreign(1, 0.5, Samples(16)))
         } else {
-            EventKind::Midi(m1_note_on(
-                MidiChannel::FIRST,
-                NoteNumber::of(60),
-                U7::of(100),
-            ))
+            EventKind::Midi(midi::m1_note_on(MidiChannel::FIRST, 60, U7::of(100)))
         };
         ed.schedule(
             At::Frame(Frame::new(2_000 + k * 700)),
@@ -410,11 +407,7 @@ impl Node for HeldChaser {
     fn reset(&mut self) {}
     fn chase(&self, out: &mut tutti_graph::Chase<'_>) {
         for i in 0..3 {
-            out.push(m1_note_on(
-                MidiChannel::FIRST,
-                NoteNumber::of(60 + i),
-                U7::of(100),
-            ));
+            out.push(midi::m1_note_on(MidiChannel::FIRST, 60 + i, U7::of(100)));
         }
     }
 }
@@ -533,10 +526,9 @@ impl Node for Spray {
                 for i in 0..self.burst {
                     let e = tutti_graph::Event::midi(
                         at,
-                        m1_note_on(
+                        Message::midi1(
                             MidiChannel::FIRST,
-                            NoteNumber::of(60),
-                            U7::of(100 | i as u8),
+                            Voice1::note_on(NoteNumber::of(60), U7::of(100 | i as u8)),
                         ),
                     );
                     if io.event_out(0).push(e).is_err() {
@@ -941,15 +933,14 @@ fn direct_driving_events_does_not_allocate() {
         .map(|k| {
             Event::midi(
                 Offset::of(Samples(k), Samples(64)),
-                m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100)),
+                Message::midi1(
+                    MidiChannel::FIRST,
+                    Voice1::note_on(NoteNumber::of(60), U7::of(100)),
+                ),
             )
         })
         .collect();
-    let note = EventKind::Midi(m1_note_on(
-        MidiChannel::FIRST,
-        NoteNumber::of(60),
-        U7::of(100),
-    ));
+    let note = EventKind::Midi(midi::m1_note_on(MidiChannel::FIRST, 60, U7::of(100)));
     let mut emitter = Direct::new(Emitter::new(Frame::new(70), note), rate, 64);
     emitter.set_transport(rolling);
     assert_no_alloc::assert_no_alloc(|| {
@@ -1711,11 +1702,7 @@ impl Node for Chaser {
         assert_no_alloc::assert_no_alloc(|| {
             for i in 0..STATE {
                 let controller = tutti_ump::CCNumber::of(i);
-                assert!(out.push(tutti_fixtures::midi::m1_cc(
-                    MidiChannel::FIRST,
-                    controller,
-                    U7::of(1)
-                )));
+                assert!(out.push(midi::m1_cc(MidiChannel::FIRST, controller, U7::of(1))));
             }
         });
     }

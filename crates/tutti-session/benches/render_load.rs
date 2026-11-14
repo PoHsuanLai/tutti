@@ -121,7 +121,6 @@ impl Variant {
     }
 }
 
-use tutti_fixtures::midi;
 use tutti_graph::{Cost, Cx, Event, Io, Node, Offset, Prepare, Shape, Status, Unforkable};
 use tutti_nodes::{BusStripNode, ConvolverNode, LimiterControls, LimiterNode};
 use tutti_polysynth::{Adsr, FilterType, OscillatorType, PolySynth, SynthConfig};
@@ -132,7 +131,7 @@ use tutti_types::{
     Amplitude, Beat, Cents, ChannelLayout, Db, Hz, InterleavedMut, MaxBlock, PlaybackRate,
     Resonance, SampleRate, Samples, Seconds,
 };
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{Message, MidiChannel, NoteNumber, NoteVelocity, Ump, Voice2};
 
 const RATE: f64 = 48_000.0;
 const SYNTHS: usize = 8;
@@ -157,13 +156,16 @@ impl Node for Hold {
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, _: &Cx<'_>, mut io: Io<'_>) -> Status {
         if self.sent < self.notes {
-            let note = midi::note_on(
-                MidiGroup::FIRST,
+            let note = Ump::from(Message::midi2(
                 MidiChannel::FIRST,
-                // Spread over four octaves: no two voices share a pitch.
-                self.base + (self.sent as u8 * 3) % 48,
-                0xC000,
-            );
+                Voice2::note_on(
+                    NoteNumber::of(
+                        // Spread over four octaves: no two voices share a pitch.
+                        self.base + (self.sent as u8 * 3) % 48,
+                    ),
+                    NoteVelocity::new(0xC000),
+                ),
+            ));
             let at = Offset::of(Samples(0), Samples(io.frames()));
             if io.event_out(0).push(Event::midi(at, note)).is_ok() {
                 self.sent += 1;

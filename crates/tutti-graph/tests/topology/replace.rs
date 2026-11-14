@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use common::{Kind, TestNode, prepare};
-use tutti_fixtures::midi::m1_note_on;
+
+use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     CommitError, CrossfadeCurve, Cx, Editor, EventIn, EventKind, Executor, Fade, Io, Node, Prepare,
@@ -17,7 +18,7 @@ use tutti_graph::{
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_rt::RtScope;
 use tutti_types::{At, ChannelLayout, Samples};
-use tutti_ump::{MidiChannel, NoteNumber, U7};
+use tutti_ump::{MidiChannel, U7};
 
 const NODE: NodeKey = NodeKey(1);
 
@@ -510,11 +511,7 @@ fn events_go_to_the_incoming_unit_only() {
             port: 0,
         })]);
     ed.commit().expect("commits");
-    let note = EventKind::Midi(m1_note_on(
-        MidiChannel::FIRST,
-        NoteNumber::of(60),
-        U7::of(100),
-    ));
+    let note = EventKind::Midi(midi::m1_note_on(MidiChannel::FIRST, 60, U7::of(100)));
     let mut out = vec![0.0f32; 64];
     let mut block = |exec: &mut Executor| {
         exec.process(64, &TransportPosition::default(), &[], &mut [&mut out[..]]);

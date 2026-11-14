@@ -35,6 +35,10 @@ impl NoteVelocity {
     /// Velocity 0.
     pub const MIN: Self = Self(0);
 
+    /// Velocity `0x8000`, the midpoint of the range: M2-115 section 3 widens a
+    /// MIDI 1.0 velocity of 64 to it.
+    pub const CENTER: Self = Self(0x8000);
+
     /// Velocity `0xFFFF`.
     pub const MAX: Self = Self(u16::MAX);
 

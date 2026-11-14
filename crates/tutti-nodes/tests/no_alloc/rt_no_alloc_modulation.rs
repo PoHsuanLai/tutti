@@ -11,7 +11,7 @@
 //! lanes, and 200 lanes of every layer kind with republishes, knob writes
 //! and range edits between blocks.
 
-use tutti_fixtures::midi::{m1_note_off, m1_note_on};
+use tutti_fixtures::midi;
 use tutti_graph::IntoNode;
 use tutti_graph::ParamNode;
 use tutti_graph::contract::{BlockRig, Direct};
@@ -24,7 +24,7 @@ use tutti_types::{
     BeatsPerCycle, BusTopology, ChannelLayout, Feedback, Hz, PhaseIncrement, SampleRate, Seconds,
     UnitParam,
 };
-use tutti_ump::{MidiChannel, NoteNumber, U7};
+use tutti_ump::{MidiChannel, U7};
 
 /// A node through `BlockRig`: its inputs an alternating signal of
 /// `amplitude`, 32 warm-up blocks, then `blocks` blocks under
@@ -981,10 +981,10 @@ impl tutti_graph::Node for Notes {
         for i in 0..n.get() {
             let (c, v) = (MidiChannel::FIRST, U7::of(100));
             let ump = match (base + i as u64) % self.period {
-                0 => m1_note_on(c, NoteNumber::of(60), v),
-                x if x == q => m1_note_on(c, NoteNumber::of(62), v),
-                x if x == 2 * q => m1_note_off(c, NoteNumber::of(60), U7::of(0)),
-                x if x == 3 * q => m1_note_off(c, NoteNumber::of(62), U7::of(0)),
+                0 => midi::m1_note_on(c, 60, v),
+                x if x == q => midi::m1_note_on(c, 62, v),
+                x if x == 2 * q => midi::m1_note_off(c, 60, U7::of(0)),
+                x if x == 3 * q => midi::m1_note_off(c, 62, U7::of(0)),
                 _ => continue,
             };
             let at = tutti_graph::Offset::of(tutti_types::Samples(i), n);

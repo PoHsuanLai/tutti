@@ -43,8 +43,9 @@ use support::corpus::{
 use tutti_au_host::AuError;
 use tutti_au_host::component::AuType;
 use tutti_au_host::types::K_AUDIO_UNIT_ERR_UNINITIALIZED;
+use tutti_fixtures::midi;
 use tutti_types::Samples;
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, MidiChannel};
 
 /// AudioToolbox tolerates concurrent use of *distinct* units, but component
 /// discovery walks a process-global registry and several tests here open the
@@ -642,15 +643,11 @@ fn channel_counts_are_stable_across_initialize() {
 #[test]
 fn note_on_produces_audio_from_an_instrument() {
     let _g = lock();
-    use tutti_fixtures::midi;
     use tutti_graph::Offset;
 
     for unit in INSTRUMENTS {
         let mut au = unit.open(RATE, BLOCK);
-        au.send_midi(&[(
-            Offset::ZERO,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
-        )]);
+        au.send_midi(&[(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0xC000))]);
 
         // Instruments have no input bus, so render from an empty input.
         let input: Vec<Vec<f32>> = Vec::new();
@@ -680,17 +677,13 @@ fn note_on_produces_audio_from_an_instrument() {
 #[test]
 fn note_off_silences_the_voice() {
     let _g = lock();
-    use tutti_fixtures::midi;
     use tutti_graph::Offset;
 
     let mut au = DLS_SYNTH.open(RATE, BLOCK);
     let input: Vec<Vec<f32>> = Vec::new();
     let channels = au.num_outputs() as usize;
 
-    au.send_midi(&[(
-        Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
-    )]);
+    au.send_midi(&[(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0xC000))]);
     let mut sounding = 0.0f32;
     for _ in 0..10 {
         let mut output = silence(channels, BLOCK as usize);
@@ -702,10 +695,7 @@ fn note_off_silences_the_voice() {
         "the note never sounded, so the note-off assertion would be vacuous"
     );
 
-    au.send_midi(&[(
-        Offset::ZERO,
-        midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-    )]);
+    au.send_midi(&[(Offset::ZERO, midi::note_off(MidiChannel::FIRST, 60, 0))]);
     // The DLS release is a long exponential, not a gate: measured on a quiet
     // machine it is still at ~5.9% of the held peak 60 blocks after the
     // note-off, 1.3% at 120, 0.15% at 240, and 0.002% at 480. So wait 240
@@ -753,23 +743,14 @@ fn note_off_silences_the_voice() {
 #[test]
 fn midi_to_an_effect_is_harmless() {
     let _g = lock();
-    use tutti_fixtures::midi;
     use tutti_graph::Offset;
 
     let mut au = DELAY.open(RATE, BLOCK);
     au.send_midi(&[
+        (Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0xC000)),
         (
             Offset::ZERO,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
-        ),
-        (
-            Offset::ZERO,
-            midi::cc(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                CCNumber::VOLUME,
-                0x4000_0000,
-            ),
+            midi::cc(MidiChannel::FIRST, CCNumber::VOLUME, 0x4000_0000),
         ),
     ]);
 
@@ -786,7 +767,6 @@ fn midi_to_an_effect_is_harmless() {
 #[test]
 fn unrepresentable_midi_is_dropped_not_mangled() {
     let _g = lock();
-    use tutti_fixtures::midi;
     use tutti_graph::Offset;
 
     let mut au = SAMPLER.open(RATE, BLOCK);
@@ -797,12 +777,9 @@ fn unrepresentable_midi_is_dropped_not_mangled() {
     au.send_midi(&[
         (
             Offset::ZERO,
-            midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000_0000),
+            midi::per_note_pitch_bend(MidiChannel::FIRST, 60, 0x4000_0000),
         ),
-        (
-            Offset::ZERO,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xC000),
-        ),
+        (Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0xC000)),
     ]);
 
     let mut loudest = 0.0f32;

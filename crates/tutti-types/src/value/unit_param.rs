@@ -43,7 +43,8 @@ pub enum UnitParam {
     Feedback = 4,
     /// Delay time (beats or seconds — unit-defined).
     DelayTime = 5,
-    /// Modulation rate (Hz).
+    /// Modulation rate (Hz): how fast an LFO cycles. An audio oscillator's
+    /// pitch is [`Frequency`](Self::Frequency).
     Rate = 6,
     /// Modulation depth (0..1).
     Depth = 7,
@@ -140,6 +141,9 @@ pub enum UnitParam {
     /// Delay cross-feedback: how much of each channel's delayed signal feeds the other
     /// channels' lines (`Feedback`), beside its own `Feedback`.
     CrossFeedback = 34,
+    /// An audio oscillator's frequency (Hz): the pitch it sounds. An LFO's
+    /// speed is [`Rate`](Self::Rate).
+    Frequency = 35,
 }
 
 /// The error converting a `u16` that is not a known [`UnitParam`]
@@ -193,6 +197,7 @@ impl TryFrom<u16> for UnitParam {
             32 => Hold,
             33 => Range,
             34 => CrossFeedback,
+            35 => Frequency,
             other => return Err(UnitParamOutOfRange(other)),
         })
     }
@@ -507,6 +512,8 @@ param_keys! {
         CUTOFF = Cutoff;
         /// Modulation rate.
         RATE = Rate;
+        /// An audio oscillator's frequency.
+        FREQUENCY = Frequency;
     }
     Q {
         /// Filter Q.
@@ -674,7 +681,7 @@ mod tests {
         assert_eq!(UnitParam::try_from(26), Ok(UnitParam::Diffusion));
         assert_eq!(UnitParam::try_from(27), Ok(UnitParam::Freeze));
         assert_eq!(UnitParam::try_from(28), Ok(UnitParam::Azimuth));
-        assert_eq!(UnitParam::try_from(35), Err(UnitParamOutOfRange(35)));
+        assert_eq!(UnitParam::try_from(36), Err(UnitParamOutOfRange(36)));
         // Decay's three bands are indices of one kind.
         for (index, packed) in [(0u8, 0x0019u16), (1, 0x0119), (2, 0x0219)] {
             assert_eq!(UnitAddr::new(UnitParam::Decay, index).to_u16(), packed);
@@ -685,7 +692,7 @@ mod tests {
     /// (and is `AudioParam`'s `P`), so this table is the compatibility
     /// record: a renumbered or re-ordered variant fails here by name, which
     /// `u16_round_trips` (any id maps to *some* variant) cannot say.
-    const PINNED: [(UnitParam, u16); 34] = [
+    const PINNED: [(UnitParam, u16); 35] = [
         (UnitParam::Cutoff, 0),
         (UnitParam::Q, 1),
         (UnitParam::GainDb, 2),
@@ -720,6 +727,7 @@ mod tests {
         (UnitParam::Hold, 32),
         (UnitParam::Range, 33),
         (UnitParam::CrossFeedback, 34),
+        (UnitParam::Frequency, 35),
     ];
 
     /// **Index 0 is the plain id**, for every param: the packed form of
@@ -755,7 +763,7 @@ mod tests {
     /// stays the strict, index-free decode.
     #[test]
     fn unknown_kinds_and_indexed_ids_are_refused_by_the_right_decoder() {
-        assert_eq!(UnitAddr::try_from(0x0123), Err(UnitParamOutOfRange(0x0123)));
+        assert_eq!(UnitAddr::try_from(0x0124), Err(UnitParamOutOfRange(0x0124)));
         assert_eq!(UnitAddr::try_from(0x00FF), Err(UnitParamOutOfRange(0x00FF)));
         // 9_999 is 0x270F: kind 15 at index 39, which is a known kind.
         assert_eq!(
@@ -772,8 +780,8 @@ mod tests {
     /// decode looks at).
     #[test]
     fn the_out_of_range_error_names_the_low_byte() {
-        let e = UnitAddr::try_from(0x0123).unwrap_err();
-        assert_eq!(e.to_string(), "unknown UnitParam id: 291 (low byte 35)");
+        let e = UnitAddr::try_from(0x0124).unwrap_err();
+        assert_eq!(e.to_string(), "unknown UnitParam id: 292 (low byte 36)");
     }
 
     /// An address is equal to a bare param only at index 0, in both

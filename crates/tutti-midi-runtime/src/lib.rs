@@ -31,7 +31,7 @@
 //!   the host's outbound path is its own).
 //! - [`ClockMaster`], [`JrClock`] and [`JrStamper`]: engine-produced MIDI *out*
 //!   (Beat Clock, MTC, JR timestamps).
-//! - [`MidiClockDecoder`], [`MtcDecoder`] and [`SmpteTimecode`]: the inbound half of
+//! - [`MidiClockDecoder`] and [`MtcDecoder`]: the inbound half of
 //!   sync (Beat Clock and MTC decoders), beside the master that sends them.
 //! - [`ClockFollower`]: what a transport that follows an outside Beat Clock or MTC does
 //!   (tempo, play, stop, locate, lock), as a pure state machine; the session places it.
@@ -40,7 +40,7 @@
 //!
 //! The MPE zone types (`MpeMode`, `MpeZoneConfig`, ...) are
 //! `tutti-midi-protocol`'s; `MidiIngestNode::with_mpe` takes a `MpeMode` from there.
-//! So is the `SmpteFrameRate` of [`SmpteTimecode`].
+//! So are the `SmpteFrameRate` and the `SmpteTimecode` the decoders assemble.
 //!
 //! ## What it does not own
 //!
@@ -238,6 +238,7 @@ pub use live::{
 pub use outbound::{
     CLOCK_EVENT_CAPACITY, ClockControls, ClockMaster, ClockNode, JR_CLOCK_INTERVAL,
     JR_CLOCK_MAX_INTERVAL, JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream,
+    MachineControlSender,
 };
 pub use output_plan::{
     MAX_OUTPUT_AHEAD, MAX_OUTPUT_LATENCY, OffsetOutOfRange, Outgoing, OutputLatency, OutputOffset,
@@ -248,8 +249,8 @@ pub use schedule::{
     MidiClipNode, TimedHarmony, TimedMidiEvent,
 };
 pub use sync::{
-    ClockEvent, ClockFollower, ClockKind, ClockPosition, ClockTransportState, MidiClockDecoder,
-    MtcDecoder, SmpteTimecode,
+    ClockEvent, ClockFollower, ClockKind, ClockPosition, ClockTransportState, MachineControlEvent,
+    MachineControlFollower, MidiClockDecoder, MtcDecoder,
 };
 pub use tempo_follower::{Followed, TempoFollower, TempoSource};
 pub use traits::MidiOut;

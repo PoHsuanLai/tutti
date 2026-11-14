@@ -654,10 +654,13 @@ impl Session {
                     self.mods.resync(&mut self.graph);
                 }
             }
-            Phase::MidiOut =>
-            {
+            Phase::MidiOut => {
                 #[cfg(feature = "midi")]
-                self.midi_state.midi_out_phase(&mut self.graph, cx.now, out)
+                {
+                    let playhead = self.playhead();
+                    self.midi_state
+                        .midi_out_phase(&mut self.graph, &playhead, cx.now, out)
+                }
             }
             Phase::Plugins =>
             {
@@ -694,11 +697,14 @@ impl Session {
                     let tempo_edited = self.midi_state.follow_phase(&follow, &mut self.graph, out);
                     let (actions, clock_edited) =
                         self.midi_state.clock_phase(&follow, &mut self.graph, out);
-                    if tempo_edited || clock_edited {
+                    let (machine_actions, machine_edited) =
+                        self.midi_state.machine_phase(&follow, &mut self.graph, out);
+                    if tempo_edited || clock_edited || machine_edited {
                         self.commit();
                     }
                     let refused: u64 = actions
                         .into_iter()
+                        .chain(machine_actions)
                         .map(|action| u64::from(!self.send_clock_action(action)))
                         .sum();
                     if refused > 0 {

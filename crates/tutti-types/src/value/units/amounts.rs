@@ -2,11 +2,12 @@ use super::*;
 
 // ── Dimensionless amounts ───────────────────────────────────────────────────
 //
-// Five types (`Amplitude` is in `level`), because the roles differ in both
+// Six types (`Amplitude` is in `level`), because the roles differ in both
 // range and algebra, which is this module's own test for whether two quantities are the same type:
 //
 //   Amplitude  [0, inf)   scalable      a gain multiplier
 //   Mix        [0, 1]     NOT scalable  a blend position between two signals
+//   Pan        [-1, 1]    NOT scalable  a position on the left/right axis
 //   Feedback   [0, 0.99]  NOT scalable  a recirculation coefficient
 //   Depth      [-1, 1]    signed, range-checked (hand-written)
 //   Drive      [0, inf)   NOT scalable  shaper-curve intensity
@@ -62,6 +63,41 @@ impl Mix {
     #[must_use]
     pub fn blend(self, dry: f32, wet: f32) -> f32 {
         dry * (1.0 - self.0) + wet * self.0
+    }
+}
+
+unit! {
+    /// Position on the left/right axis, `-1..1`. `-1` is hard left, `0`
+    /// center, `+1` hard right.
+    ///
+    /// A *position*, like [`Azimuth`] — but on a segment rather than a circle,
+    /// so it saturates at the ends instead of wrapping, and unlike `Azimuth`
+    /// it orders (left really is less than right).
+    ///
+    /// A control a caller sets. The engine's measured left/right balance is
+    /// [`StereoBalance`], a reading; there is no conversion between them.
+    /// Distinct from [`Depth`]: a pan position and a modulation amount are
+    /// different quantities that happen to share a range.
+    pub struct Pan(pub f32): Unit, Ordered, Bounded, Signed;
+}
+// NOT `Scalable`: half of a pan position is not a pan position — the
+// same argument `Mix` makes. Moving a source is `Azimuth::lerp_shortest`'s
+// job on the circle, and interpolation here is a `lerp`, not a `*`.
+// NOT `Additive`: two pan positions do not sum into a third.
+
+impl Pan {
+    /// Hard left.
+    pub const LEFT: Pan = Pan(-1.0);
+    /// Centered — equal in both channels.
+    pub const CENTER: Pan = Pan(0.0);
+    /// Hard right.
+    pub const RIGHT: Pan = Pan(1.0);
+
+    /// Constrain into `-1..=1`.
+    #[inline]
+    #[must_use]
+    pub fn new_clamped(v: f32) -> Pan {
+        Pan(v).clamp(Self::LEFT, Self::RIGHT)
     }
 }
 

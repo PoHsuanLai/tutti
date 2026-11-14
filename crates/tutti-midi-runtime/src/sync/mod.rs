@@ -7,7 +7,7 @@
 //!   whose zero the caller picks; only differences are read) via
 //!   [`MidiClockDecoder::feed`], or call the per-message methods directly.
 //! - [`MtcDecoder`] — **MIDI Time Code** quarter-frames → an assembled
-//!   [`SmpteTimecode`]. Feed each [`Ump`](tutti_ump::Ump) via [`MtcDecoder::feed`].
+//!   `tutti_midi_protocol::SmpteTimecode`. Feed each [`Ump`](tutti_ump::Ump) via [`MtcDecoder::feed`].
 //! - [`ClockFollower`] — reads one outside clock (Beat Clock or MTC) and says what a
 //!   transport that follows it does: tempo, play, stop, locate, lock.
 //!
@@ -17,9 +17,11 @@
 
 mod clock;
 mod follow;
+mod machine_control;
 mod mtc;
 mod period;
 
 pub use clock::{ClockTransportState, MidiClockDecoder};
 pub use follow::{ClockEvent, ClockFollower, ClockKind, ClockPosition};
-pub use mtc::{MtcDecoder, SmpteTimecode};
+pub use machine_control::{MachineControlEvent, MachineControlFollower};
+pub use mtc::MtcDecoder;

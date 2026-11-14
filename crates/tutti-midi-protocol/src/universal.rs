@@ -17,6 +17,9 @@
 //! - Master Fine Tuning and Master Coarse Tuning (CA-025, `04 03` and `04 04`).
 //! - The MTC Full Message (Real Time `01 01`, M1 p.53 and T-9): a whole SMPTE
 //!   position in one message, as [`MtcFullMessage`].
+//! - MIDI Machine Control (RP-013): Real Time `06` commands as [`MmcCommands`]
+//!   and `07` responses as [`MmcFields`], with every command and information
+//!   field of the specification typed ([`MmcCommand`], [`MmcInfoField`]).
 //! - The MIDI Tuning Standard (`08`): [`TuningMessage`], with its
 //!   [frequency data](crate::TuningFrequency). A dump whose checksum does not hold is
 //!   [`Read::BadChecksum`], not `Unread`.
@@ -36,10 +39,13 @@
 //! all ([`Addressee`]). Master Volume and Balance keep the two apart, as M1
 //! p.57 requires (a message on its own id and one on the All Call id are distinct).
 
+mod machine_control;
 mod read;
 
-use crate::smpte::MtcRate;
+use crate::smpte::{MtcRate, SmpteTimecode};
 use crate::tuning::TuningMessage;
+
+pub use machine_control::*;
 
 use tutti_ump::{DeviceIdentity, MidiGroup, SysexAssembler, SysexMessage, SysexStep, U7, U14, Ump};
 
@@ -103,21 +109,26 @@ impl TryFrom<U7> for SysexDeviceId {
     }
 }
 
-/// An MTC Full Message (Real Time `01 01`, M1 p.53 and T-9): one SMPTE position
-/// and its rate, sent in place of Quarter Frames when a generator locates.
-///
-/// The fields are the position's labels, checked against their ranges, so a
-/// value of this type is a position some clock can read.
+/// A time code at a rate that has an MTC code (24, 25, 29.97 drop-frame or 30
+/// frames): the labels `hours:minutes:seconds:frames` checked against their
+/// ranges, so a value of this type is a position some clock can read. It is
+/// what an MTC Full Message and an MMC time code both state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct MtcFullMessage {
+pub struct MtcTimeCode {
     rate: MtcRate,
-    hours: u8,
-    minutes: u8,
-    seconds: u8,
-    frames: u8,
+    timecode: SmpteTimecode,
 }
 
-impl MtcFullMessage {
+impl MtcTimeCode {
+    /// `00:00:00:00` at `rate`.
+    #[must_use]
+    pub const fn origin(rate: MtcRate) -> Self {
+        Self {
+            rate,
+            timecode: SmpteTimecode::origin(rate.frame_rate()),
+        }
+    }
+
     /// The position `hours:minutes:seconds:frames` at `rate`, or `None` when a
     /// field is out of range: hours 0..=23, minutes and seconds 0..=59, frames
     /// below [`MtcRate::labels_per_second`].
@@ -129,16 +140,9 @@ impl MtcFullMessage {
         seconds: u8,
         frames: u8,
     ) -> Option<Self> {
-        if hours < 24 && minutes < 60 && seconds < 60 && frames < rate.labels_per_second() {
-            Some(Self {
-                rate,
-                hours,
-                minutes,
-                seconds,
-                frames,
-            })
-        } else {
-            None
+        match SmpteTimecode::new(hours, minutes, seconds, frames, rate.frame_rate()) {
+            Some(timecode) => Some(Self { rate, timecode }),
+            None => None,
         }
     }
 
@@ -148,28 +152,69 @@ impl MtcFullMessage {
         self.rate
     }
 
+    /// The time code, for counting frames and reading seconds.
+    #[must_use]
+    pub const fn timecode(self) -> SmpteTimecode {
+        self.timecode
+    }
+}
+
+/// An MTC Full Message (Real Time `01 01`, M1 p.53 and T-9): one SMPTE position
+/// and its rate, sent in place of Quarter Frames when a generator locates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MtcFullMessage(MtcTimeCode);
+
+impl MtcFullMessage {
+    /// The message of the position `hours:minutes:seconds:frames` at `rate`, or
+    /// `None` when a field is out of range.
+    #[must_use]
+    pub const fn new(
+        rate: MtcRate,
+        hours: u8,
+        minutes: u8,
+        seconds: u8,
+        frames: u8,
+    ) -> Option<Self> {
+        match MtcTimeCode::new(rate, hours, minutes, seconds, frames) {
+            Some(time) => Some(Self(time)),
+            None => None,
+        }
+    }
+
+    /// The time code the message states.
+    #[must_use]
+    pub const fn time_code(self) -> MtcTimeCode {
+        self.0
+    }
+
+    /// The frame rate.
+    #[must_use]
+    pub const fn rate(self) -> MtcRate {
+        self.0.rate()
+    }
+
     /// Hours, 0..=23.
     #[must_use]
     pub const fn hours(self) -> u8 {
-        self.hours
+        self.0.timecode().hours()
     }
 
     /// Minutes, 0..=59.
     #[must_use]
     pub const fn minutes(self) -> u8 {
-        self.minutes
+        self.0.timecode().minutes()
     }
 
     /// Seconds, 0..=59.
     #[must_use]
     pub const fn seconds(self) -> u8 {
-        self.seconds
+        self.0.timecode().seconds()
     }
 
     /// Frames within the second, below the rate's label count.
     #[must_use]
     pub const fn frames(self) -> u8 {
-        self.frames
+        self.0.timecode().frames()
     }
 
     /// The message of the four data bytes `hr mn sc fr` that follow `01 01`:
@@ -242,6 +287,12 @@ pub enum Universal {
     Tuning(TuningMessage),
     /// An MTC Full Message (Real Time `01 01`, M1 p.53 and T-9).
     MtcFullMessage(MtcFullMessage),
+    /// MIDI Machine Control commands (Real Time `06`, RP-013 p.2). The
+    /// header's recipient is the destination: a device, a group or all.
+    MachineControl(machine_control::MmcCommands),
+    /// MIDI Machine Control responses (Real Time `07`, RP-013 p.2). The
+    /// header's device ID is the source, and always a device's own.
+    MachineControlResponse(machine_control::MmcFields),
 }
 
 /// A Universal message and who its header names.
@@ -395,6 +446,10 @@ impl UniversalReader {
             }
             _ => return None,
         };
+        // A response is a controller's to read, from a device that is not this one.
+        if matches!(message, Universal::MachineControlResponse(_)) {
+            return None;
+        }
         let to = self.is_for_us(recipient)?;
         Some(Heard { to, message })
     }

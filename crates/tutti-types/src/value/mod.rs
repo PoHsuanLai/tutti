@@ -57,5 +57,5 @@ pub use units::{
     CompressionRatio, Confidence, Correlation, Db, Depth, DepthOutOfRange, Direction, Drive,
     Elevation, Feedback, Hz, Mix, Pan, Phase, PhaseIncrement, PlaybackRate, Q, Radians, ReadRate,
     Resonance, SamplePosition, SampleRate, SampleRateOutOfRange, Seconds, Semitones, Spread,
-    SrcRatio, StereoWidth, StretchFactor, Unit, Velocity,
+    SrcRatio, StereoBalance, StereoWidth, StretchFactor, Unit, Velocity,
 };

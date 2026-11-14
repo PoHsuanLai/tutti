@@ -11,3 +11,4 @@ mod common;
 mod clock_follower;
 mod clock_tempo_map;
 mod decoder_no_alloc;
+mod machine_control;

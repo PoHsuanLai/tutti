@@ -60,6 +60,8 @@ pub(crate) struct ControlBackend<F: InProcess> {
     /// Where a re-read that found the plugin's latency, tail or pins moved is
     /// reported (`PluginHandle::subscribe`).
     pub(crate) invalidate_sink: crate::InvalidateSink,
+    /// Where what the plugin asked of the transport is delivered.
+    pub(crate) transport_sink: crate::TransportSink,
     /// The plugin's format name, for the refusal of an advisory no in-process
     /// format carries.
     pub(crate) format: &'static str,
@@ -311,6 +313,9 @@ where
         }
         if changes.io {
             self.invalidate_sink.fire(PluginInvalidation::Io);
+        }
+        for request in changes.transport {
+            self.transport_sink.fire(request);
         }
     }
 }

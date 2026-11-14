@@ -8,6 +8,11 @@ use super::*;
 ///   not compose or scale; half of a crossfade point is not a crossfade
 ///   point. (`Depth` has a sign, and its own range check — that is the difference
 ///   between a position and a signed magnitude.)
+/// - `Pan * f32`, `Pan + Pan` — a position on a segment, so the same argument
+///   `Mix` makes: half a pan position is not a pan position, and two of them do
+///   not sum. Interpolation is a `lerp`, not a `*`. A measured balance is
+///   [`StereoBalance`], and there is no `From` either way: a reading fed back
+///   as a pan is `Pan(balance.get())`.
 /// - `Feedback * f32` — scaling walks a coefficient across the stability
 ///   bound unchecked. `new_clamped` / `stable_pair` are the ways in.
 /// - `Drive * f32` — a shaper's response is nonlinear, so "twice the
@@ -166,4 +171,17 @@ fn depth_refuses_what_is_outside_minus_one_to_one() {
         assert_eq!(Depth::new(ok).map(Depth::get), Some(ok));
         assert_eq!(f32::from(Depth::try_from(ok).unwrap()), ok);
     }
+}
+
+#[test]
+fn pan_saturates_and_orders() {
+    // Unlike `Azimuth`, this is a segment: past the end it stops rather
+    // than wrapping around to the opposite side.
+    assert_eq!(Pan::new_clamped(1.5), Pan::RIGHT);
+    assert_eq!(Pan::new_clamped(-1.5), Pan::LEFT);
+
+    // And unlike `Azimuth`, it orders — a segment has ends.
+    assert!(Pan::LEFT < Pan::CENTER);
+    assert!(Pan::CENTER < Pan::RIGHT);
+    assert_eq!(-Pan::LEFT, Pan::RIGHT);
 }

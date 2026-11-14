@@ -277,11 +277,7 @@ pub use harmony::{
     ChordChanges, ChordValue, HARMONY_CAPACITY, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,
 };
-pub use lifecycle::{
-    EFFECT_CAPACITY, Effect, Effects, Event, FDS_PER_TICK, FdId, HostOp, MAX_STEP_EFFECTS, Notice,
-    Prepare, Reply, Request, RescanScope, RestartRules, Stage, State, TIMERS_PER_TICK, TimerId,
-    standing, step,
-};
+pub use lifecycle::{EFFECT_CAPACITY, Effect, Event, FDS_PER_TICK, FdId, HostOp, MAX_STEP_EFFECTS, Notice, Prepare, Reply, Request, RescanScope, RestartRules, Stage, State, TIMERS_PER_TICK, TimerId, standing, step};
 pub use load_stage::LoadStage;
 pub use main_thread::{MainThread, NotMainThread, defer_to_main, run_deferred};
 pub use measured::{
@@ -297,9 +293,7 @@ pub use wakeups::{Interest, Ready, Wakeups, Watch};
 // `NoteExpressionVec` is the alias the change list is built from, so a caller
 // assembling one has to name it.
 pub use locate::{Helper, Locator};
-pub use note_expression::{
-    NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, NoteExpressionVec,
-};
+pub use note_expression::{NoteExpressionChanges, NoteExpressionType, NoteExpressionValue};
 pub use note_id::{note_id_to_channel_note, plugin_note_id};
 pub use param_edit::ParamEdit;
 pub use param_mapping::ParamMapping;

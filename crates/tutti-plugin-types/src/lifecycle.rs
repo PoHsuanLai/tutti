@@ -35,7 +35,7 @@ use crate::{
 pub const EFFECT_CAPACITY: usize = 14;
 
 /// The effects of one [`step`], in the order to perform them.
-pub type Effects = ArrayVec<Effect, EFFECT_CAPACITY>;
+pub(crate) type Effects = ArrayVec<Effect, EFFECT_CAPACITY>;
 
 /// How many due timers one tick runs. The rest stay pending: see
 /// [`State::has_backlog`].

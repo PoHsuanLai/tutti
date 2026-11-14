@@ -1,21 +1,7 @@
+use super::super::testing::{DST, decoded, header};
 use super::super::*;
 use super::*;
 use tutti_ump::ManufacturerId;
-
-fn header() -> CiHeader {
-    CiHeader::new(Muid::new(0x0123_4567).unwrap())
-}
-
-fn initiator() -> Muid {
-    Muid::new(0x0007_7777).unwrap()
-}
-
-fn decoded(bytes: &[u8]) -> CiMessage {
-    match CiMessage::decode(bytes) {
-        Decoded::Message(message) => message,
-        other => panic!("expected a message, got {other:?}"),
-    }
-}
 
 fn is_malformed(body: &[u8], is_reply: bool) -> bool {
     DiscoveryData::decode_body(is_reply, body).is_none()
@@ -115,14 +101,14 @@ fn a_version_1_body_still_decodes() {
 fn discovery_reply_keeps_is_reply_flag() {
     let msg = CiMessage::DiscoveryReply {
         header: header(),
-        to: initiator(),
+        to: Muid::of(DST),
         data: sample_discovery(),
     };
     let bytes = msg.encode();
     assert_eq!(bytes[3], SUB_ID2_DISCOVERY_REPLY);
     match decoded(&bytes) {
         CiMessage::DiscoveryReply { to, data, .. } => {
-            assert_eq!(to, initiator());
+            assert_eq!(to, Muid::of(DST));
             assert_eq!(data, sample_discovery());
         }
         other => panic!("expected Discovery reply, got {other:?}"),

@@ -50,7 +50,7 @@
 //! [`Ballistics`]'s one-pole step, so an averaged level is the dB of an
 //! average power, and a released level falls linearly in dB per second. The
 //! first frame seeds the state. The peak of an output is held for
-//! [`hold`](SpectrumConfig::peak_hold) rounded up to a whole number of frames,
+//! [`hold`](SpectrumConfig::with_peak_hold) rounded up to a whole number of frames,
 //! then falls by the decay in dB per second, never below the level. The
 //! spectrogram keeps the newest columns of levels, oldest first.
 //!
@@ -325,39 +325,11 @@ impl SpectrumConfig {
         self.geometry
     }
 
-    /// How bins are grouped.
-    #[inline]
-    #[must_use]
-    pub fn banding(&self) -> Banding {
-        self.banding
-    }
-
-    /// How power is smoothed.
-    #[inline]
-    #[must_use]
-    pub fn smoothing(&self) -> Smoothing {
-        self.smoothing
-    }
-
     /// The level silence reads.
     #[inline]
     #[must_use]
     pub fn floor(&self) -> Db {
         self.floor
-    }
-
-    /// How long a peak is held, before rounding up to whole frames.
-    #[inline]
-    #[must_use]
-    pub fn peak_hold(&self) -> Seconds {
-        self.peak_hold
-    }
-
-    /// How fast a released peak falls, in dB per second.
-    #[inline]
-    #[must_use]
-    pub fn peak_decay(&self) -> Db {
-        self.peak_decay
     }
 
     /// Outputs per frame: bins or bands.
@@ -374,7 +346,7 @@ impl SpectrumConfig {
 
     /// Time between frames.
     #[must_use]
-    pub fn frame_interval(&self) -> Seconds {
+    pub(crate) fn frame_interval(&self) -> Seconds {
         let hop = self.geometry.hop().get() as f64;
         Seconds(hop / self.geometry.sample_rate().get())
     }
@@ -386,7 +358,7 @@ impl SpectrumConfig {
     /// an `f32` with a relative error of at most 2^-24 (6e-8), so a millionth
     /// of slack keeps 0.1 s at a hop of 480 samples and 48 kHz at 10 frames.
     #[must_use]
-    pub fn peak_hold_frames(&self) -> FrameCount {
+    pub(crate) fn peak_hold_frames(&self) -> FrameCount {
         let hop = self.geometry.hop().get() as f64;
         let frames = self.peak_hold.get() * self.geometry.sample_rate().get() / hop;
         FrameCount((frames * (1.0 - 1e-6)).ceil() as usize)

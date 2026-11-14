@@ -1,12 +1,5 @@
+use super::super::testing::{DST, header};
 use super::super::*;
-
-fn header() -> CiHeader {
-    CiHeader::new(Muid::new(0x0123_4567).unwrap())
-}
-
-fn to() -> Muid {
-    Muid::new(0x0007_7777).unwrap()
-}
 
 fn text(s: &str) -> MessageText {
     MessageText::new(s).expect("a text within the bound")
@@ -34,7 +27,7 @@ fn nak_of(bytes: &[u8]) -> Nak {
 fn nak_round_trips() {
     let msg = CiMessage::Nak {
         header: header(),
-        to: to(),
+        to: Muid::of(DST),
         nak: Nak::new(U7::of(SUB_ID2_DISCOVERY), Nak::STATUS_VERSION_NOT_SUPPORTED),
     };
     assert_eq!(CiMessage::decode(&msg.encode()), Decoded::Message(msg));
@@ -50,7 +43,7 @@ fn nak_carries_its_version_2_details_and_text() {
         .with_message(text("body one byte short"));
     let msg = CiMessage::Nak {
         header: header(),
-        to: to(),
+        to: Muid::of(DST),
         nak: nak.clone(),
     };
     assert_eq!(nak_of(&msg.encode()), nak);
@@ -119,7 +112,7 @@ fn an_ack_round_trips_with_its_sub_id_and_body() {
         .with_message(text("Accepted Beat"));
     let msg = CiMessage::Ack {
         header: header(),
-        to: to(),
+        to: Muid::of(DST),
         ack: ack.clone(),
     };
     let bytes = msg.encode();
@@ -218,7 +211,7 @@ fn a_text_round_trips_through_a_nak() {
         let nak = Nak::new(U7::of(1), Nak::STATUS_NAK).with_message(text(s));
         let msg = CiMessage::Nak {
             header: header(),
-            to: to(),
+            to: Muid::of(DST),
             nak,
         };
         assert_eq!(nak_of(&msg.encode()).message.as_str(), s);

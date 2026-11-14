@@ -195,6 +195,9 @@ jobs:
       - run: cargo xtask check-value-traits
       - run: cargo xtask check-doc-refs
       - run: cargo xtask check-pointers
+      # A platform cfg stands only on a `mod` declaration; the `-ffi` crates are
+      # exempt and the temporary rows in the gate are a ratchet.
+      - run: cargo xtask check-platform-seam
       # The spec inventories under `testing/conformance/` are well formed, every
       # `/// Spec:` test tag names a row, and the CLAP rows are the items the
       # locked `clap-sys` declares (its source is fetched, not built).

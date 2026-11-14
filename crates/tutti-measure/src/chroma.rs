@@ -2,8 +2,7 @@
 //!
 //! The harmonic pitch class profile of Gomez (2006). Each frame of a
 //! [`StftGeometry`] is windowed and transformed, the local maxima of the
-//! magnitude spectrum between [`min_freq`](ChromaConfig::min_freq) and
-//! [`max_freq`](ChromaConfig::max_freq) are located to a fraction of a bin by
+//! magnitude spectrum between [`with_band`](ChromaConfig::with_band) are located to a fraction of a bin by
 //! parabolic interpolation of the log magnitude, and each peak's energy (its
 //! squared amplitude) is added to the pitch class of its frequency and of its
 //! subharmonics `f/2 .. f/n`, each weighted by [`harmonic_decay`] to the power
@@ -18,7 +17,7 @@
 //! in-band partial is under -90 dBFS holds no pitch and reads all zero,
 //! never NaN; the floor is absolute because a relative one would call the
 //! rounding noise of a silent buffer a signal. Within a frame, a peak under
-//! [`peak_floor`](ChromaConfig::peak_floor) of the frame's strongest is
+//! [`with_peak_floor`](ChromaConfig::with_peak_floor) of the frame's strongest is
 //! ignored, which keeps window sidelobes out of the profile.
 //!
 //! # Tuning
@@ -47,7 +46,7 @@
 //! the peaks seen so far, so early frames fold with a rougher tuning than
 //! [`chroma`]'s whole-buffer one; with a fixed tuning the two agree to the bit.
 //!
-//! [`harmonic_decay`]: ChromaConfig::harmonic_decay
+//! [`harmonic_decay`]: ChromaConfig::with_harmonic_decay
 
 use tutti_types::{Cents, Db, Hz, Note, Samples, Semitones};
 
@@ -225,41 +224,6 @@ impl ChromaConfig {
         self.geometry
     }
 
-    /// The lowest peak frequency folded.
-    #[inline]
-    #[must_use]
-    pub fn min_freq(&self) -> Hz {
-        self.min_freq
-    }
-
-    /// The highest peak frequency folded.
-    #[inline]
-    #[must_use]
-    pub fn max_freq(&self) -> Hz {
-        self.max_freq
-    }
-
-    /// How many partials a peak may be.
-    #[inline]
-    #[must_use]
-    pub fn harmonics(&self) -> usize {
-        self.harmonics
-    }
-
-    /// The weight of a subharmonic per order past the first.
-    #[inline]
-    #[must_use]
-    pub fn harmonic_decay(&self) -> f32 {
-        self.harmonic_decay
-    }
-
-    /// How far under the frame's strongest a peak may be and still count.
-    #[inline]
-    #[must_use]
-    pub fn peak_floor(&self) -> Db {
-        self.peak_floor
-    }
-
     /// How the tuning is found.
     #[inline]
     #[must_use]
@@ -411,13 +375,6 @@ impl Chroma {
     #[must_use]
     pub fn grid(&self) -> &Grid<f32> {
         &self.grid
-    }
-
-    /// Moves the grid out, dropping the tuning.
-    #[inline]
-    #[must_use]
-    pub fn into_grid(self) -> Grid<f32> {
-        self.grid
     }
 
     /// The tuning the frames were folded with: the estimate over the whole
@@ -919,7 +876,7 @@ mod tests {
         ));
         // A low rate clamps the default band to Nyquist instead of failing.
         let low = StftGeometry::new(SampleRate::SR_8K, Samples(1024), Samples(256)).unwrap();
-        assert_eq!(ChromaConfig::new(low).unwrap().max_freq(), Hz(4000.0));
+        assert_eq!(ChromaConfig::new(low).unwrap().max_freq, Hz(4000.0));
     }
 
     /// Bad input is an error, and a refused call computes nothing.

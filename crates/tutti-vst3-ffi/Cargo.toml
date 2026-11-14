@@ -21,6 +21,7 @@ conformance = []
 
 [dependencies]
 libloading.workspace = true
+thiserror.workspace = true
 parking_lot = "0.13"
 crossbeam-queue = "0.3"
 arrayvec = "0.7"

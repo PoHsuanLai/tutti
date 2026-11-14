@@ -1,10 +1,7 @@
+use super::testing::{SRC, decoded, header, unread};
 use super::*;
 use tutti_ump::DeviceIdentity;
 use tutti_ump::ManufacturerId;
-
-fn muid(raw: u32) -> Muid {
-    Muid::new(raw).expect("a valid MUID")
-}
 
 #[test]
 fn muid_refuses_the_reserved_range_and_the_broadcast_value() {
@@ -18,26 +15,22 @@ fn muid_refuses_the_reserved_range_and_the_broadcast_value() {
     // Past 28 bits.
     assert_eq!(Muid::new(0x1000_0000), None);
     assert_eq!(Muid::new(u32::MAX), None);
-    assert_eq!(u32::from(muid(0x0123_4567)), 0x0123_4567);
+    assert_eq!(u32::from(Muid::of(0x0123_4567)), 0x0123_4567);
     assert_eq!(Muid::try_from(7), Ok(Muid(7)));
 }
 
 #[test]
 fn muid_round_trips_through_wire_bytes() {
     for raw in [0u32, 1, 0x0123_4567, 0x0FFF_FEFF] {
-        let m = muid(raw);
+        let m = Muid::of(raw);
         assert_eq!(Muid::from_bytes(m.to_bytes()), Some(m));
     }
     // Least significant seven bits first.
-    assert_eq!(muid(0x0123_4567).to_bytes(), [0x67, 0x0A, 0x0D, 0x09]);
+    assert_eq!(Muid::of(0x0123_4567).to_bytes(), [0x67, 0x0A, 0x0D, 0x09]);
     // A byte with its top bit set, and the reserved range, are not a MUID.
     assert_eq!(Muid::from_bytes([0x80, 0, 0, 0]), None);
     assert_eq!(Muid::from_bytes([0x7F, 0x7F, 0x7F, 0x7F]), None);
     assert_eq!(Muid::from_bytes([0x00, 0x7E, 0x7F, 0x7F]), None);
-}
-
-fn header() -> CiHeader {
-    CiHeader::new(muid(0x1))
 }
 
 fn sample() -> DiscoveryData {
@@ -57,30 +50,16 @@ fn sample() -> DiscoveryData {
 fn invalidate() -> Vec<u8> {
     CiMessage::InvalidateMuid {
         header: header(),
-        target: muid(5),
+        target: Muid::of(5),
     }
     .encode()
-}
-
-fn unread(bytes: &[u8]) -> Unread {
-    match CiMessage::decode(bytes) {
-        Decoded::Unread(unread) => unread,
-        other => panic!("expected an Unread, got {other:?}"),
-    }
-}
-
-fn message(bytes: &[u8]) -> CiMessage {
-    match CiMessage::decode(bytes) {
-        Decoded::Message(message) => message,
-        other => panic!("expected a message, got {other:?}"),
-    }
 }
 
 #[test]
 fn invalidate_muid_round_trips() {
     let msg = CiMessage::InvalidateMuid {
         header: header(),
-        target: muid(0x0ABC_DEF0 & 0x0FFF_FFFF),
+        target: Muid::of(0x0ABC_DEF0 & 0x0FFF_FFFF),
     };
     let bytes = msg.encode();
     assert_eq!(
@@ -89,20 +68,20 @@ fn invalidate_muid_round_trips() {
         "§5.2.1 Table 5"
     );
     assert_eq!(&bytes[9..13], [0x7F; 4], "broadcast destination");
-    assert_eq!(message(&bytes), msg);
+    assert_eq!(decoded(&bytes), msg);
 }
 
 #[test]
 fn a_reply_keeps_the_device_it_goes_to() {
     let msg = CiMessage::Nak {
         header: header(),
-        to: muid(0x0042_4242),
+        to: Muid::of(0x0042_4242),
         nak: Nak::new(U7::of(0x20), Nak::STATUS_MESSAGE_NOT_SUPPORTED),
     };
     let bytes = msg.encode();
-    assert_eq!(&bytes[9..13], muid(0x0042_4242).to_bytes());
-    assert_eq!(message(&bytes), msg);
-    assert_eq!(msg.destination(), Destination::Muid(muid(0x0042_4242)));
+    assert_eq!(&bytes[9..13], Muid::of(0x0042_4242).to_bytes());
+    assert_eq!(decoded(&bytes), msg);
+    assert_eq!(msg.destination(), Destination::Muid(Muid::of(0x0042_4242)));
 }
 
 #[test]
@@ -133,27 +112,27 @@ fn a_message_that_is_not_read_keeps_its_header() {
             device_id: 0x03,
             sub_id2: 0x30,
             version: 0x01,
-            source: Some(muid(1)),
+            source: Some(Muid::of(SRC)),
             destination: Some(Destination::Broadcast),
             reason: UnreadReason::UnsupportedMessage,
         }
     );
     // The NAK is addressed to the sender, from `own`, on the same Device ID,
     // naming the message, with the message-not-supported status (Table 16 0x01).
-    let reply = got.nak(muid(0x77)).expect("the sender is known");
+    let reply = got.nak(Muid::of(0x77)).expect("the sender is known");
     assert_eq!(
         reply,
         CiMessage::Nak {
             header: CiHeader {
                 device_id: CiDeviceId::Channel(MidiChannel::of(3)),
                 ci_version: CI_VERSION,
-                source: muid(0x77),
+                source: Muid::of(0x77),
             },
-            to: muid(1),
+            to: Muid::of(SRC),
             nak: Nak::new(U7::of(0x30), U7::of(0x01)),
         }
     );
-    assert_eq!(message(&reply.encode()), reply);
+    assert_eq!(decoded(&reply.encode()), reply);
 }
 
 // §5.3: a message whose Message Format Version has reserved bits set is
@@ -171,7 +150,7 @@ fn reserved_version_bits_are_nakked_with_0x02_in_the_receivers_version() {
             "{version:#x}"
         );
         assert_eq!(got.version, version, "the version as sent is kept");
-        let CiMessage::Nak { header, nak, .. } = got.nak(muid(9)).unwrap() else {
+        let CiMessage::Nak { header, nak, .. } = got.nak(Muid::of(9)).unwrap() else {
             panic!("a NAK")
         };
         assert_eq!(nak.status_code, U7::of(0x02));
@@ -195,11 +174,11 @@ fn a_higher_version_is_read_and_its_appended_fields_ignored() {
     let mut bytes = invalidate();
     bytes[4] = 0x05;
     bytes.extend_from_slice(&[0x11, 0x22]);
-    let CiMessage::InvalidateMuid { header, target } = message(&bytes) else {
+    let CiMessage::InvalidateMuid { header, target } = decoded(&bytes) else {
         panic!("Invalidate MUID")
     };
     assert_eq!(header.ci_version, CiVersion::of(5));
-    assert_eq!(target, muid(5));
+    assert_eq!(target, Muid::of(5));
 }
 
 // §3.2.1 Table 5: Device IDs 0x10 to 0x7D are reserved.
@@ -211,7 +190,7 @@ fn a_reserved_device_id_is_refused() {
         let got = unread(&bytes);
         assert_eq!(got.reason, UnreadReason::ReservedDeviceId, "{id:#x}");
         // The NAK still goes out, on the Function Block.
-        let CiMessage::Nak { header, nak, .. } = got.nak(muid(9)).unwrap() else {
+        let CiMessage::Nak { header, nak, .. } = got.nak(Muid::of(9)).unwrap() else {
             panic!("a NAK")
         };
         assert_eq!(header.device_id, CiDeviceId::FunctionBlock);
@@ -220,7 +199,7 @@ fn a_reserved_device_id_is_refused() {
     for id in (0x00..=0x0F).chain([0x7E, 0x7F]) {
         let mut bytes = invalidate();
         bytes[1] = id;
-        let CiMessage::InvalidateMuid { header, .. } = message(&bytes) else {
+        let CiMessage::InvalidateMuid { header, .. } = decoded(&bytes) else {
             panic!("Invalidate MUID")
         };
         assert_eq!(header.device_id.get(), id);
@@ -236,14 +215,14 @@ fn a_source_no_device_can_own_is_unread_with_nobody_to_answer() {
     let got = unread(&bytes);
     assert_eq!(got.reason, UnreadReason::BadSource);
     assert_eq!(got.source, None);
-    assert_eq!(got.nak(muid(9)), None);
+    assert_eq!(got.nak(Muid::of(9)), None);
     // A reserved value as the invalidated target is malformed too, but the
     // header is fine, so it can be answered.
     let mut bytes = invalidate();
     bytes[13..17].copy_from_slice(&[0x00, 0x7E, 0x7F, 0x7F]);
     let got = unread(&bytes);
     assert_eq!(got.reason, UnreadReason::Malformed);
-    assert!(got.nak(muid(9)).is_some());
+    assert!(got.nak(Muid::of(9)).is_some());
     // A reserved destination.
     let mut bytes = invalidate();
     bytes[9..13].copy_from_slice(&[0x00, 0x7E, 0x7F, 0x7F]);
@@ -261,14 +240,14 @@ fn the_broadcast_rule_is_held_in_both_directions() {
         data: sample(),
     }
     .encode();
-    discovery_to_one[9..13].copy_from_slice(&muid(7).to_bytes());
+    discovery_to_one[9..13].copy_from_slice(&Muid::of(7).to_bytes());
     assert_eq!(
         unread(&discovery_to_one).reason,
         UnreadReason::WrongDestination
     );
 
     let mut invalidate_to_one = invalidate();
-    invalidate_to_one[9..13].copy_from_slice(&muid(7).to_bytes());
+    invalidate_to_one[9..13].copy_from_slice(&Muid::of(7).to_bytes());
     assert_eq!(
         unread(&invalidate_to_one).reason,
         UnreadReason::WrongDestination
@@ -277,22 +256,22 @@ fn the_broadcast_rule_is_held_in_both_directions() {
     for msg in [
         CiMessage::DiscoveryReply {
             header: header(),
-            to: muid(7),
+            to: Muid::of(7),
             data: sample(),
         },
         CiMessage::Ack {
             header: header(),
-            to: muid(7),
+            to: Muid::of(7),
             ack: Ack::new(U7::of(0x34), Ack::STATUS_ACK),
         },
         CiMessage::Nak {
             header: header(),
-            to: muid(7),
+            to: Muid::of(7),
             nak: Nak::new(U7::of(0x34), Nak::STATUS_NAK),
         },
     ] {
         let mut bytes = msg.encode();
-        assert_eq!(message(&bytes), msg);
+        assert_eq!(decoded(&bytes), msg);
         bytes[9..13].copy_from_slice(&[0x7F; 4]);
         assert_eq!(
             unread(&bytes).reason,
@@ -309,11 +288,11 @@ fn an_unreadable_ack_or_nak_is_not_nakked() {
         let mut bytes = invalidate();
         bytes[3] = kind;
         bytes.truncate(13); // a unicast body is missing: malformed
-        bytes[9..13].copy_from_slice(&muid(7).to_bytes());
+        bytes[9..13].copy_from_slice(&Muid::of(7).to_bytes());
         bytes.extend_from_slice(&[0x01, 0x00, 0x00, 0, 0, 0, 0, 0, 0x05, 0x00]); // ml 5, no text
         let got = unread(&bytes);
         assert_eq!(got.reason, UnreadReason::Malformed);
-        assert_eq!(got.nak(muid(9)), None);
+        assert_eq!(got.nak(Muid::of(9)), None);
     }
 }
 
@@ -344,7 +323,7 @@ fn the_device_id_and_version_are_range_checked_values() {
 fn long_message() -> CiMessage {
     CiMessage::DiscoveryReply {
         header: header(),
-        to: muid(2),
+        to: Muid::of(2),
         data: sample(),
     }
 }
@@ -374,4 +353,23 @@ fn packets_carry_the_payload_in_sysex7_packets() {
         bytes.extend_from_slice(packet.data());
     }
     assert_eq!(bytes, payload);
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn the_muid_is_a_range_checked_value() {
+    use tutti_fixtures::{RangeContract, check_range_contract};
+    check_range_contract(&RangeContract {
+        new: Muid::new,
+        get: Muid::get,
+        of: Some(Muid::of),
+        valid: &[0, 1, 0x0FFF_FEFF],
+        invalid: &[
+            0x0FFF_FF00,
+            0x0FFF_FFFE,
+            Muid::BROADCAST_RAW,
+            0x1000_0000,
+            u32::MAX,
+        ],
+    });
 }

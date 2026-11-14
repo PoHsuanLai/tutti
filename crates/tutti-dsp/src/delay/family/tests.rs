@@ -118,7 +118,7 @@ impl FamilyCase for DelayFamily {
     fn musical_delay(&self, m: &DelayMember) -> usize {
         (0..m.width())
             .flat_map(|c| {
-                let (taps, n) = read_taps(m.delays[c], m.cap, m.interpolation());
+                let (taps, n) = read_taps(m.delays[c], m.cap, m.interpolation);
                 taps.into_iter().take(n).filter(|t| t.1 != 0.0).map(|t| t.0)
             })
             .min()
@@ -136,7 +136,7 @@ impl DelayFamily {
     /// `q = 0.8` for the cubic Hermite (`L = 1.25`): its cases stay there, and the others
     /// reach the stable pair's whole range.
     fn q_limit(&self) -> f32 {
-        if self.interpolation() == InterpolationMode::CubicHermite {
+        if self.interpolation == InterpolationMode::CubicHermite {
             0.75
         } else {
             0.99
@@ -201,7 +201,7 @@ impl LtiCase for DelayFamily {
     /// pair is driven in common mode (the same signal on both inputs), which excites only
     /// the sum mode, whose loop gain is `g + c`.
     fn figures(&self) -> Vec<Figure<DelayControls>> {
-        let (g, c) = (0.5f32, if self.routing().is_none() { 0.0 } else { 0.2 });
+        let (g, c) = (0.5f32, if self.routing.is_none() { 0.0 } else { 0.2 });
         let mut all = Vec::new();
         for rate in [SampleRate::SR_48K, SampleRate::SR_96K] {
             let d = DelayFamily::WHOLE * rate.get();
@@ -773,10 +773,10 @@ fn a_family_takes_a_routing_for_its_own_bus_and_defaults_by_its_width() {
             family: 2
         }
     );
-    assert_eq!(stereo().routing(), &Routing::swap());
+    assert_eq!(stereo().routing, Routing::swap());
     for w in [1u16, 3, 6] {
         let f = DelayFamily::new(bus(w), MAX, InterpolationMode::Linear);
-        assert!(f.routing().is_none(), "width {w}");
+        assert!(f.routing.is_none(), "width {w}");
         assert!(f.times().is_linked(), "width {w}");
     }
     // The stereo default is the swap whatever the interpolation or maximum.
@@ -785,7 +785,7 @@ fn a_family_takes_a_routing_for_its_own_bus_and_defaults_by_its_width() {
         MaxDelay::DEFAULT,
         InterpolationMode::None,
     );
-    assert_eq!(f.routing(), &Routing::swap());
+    assert_eq!(f.routing, Routing::swap());
 }
 
 /// Channel times refuse a time that is not one, and the family refuses a set that does not

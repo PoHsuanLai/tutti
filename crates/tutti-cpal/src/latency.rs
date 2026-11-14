@@ -78,14 +78,14 @@ impl StreamLatency {
 /// after the callback's. `None` if the backend gives a playback before the
 /// callback.
 pub(crate) fn output_delay(stamp: &cpal::OutputStreamTimestamp) -> Option<Duration> {
-    stamp.playback.duration_since(&stamp.callback)
+    stamp.playback.checked_duration_since(stamp.callback)
 }
 
 /// The delay an input callback's timestamp reports: the callback after the
 /// capture instant. `None` if the backend gives a capture after the callback.
 #[cfg(feature = "capture")]
 pub(crate) fn input_delay(stamp: &cpal::InputStreamTimestamp) -> Option<Duration> {
-    stamp.callback.duration_since(&stamp.capture)
+    stamp.callback.checked_duration_since(stamp.capture)
 }
 
 #[cfg(test)]

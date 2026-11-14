@@ -123,7 +123,7 @@ impl MultibandMember {
 
     /// Band `band`'s compressor, or `None` past the last band.
     #[must_use]
-    pub fn compressor(&self, band: usize) -> Option<&CompressorMember> {
+    fn compressor(&self, band: usize) -> Option<&CompressorMember> {
         self.bands[..self.count].get(band)
     }
 

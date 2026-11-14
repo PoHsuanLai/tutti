@@ -280,13 +280,6 @@ impl LimiterFamily {
     pub const fn new(input: BusTopology, lookahead: Lookahead) -> Self {
         Self { input, lookahead }
     }
-
-    /// The lookahead window, as it was asked for: from its seconds every rate derives
-    /// its own frame count (the count is a `ceil`, so it cannot be recovered).
-    #[must_use]
-    pub const fn lookahead(&self) -> Lookahead {
-        self.lookahead
-    }
 }
 
 impl Family for LimiterFamily {

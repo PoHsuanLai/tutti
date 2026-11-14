@@ -19,6 +19,9 @@ use clap_sys::ext::audio_ports::{CLAP_EXT_AUDIO_PORTS, clap_host_audio_ports};
 use clap_sys::ext::audio_ports_config::{
     CLAP_EXT_AUDIO_PORTS_CONFIG, clap_host_audio_ports_config,
 };
+use clap_sys::ext::draft::transport_control::{
+    CLAP_EXT_TRANSPORT_CONTROL, clap_host_transport_control,
+};
 use clap_sys::ext::event_registry::{CLAP_EXT_EVENT_REGISTRY, clap_host_event_registry};
 use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_host_gui};
 use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_host_latency};
@@ -39,9 +42,18 @@ use clap_sys::ext::tail::{CLAP_EXT_TAIL, clap_host_tail};
 use clap_sys::ext::thread_check::{CLAP_EXT_THREAD_CHECK, clap_host_thread_check};
 use clap_sys::ext::thread_pool::{CLAP_EXT_THREAD_POOL, clap_host_thread_pool};
 use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_host_timer_support};
+use clap_sys::ext::track_info::{
+    CLAP_EXT_TRACK_INFO, CLAP_EXT_TRACK_INFO_COMPAT, CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL,
+    CLAP_TRACK_INFO_HAS_TRACK_COLOR, CLAP_TRACK_INFO_HAS_TRACK_NAME, CLAP_TRACK_INFO_IS_FOR_BUS,
+    CLAP_TRACK_INFO_IS_FOR_MASTER, CLAP_TRACK_INFO_IS_FOR_RETURN_TRACK, clap_host_track_info,
+    clap_track_info,
+};
 use clap_sys::ext::voice_info::{CLAP_EXT_VOICE_INFO, clap_host_voice_info};
+use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, clap_beattime};
 use clap_sys::host::clap_host;
 use clap_sys::version::CLAP_VERSION;
+use tutti_plugin_types::{TrackInfo, TrackKind, TransportRequest};
+use tutti_types::{Beat, BeatDuration};
 
 use crate::guard::{guard, lossy, or_abort};
 use crate::types::{AudioPortsRescanFlags, LogSeverity, ParamsRescanFlags};
@@ -132,6 +144,16 @@ pub trait HostCallbacks: Send + Sync + 'static {
     fn ambisonic_changed(&self) {}
     /// `clap.surround` `changed`.
     fn surround_changed(&self) {}
+    /// `clap.track-info` `get`: what the host says of the plugin's track, or
+    /// `None` when it says nothing.
+    fn track_info(&self) -> Option<TrackInfo> {
+        None
+    }
+    /// `clap.transport-control`: the plugin asked the transport to do
+    /// something. The host may do nothing.
+    fn transport_request(&self, request: TransportRequest) {
+        let _ = request;
+    }
     /// `clap.posix-fd-support` `register_fd`.
     fn posix_fd_register(&self, fd: i32, flags: u32) -> bool {
         let _ = (fd, flags);
@@ -352,12 +374,15 @@ extern "C" fn host_get_extension(
             CLAP_EXT_THREAD_POOL        => HOST_THREAD_POOL,
             CLAP_EXT_AMBISONIC          => HOST_AMBISONIC,
             CLAP_EXT_SURROUND           => HOST_SURROUND,
+            CLAP_EXT_TRACK_INFO         => HOST_TRACK_INFO,
+            CLAP_EXT_TRANSPORT_CONTROL  => HOST_TRANSPORT_CONTROL,
             // The draft ids the stable ones replaced: each header says "the
             // latest draft is 100% compatible", so an older plugin asking
             // for the compat id gets the same vtable.
             CLAP_EXT_PRESET_LOAD_COMPAT     => HOST_PRESET_LOAD,
             CLAP_EXT_AMBISONIC_COMPAT       => HOST_AMBISONIC,
             CLAP_EXT_SURROUND_COMPAT        => HOST_SURROUND,
+            CLAP_EXT_TRACK_INFO_COMPAT      => HOST_TRACK_INFO,
         );
         // The one platform line: `posix-fd-support.h` is POSIX's, so a host
         // on Windows does not offer it, and a plugin there falls back to its own
@@ -556,6 +581,144 @@ trampoline!(
     false,
     |cb| cb.timer_unregister(timer_id)
 );
+
+static HOST_TRACK_INFO: clap_host_track_info = clap_host_track_info {
+    get: Some(host_track_info_get),
+};
+
+trampoline!(
+    host_track_info_get(info: *mut clap_track_info) -> bool,
+    main_only,
+    false,
+    |cb| {
+        if info.is_null() {
+            return false;
+        }
+        let Some(track) = cb.track_info() else {
+            return false;
+        };
+        let out = encode_track_info(&track);
+        // SAFETY: the plugin passes a writable `clap_track_info` valid for the
+        // call (`track-info.h`); checked non-null. Written whole, so no field
+        // keeps what the plugin left in it.
+        unsafe { info.write(out) };
+        true
+    }
+);
+
+/// The CLAP form of `track`: a flag for each field the host knows, the name
+/// cut to the buffer on a character boundary, and the port type CLAP names
+/// for the width (none for a width it has no word for).
+fn encode_track_info(track: &TrackInfo) -> clap_track_info {
+    let mut flags = match track.kind {
+        TrackKind::Track => 0,
+        TrackKind::Return => CLAP_TRACK_INFO_IS_FOR_RETURN_TRACK,
+        TrackKind::Bus => CLAP_TRACK_INFO_IS_FOR_BUS,
+        TrackKind::Master => CLAP_TRACK_INFO_IS_FOR_MASTER,
+    };
+    // SAFETY: all-zero is a valid `clap_track_info`: integers, an array of
+    // them and a null pointer.
+    let mut out: clap_track_info = unsafe { std::mem::zeroed() };
+    if let Some(name) = &track.name {
+        flags |= CLAP_TRACK_INFO_HAS_TRACK_NAME;
+        let room = out.name.len() - 1;
+        let end = (0..=name.len().min(room))
+            .rev()
+            .find(|&i| name.is_char_boundary(i))
+            .unwrap_or(0);
+        for (slot, byte) in out.name.iter_mut().zip(&name.as_bytes()[..end]) {
+            *slot = *byte as c_char;
+        }
+    }
+    if let Some(color) = track.color {
+        flags |= CLAP_TRACK_INFO_HAS_TRACK_COLOR;
+        out.color = clap_sys::color::clap_color {
+            alpha: color.a,
+            red: color.r,
+            green: color.g,
+            blue: color.b,
+        };
+    }
+    if let Some(audio) = track.audio {
+        flags |= CLAP_TRACK_INFO_HAS_AUDIO_CHANNEL;
+        out.audio_channel_count = i32::from(audio.count());
+        out.audio_port_type = match audio.count() {
+            1 => clap_sys::ext::audio_ports::CLAP_PORT_MONO.as_ptr(),
+            2 => clap_sys::ext::audio_ports::CLAP_PORT_STEREO.as_ptr(),
+            _ => std::ptr::null(),
+        };
+    }
+    out.flags = flags;
+    out
+}
+
+static HOST_TRANSPORT_CONTROL: clap_host_transport_control = clap_host_transport_control {
+    request_start: Some(host_transport_start),
+    request_stop: Some(host_transport_stop),
+    request_continue: Some(host_transport_continue),
+    request_pause: Some(host_transport_pause),
+    request_toggle_play: Some(host_transport_toggle_play),
+    request_jump: Some(host_transport_jump),
+    request_loop_region: Some(host_transport_loop_region),
+    request_toggle_loop: Some(host_transport_toggle_loop),
+    request_enable_loop: Some(host_transport_enable_loop),
+    request_record: Some(host_transport_record),
+    request_toggle_record: Some(host_transport_toggle_record),
+};
+
+trampoline!(host_transport_start(), main_only, (), |cb| cb
+    .transport_request(TransportRequest::Start));
+trampoline!(host_transport_stop(), main_only, (), |cb| cb
+    .transport_request(TransportRequest::Stop));
+trampoline!(host_transport_continue(), main_only, (), |cb| cb
+    .transport_request(TransportRequest::Continue));
+trampoline!(host_transport_pause(), main_only, (), |cb| cb
+    .transport_request(TransportRequest::Pause));
+trampoline!(host_transport_toggle_play(), main_only, (), |cb| cb
+    .transport_request(TransportRequest::TogglePlay));
+trampoline!(
+    host_transport_jump(position: clap_beattime),
+    main_only,
+    (),
+    |cb| cb.transport_request(TransportRequest::Jump(beats(position)))
+);
+trampoline!(
+    host_transport_loop_region(start: clap_beattime, duration: clap_beattime),
+    main_only,
+    (),
+    |cb| cb.transport_request(TransportRequest::LoopRegion {
+        start: beats(start),
+        duration: span(duration),
+    })
+);
+trampoline!(host_transport_toggle_loop(), main_only, (), |cb| cb
+    .transport_request(TransportRequest::ToggleLoop));
+trampoline!(
+    host_transport_enable_loop(enabled: bool),
+    main_only,
+    (),
+    |cb| cb.transport_request(TransportRequest::EnableLoop(enabled))
+);
+trampoline!(
+    host_transport_record(recording: bool),
+    main_only,
+    (),
+    |cb| cb.transport_request(TransportRequest::Record(recording))
+);
+trampoline!(host_transport_toggle_record(), main_only, (), |cb| cb
+    .transport_request(TransportRequest::ToggleRecord));
+
+/// A CLAP fixed-point beat time (`CLAP_BEATTIME_FACTOR` units to the beat) as
+/// beats. The wire value is an integer count of 2^-31 beats, which an `f64`
+/// holds exactly.
+fn beats(time: clap_beattime) -> Beat {
+    Beat::new(time as f64 / CLAP_BEATTIME_FACTOR as f64)
+}
+
+/// A CLAP fixed-point beat time as a span of beats.
+fn span(time: clap_beattime) -> BeatDuration {
+    BeatDuration::new(time as f64 / CLAP_BEATTIME_FACTOR as f64)
+}
 
 static HOST_NOTE_NAME: clap_host_note_name = clap_host_note_name {
     changed: Some(host_note_name_changed),

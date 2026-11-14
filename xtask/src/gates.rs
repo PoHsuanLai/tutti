@@ -22,6 +22,7 @@ mod layout;
 mod lex;
 mod lints;
 mod midi_spec;
+mod platform_seam;
 mod pointers;
 mod prose;
 mod range_types;
@@ -114,6 +115,8 @@ pub(crate) enum Gate {
     DocRefs,
     /// Prose outside `docs/` points at no `file.rs:N`; under `docs/` the line exists.
     Pointers,
+    /// A platform cfg stands only on a `mod` declaration.
+    PlatformSeam,
     /// The spec inventories are well formed, tags name rows, CLAP matches `clap-sys`.
     Conformance,
 }
@@ -135,6 +138,7 @@ impl Gate {
             Gate::ValueTraits => "gate check-value-traits".to_owned(),
             Gate::DocRefs => "gate check-doc-refs".to_owned(),
             Gate::Pointers => "gate check-pointers".to_owned(),
+            Gate::PlatformSeam => "gate check-platform-seam".to_owned(),
             Gate::Conformance => "gate check-conformance".to_owned(),
         }
     }
@@ -161,6 +165,7 @@ impl Gate {
             }
             Gate::DocRefs => doc_refs::check(&tree),
             Gate::Pointers => pointers::check(&tree),
+            Gate::PlatformSeam => platform_seam::check(&tree, platform_seam::ALLOW),
             Gate::Conformance => {
                 let sys = clap_sys_tree(&tree);
                 let require =

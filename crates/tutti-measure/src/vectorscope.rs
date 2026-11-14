@@ -28,7 +28,7 @@ impl ScopePoint {
     /// The frame at left `l` and right `r`.
     #[inline]
     #[must_use]
-    pub fn from_lr(l: f32, r: f32) -> Self {
+    pub(crate) fn from_lr(l: f32, r: f32) -> Self {
         Self {
             side: (l - r) * core::f32::consts::FRAC_1_SQRT_2,
             mid: (l + r) * core::f32::consts::FRAC_1_SQRT_2,

@@ -463,12 +463,6 @@ pub struct Editor {
     /// commit is compiled against), a re-prepare between its two commits,
     /// or the cause a re-prepare left the editor poisoned by.
     life: Lifecycle,
-    /// The spec and shapes that plan was compiled from, when
-    /// [`commit`](Self::commit) sent it; `None` after a send by any other
-    /// path (a re-prepare, [`package`](Self::package)). A commit that finds
-    /// both unchanged, with nothing pending, sends nothing: it would compile
-    /// the same plan with an empty delta.
-    committed: Option<(GraphSpec, Shapes)>,
     /// What the executor's host can take.
     limits: Limits,
     /// Events per event slot per block, as the executor was built with: a
@@ -495,7 +489,7 @@ impl std::fmt::Debug for Editor {
             .field("prepare", &self.prepare)
             .field("placements", &self.placements)
             .field("planned", &self.life.plan().is_some())
-            .field("committed", &self.committed)
+            .field("committed", &self.life.committed().is_some())
             .field("poisoned", &self.poison_cause())
             .field("limits", &self.limits)
             .field("event_capacity", &self.event_capacity)
@@ -521,6 +515,12 @@ fn panic_text(p: Box<dyn std::any::Any + Send>) -> String {
         .unwrap_or_else(|| "a non-string panic".to_string())
 }
 
+/// The spec and shapes a commit compiled the running plan from.
+struct Committed {
+    spec: GraphSpec,
+    shapes: Shapes,
+}
+
 /// The editor's compile lifecycle. A plan is sent by a commit, and a
 /// re-prepare suspends the executor between two commits; a failed second half
 /// leaves the units out, for good. The states are exclusive (a poisoned editor
@@ -529,20 +529,27 @@ fn panic_text(p: Box<dyn std::any::Any + Send>) -> String {
 enum Lifecycle {
     /// Nothing has been sent.
     Unplanned,
-    /// `plan` is the plan sent last.
-    Running(Arc<Plan>),
-    /// A re-prepare is between its two commits; `plan` is the plan sent
+    /// `sent` is the plan sent last.
+    Running(Sent),
+    /// A re-prepare is between its two commits; `sent` is the plan sent
     /// before it, which the resume compiles against.
     Repreparing {
-        plan: Option<Arc<Plan>>,
+        sent: Option<Sent>,
         reprepare: Box<Reprepare>,
     },
-    /// A re-prepare failed with its units out: `cause` says why, and `plan`
+    /// A re-prepare failed with its units out: `cause` says why, and `sent`
     /// is the plan that was running.
-    Poisoned {
-        cause: String,
-        plan: Option<Arc<Plan>>,
-    },
+    Poisoned { cause: String, sent: Option<Sent> },
+}
+
+/// A plan sent to the executor, and the spec and shapes it was compiled from
+/// when [`commit`](Editor::commit) sent it (`None` after a send by any other
+/// path: a re-prepare, [`package`](Editor::package), each of which clears it). A commit that finds
+/// both unchanged, with nothing pending, sends nothing: it would compile the
+/// same plan with an empty delta.
+struct Sent {
+    plan: Arc<Plan>,
+    committed: Option<Box<Committed>>,
 }
 
 impl Lifecycle {
@@ -550,8 +557,53 @@ impl Lifecycle {
     fn plan(&self) -> Option<&Arc<Plan>> {
         match self {
             Self::Unplanned => None,
-            Self::Running(plan) => Some(plan),
-            Self::Repreparing { plan, .. } | Self::Poisoned { plan, .. } => plan.as_ref(),
+            Self::Running(sent) => Some(&sent.plan),
+            Self::Repreparing { sent, .. } | Self::Poisoned { sent, .. } => {
+                sent.as_ref().map(|s| &s.plan)
+            }
+        }
+    }
+
+    /// The spec and shapes the running plan was compiled from, when a
+    /// commit sent it.
+    fn committed(&self) -> Option<&Committed> {
+        match self {
+            Self::Running(sent)
+            | Self::Repreparing {
+                sent: Some(sent), ..
+            }
+            | Self::Poisoned {
+                sent: Some(sent), ..
+            } => sent.committed.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// As [`committed`](Self::committed), to write a control into.
+    fn committed_mut(&mut self) -> Option<&mut Committed> {
+        match self {
+            Self::Running(sent)
+            | Self::Repreparing {
+                sent: Some(sent), ..
+            }
+            | Self::Poisoned {
+                sent: Some(sent), ..
+            } => sent.committed.as_deref_mut(),
+            _ => None,
+        }
+    }
+
+    /// Records the spec and shapes the running plan was compiled from.
+    fn set_committed(&mut self, spec: GraphSpec, shapes: Shapes) {
+        if let Self::Running(sent) = self {
+            sent.committed = Some(Box::new(Committed { spec, shapes }));
+        }
+    }
+
+    /// Forgets what the running plan was compiled from.
+    fn clear_committed(&mut self) {
+        if let Self::Running(sent) = self {
+            sent.committed = None;
         }
     }
 
@@ -561,18 +613,18 @@ impl Lifecycle {
         std::mem::replace(self, Self::Unplanned)
     }
 
-    /// The plan sent last, by value.
-    fn into_plan(self) -> Option<Arc<Plan>> {
+    /// The plan sent last and what it was compiled from, by value.
+    fn into_sent(self) -> Option<Sent> {
         match self {
             Self::Unplanned => None,
-            Self::Running(plan) => Some(plan),
-            Self::Repreparing { plan, .. } | Self::Poisoned { plan, .. } => plan,
+            Self::Running(sent) => Some(sent),
+            Self::Repreparing { sent, .. } | Self::Poisoned { sent, .. } => sent,
         }
     }
 
-    /// The idle state holding `plan`.
-    fn idle(plan: Option<Arc<Plan>>) -> Self {
-        plan.map_or(Self::Unplanned, Self::Running)
+    /// The idle state holding `sent`.
+    fn idle(sent: Option<Sent>) -> Self {
+        sent.map_or(Self::Unplanned, Self::Running)
     }
 }
 
@@ -1004,7 +1056,6 @@ impl Editor {
             event_taps: Outlets::new(),
             meters: Outlets::new(),
             life: Lifecycle::Unplanned,
-            committed: None,
             limits: Limits::NONE,
             event_capacity: cap,
             fork_health: Vec::new(),
@@ -1692,10 +1743,10 @@ impl Editor {
         // later commit with nothing else to send is the plain comparison,
         // not a validate. (A committed spec without the node differs in its
         // topology anyway, and gets a full commit.)
-        if let Some((committed, _)) = &mut self.committed
-            && committed.topology.nodes.contains_key(&at.node)
+        if let Some(c) = self.life.committed_mut()
+            && c.spec.topology.nodes.contains_key(&at.node)
         {
-            committed.set_param_range(at, range);
+            c.spec.set_param_range(at, range);
         }
         Ok(())
     }
@@ -1756,8 +1807,8 @@ impl Editor {
         // holds it too, and a later commit with nothing else to send is the
         // plain comparison. (A committed spec without the entry differs in
         // its keys anyway, and gets a full commit.)
-        if let Some((committed, _)) = &mut self.committed
-            && let Some(g) = committed.gains.get_mut(&id)
+        if let Some(c) = self.life.committed_mut()
+            && let Some(g) = c.spec.gains.get_mut(&id)
         {
             g.base = base;
         }
@@ -1791,8 +1842,8 @@ impl Editor {
         if let Some(cell) = self.cells.gains.get(id) {
             cell.store_fade(fade);
         }
-        if let Some((committed, _)) = &mut self.committed
-            && let Some(g) = committed.gains.get_mut(&id)
+        if let Some(c) = self.life.committed_mut()
+            && let Some(g) = c.spec.gains.get_mut(&id)
         {
             g.fade = fade;
         }
@@ -1814,11 +1865,7 @@ impl Editor {
     /// commit has not, and fading it out is just removing it.
     #[must_use]
     pub fn edge_is_live(&self, id: EdgeId) -> bool {
-        self.life.plan().is_some()
-            && self
-                .committed
-                .as_ref()
-                .is_none_or(|(spec, _)| spec.has_edge(id))
+        self.life.plan().is_some() && self.life.committed().is_none_or(|c| c.spec.has_edge(id))
     }
 
     /// As [`edge_is_live`](Self::edge_is_live) for the bus edge `from -> to`
@@ -1827,9 +1874,9 @@ impl Editor {
     pub fn bus_edge_is_live(&self, from: BusSource, to: Option<BusRef>) -> bool {
         self.life.plan().is_some()
             && self
-                .committed
-                .as_ref()
-                .is_none_or(|(spec, _)| spec.bus_fade(from, to).is_some())
+                .life
+                .committed()
+                .is_none_or(|c| c.spec.bus_fade(from, to).is_some())
     }
 
     /// Finishes, in the spec, every declick fade the executor has reported
@@ -2059,8 +2106,8 @@ impl Editor {
         if let Some(cell) = self.cells.gains.get(id) {
             cell.store_range(range);
         }
-        if let Some((committed, _)) = &mut self.committed
-            && let Some(g) = committed.gains.get_mut(&id)
+        if let Some(c) = self.life.committed_mut()
+            && let Some(g) = c.spec.gains.get_mut(&id)
         {
             g.range = range;
         }
@@ -2169,8 +2216,8 @@ impl Editor {
         // As for a range: the cell holds it, so the spec last committed holds
         // it too, and a later commit with nothing else to send is the plain
         // comparison.
-        if let Some((committed, _)) = &mut self.committed {
-            committed.set_mode(key, mode);
+        if let Some(c) = self.life.committed_mut() {
+            c.spec.set_mode(key, mode);
         }
         Ok(())
     }
@@ -2219,8 +2266,8 @@ impl Editor {
         if let Some(cell) = self.cells.modes.get(key) {
             cell.store_mix(mix);
         }
-        if let Some((committed, _)) = &mut self.committed {
-            committed.set_mix(key, mix);
+        if let Some(c) = self.life.committed_mut() {
+            c.spec.set_mix(key, mix);
         }
         Ok(())
     }
@@ -2259,7 +2306,7 @@ impl Editor {
     /// Write every live cell from the spec: every range and mode, and a base
     /// or mix the spec moved since the last commit.
     fn sync_ranges(&self) {
-        let committed = self.committed.as_ref().map(|(spec, _)| spec);
+        let committed = self.life.committed().map(|c| &c.spec);
         self.cells.sync(&self.spec, committed);
     }
 
@@ -2601,7 +2648,7 @@ impl Editor {
             let cause = format!("a node panicked in prepare: {}", panic_text(p));
             self.life = Lifecycle::Poisoned {
                 cause: cause.clone(),
-                plan: self.life.take().into_plan(),
+                sent: self.life.take().into_sent(),
             };
             return Err(CommitError::Poisoned { cause });
         }
@@ -2610,7 +2657,7 @@ impl Editor {
         self.link.send_suspend(suspend);
         self.prepare = prepare;
         self.life = Lifecycle::Repreparing {
-            plan: self.life.take().into_plan(),
+            sent: self.life.take().into_sent(),
             reprepare: Box::new(Reprepare {
                 spec: self.spec.clone(),
                 shapes: self.shapes.clone(),
@@ -2632,32 +2679,30 @@ impl Editor {
         self.touch();
         let returned = done.take_retired();
         drop(done);
-        let Lifecycle::Repreparing { plan, reprepare } = self.life.take() else {
+        let Lifecycle::Repreparing { sent, reprepare } = self.life.take() else {
             unreachable!("a suspend box answers a reprepare");
         };
         // The resume compiles against the plan sent before the re-prepare.
-        self.life = Lifecycle::idle(plan);
+        self.life = Lifecycle::idle(sent);
+        self.life.clear_committed();
         let rep = *reprepare;
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.finish_reprepare(returned, rep)
         }));
         match outcome {
-            Ok(Ok((plan, resume, units, weights))) => {
-                self.committed = None;
-                self.send(plan, resume, units, &weights)
-            }
+            Ok(Ok((plan, resume, units, weights))) => self.send(plan, resume, units, &weights),
             Ok(Err(e)) => {
                 self.life = Lifecycle::Poisoned {
                     cause: format!(
                         "the re-prepared units' shapes no longer compile against the graph: {e}"
                     ),
-                    plan: self.life.take().into_plan(),
+                    sent: self.life.take().into_sent(),
                 };
             }
             Err(p) => {
                 self.life = Lifecycle::Poisoned {
                     cause: format!("a node panicked while being re-prepared: {}", panic_text(p)),
-                    plan: self.life.take().into_plan(),
+                    sent: self.life.take().into_sent(),
                 };
             }
         }
@@ -2815,20 +2860,18 @@ impl Editor {
             && !self.taps.has_pending()
             && !self.event_taps.has_pending()
             && !self.meters.has_pending()
-            && self.committed.as_ref().is_some_and(|(spec, shapes)| {
-                *shapes == self.shapes && spec.same_but_ranges(&self.spec)
-            })
+            && self
+                .life
+                .committed()
+                .is_some_and(|c| c.shapes == self.shapes && c.spec.same_but_ranges(&self.spec))
         {
             // The plan the executor has is this spec's: at most a range
             // moved, which is a control.
-            if self
-                .committed
-                .as_ref()
-                .is_some_and(|(spec, _)| *spec != self.spec)
-            {
+            if self.life.committed().is_some_and(|c| c.spec != self.spec) {
                 Self::lower_and_validate(&self.spec, &self.shapes)?;
                 self.sync_ranges();
-                self.committed = Some((self.spec.clone(), self.shapes.clone()));
+                self.life
+                    .set_committed(self.spec.clone(), self.shapes.clone());
             }
             return Ok(());
         }
@@ -2887,7 +2930,8 @@ impl Editor {
         self.placements.clear_fades_and_cuts();
         self.send(plan, delta, units, &weights);
         self.sync_ranges();
-        self.committed = Some((self.spec.clone(), self.shapes.clone()));
+        self.life
+            .set_committed(self.spec.clone(), self.shapes.clone());
         Ok(())
     }
 
@@ -2918,7 +2962,7 @@ impl Editor {
         self.fade_room(&delta)?;
         plan.verify_fades(self.base().map(|p| &**p), &delta)
             .map_err(CommitError::Fade)?;
-        self.committed = None;
+        self.life.clear_committed();
         // The plan was compiled elsewhere, from the spec as it stands (as a
         // caller that lowers it must have).
         let weights = self.lowered().map(|l| l.weights()).unwrap_or_default();
@@ -3039,7 +3083,7 @@ impl Editor {
         self.touch();
         let fades = starting(&delta);
         let plan = Arc::new(plan);
-        let committed = self.committed.as_ref().map(|(spec, _)| spec);
+        let committed = self.life.committed().map(|c| &c.spec);
         let spec = &self.spec;
         let (ranges, modes_cells) = (&mut self.cells.ranges, &mut self.cells.modes);
         let params = |key: NodeKey, ports: usize, max: usize| {
@@ -3075,7 +3119,10 @@ impl Editor {
         );
         self.cells.keep_placed(&plan, &self.spec);
         self.link.send(commit, fades);
-        self.life = Lifecycle::Running(plan);
+        // The spec last committed stays until the caller replaces or clears
+        // it: `commit` syncs the cells against it after this send.
+        let committed = self.life.take().into_sent().and_then(|s| s.committed);
+        self.life = Lifecycle::Running(Sent { plan, committed });
     }
 }
 

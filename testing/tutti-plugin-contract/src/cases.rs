@@ -398,10 +398,12 @@ pub fn automation_segment_and_step<F: Format>() {
                 [(from_at as u32, level, from, (to_at - from_at) as u32, to)]
             );
             assert_eq!(sent, [(to_at as u32, step)], "the step is a point");
+            let (param, default) = Param::ALL[0];
+            assert_eq!(param, Param::Level);
             for (i, &v) in out[0].iter().enumerate() {
                 let i = i as i32;
                 let want = if i < from_at {
-                    0.5
+                    default as f32
                 } else if i < to_at {
                     (from + (to - from) * f64::from(i - from_at) / f64::from(to_at - from_at))
                         as f32

@@ -66,8 +66,9 @@ impl Stage {
 
     /// Stages `queue` for parameter `id`, in plain units: a ramped event for
     /// each segment between two points at different offsets, and an immediate
-    /// event for a lone point and for the value a step lands on. `false` when it does not fit, with nothing
-    /// staged, for the caller to write the parameter at the head instead.
+    /// event for a lone point and for the value a step lands on. `false` when
+    /// it does not fit, with nothing staged, for the caller to write the
+    /// parameter at the head instead.
     pub(crate) fn stage(&mut self, queue: &ParameterQueue, bounds: ParamBounds) -> bool {
         let points = queue.points.len();
         if points == 0 {

@@ -206,13 +206,16 @@ impl BlacklistView {
 }
 
 impl Catalog {
-    /// Republishes the blacklisted rows to the views, after a change to the
-    /// table.
-    fn publish_blacklist(&self) {
+    /// The one way the table changes: runs `f` over the table, the scanner and
+    /// the configuration, then republishes the blacklisted rows to the views,
+    /// so no change leaves a [`BlacklistView`] behind.
+    fn change<R>(&mut self, f: impl FnOnce(&mut PluginDb, &Scanner, &CatalogConfig) -> R) -> R {
+        let out = f(&mut self.db, &self.scanner, &self.config);
         *self
             .blacklist
             .write()
             .unwrap_or_else(PoisonError::into_inner) = blacklisted_rows(&self.db);
+        out
     }
 
     /// The blacklist as a handle that outlives this borrow and is `Send`: what
@@ -343,11 +346,7 @@ impl Catalog {
     pub fn spawn_scan(&mut self) -> std::result::Result<Scan, ScanBusy> {
         self.finish_pending_save();
         let save = self.autosave();
-        let scan = self
-            .scanner
-            .spawn(&mut self.db, &self.config.scan_dirs, save);
-        self.publish_blacklist();
-        scan
+        self.change(|db, scanner, config| scanner.spawn(db, &config.scan_dirs, save))
     }
 
     /// Applies what a rescan has found so far and reports where it stands.
@@ -360,8 +359,7 @@ impl Catalog {
     /// before the next scan, `save` or drop. Drop the
     /// [`Scan`] once it reports `Done` or `Died`.
     pub fn poll_scan(&mut self, scan: &Scan) -> ScanPoll {
-        let poll = scan.poll(&mut self.db);
-        self.publish_blacklist();
+        let poll = self.change(|db, _, _| scan.poll(db));
         if matches!(poll, ScanPoll::Done(_)) {
             self.save_in_background();
         }
@@ -381,11 +379,8 @@ impl Catalog {
     pub fn scan(&mut self) -> std::result::Result<ScanResult, ScanBusy> {
         self.finish_pending_save();
         let save = self.autosave();
-        let result = self
-            .scanner
-            .scan(&mut self.db, &self.config.scan_dirs, save);
-        self.publish_blacklist();
-        let result = result?;
+        let result =
+            self.change(|db, scanner, config| scanner.scan(db, &config.scan_dirs, save))?;
         // A failure stays for `take_persist_error`; the scan's result is the table.
         let _ = persist_unattended(&self.persist, &self.unreported, &self.db);
         Ok(result)
@@ -527,9 +522,8 @@ impl Catalog {
     /// and making [`check`](Self::check) refuse it.
     pub fn blacklist(&mut self, path: impl AsRef<Path>, reason: impl Into<String>) {
         let path = key(path.as_ref());
-        self.db
-            .blacklist(&path, reason.into(), &FileFacts::read(&path));
-        self.publish_blacklist();
+        let reason = reason.into();
+        self.change(|db, _, _| db.blacklist(&path, reason, &FileFacts::read(&path)));
     }
 
     /// Clears one blacklist entry so the plugin is probed again on the next
@@ -550,9 +544,7 @@ impl Catalog {
     pub fn unblacklist(&mut self, path: impl AsRef<Path>) -> bool {
         let path = key(path.as_ref());
         self.forget_in_pedal(&path);
-        let found = self.db.unblacklist(&path);
-        self.publish_blacklist();
-        found
+        self.change(|db, _, _| db.unblacklist(&path))
     }
 
     fn forget_in_pedal(&self, file: &Path) {
@@ -563,9 +555,7 @@ impl Catalog {
 
     /// Clears every blacklist entry and returns the paths cleared.
     pub fn clear_blacklist(&mut self) -> Vec<PathBuf> {
-        let cleared = self.db.clear_blacklist();
-        self.publish_blacklist();
-        cleared
+        self.change(|db, _, _| db.clear_blacklist())
     }
 
     /// Removes one file, blacklisted or not.
@@ -575,8 +565,7 @@ impl Catalog {
     pub fn remove(&mut self, path: impl AsRef<Path>) {
         let path = key(path.as_ref());
         self.forget_in_pedal(&path);
-        self.db.apply(Delta::remove(path));
-        self.publish_blacklist();
+        self.change(|db, _, _| db.apply(Delta::remove(path)));
     }
 
     /// Probes one plugin file and adds it to the catalog, returning its
@@ -636,8 +625,7 @@ impl Catalog {
     /// [`probe_record`] on any thread (it needs no catalog) and pass the result
     /// here. Call [`save`](Self::save) to persist.
     pub fn apply(&mut self, delta: Delta) {
-        self.db.apply(delta);
-        self.publish_blacklist();
+        self.change(|db, _, _| db.apply(delta));
     }
 
     /// Writes the in-memory catalog through the catalog's persistence.
@@ -683,9 +671,7 @@ impl Catalog {
     pub fn recover_crash(&mut self) -> std::result::Result<Vec<PathBuf>, ScanBusy> {
         self.finish_pending_save();
         let save = self.autosave();
-        let recovered = self.scanner.recover_crash(&mut self.db, save);
-        self.publish_blacklist();
-        recovered
+        self.change(|db, scanner, _| scanner.recover_crash(db, save))
     }
 
     /// Removes rows whose plugin file does not exist and returns their paths.
@@ -701,9 +687,7 @@ impl Catalog {
             .filter(|(path, _)| FileFacts::read(path).exists)
             .map(|(path, _)| path.to_path_buf())
             .collect();
-        let pruned = self.db.prune_missing(&present);
-        self.publish_blacklist();
-        pruned
+        self.change(|db, _, _| db.prune_missing(&present))
     }
 }
 

@@ -44,7 +44,7 @@ fn retargeting_to_the_general_midi_network_changes_no_coefficient() {
     let rate = SampleRate::SR_44K1;
     let fresh = Freeverb::new(rate);
     // Start from other figures so the retarget is seen to set them.
-    let mut realization = FreeverbFamily.realized();
+    let mut realization = FreeverbFamily.realized(rate);
     realization.retarget(&FreeverbFamily.member(&controls(0.9, 0.9), rate));
     assert_ne!(realization.figures().comb, fresh.figures().comb);
     realization.retarget(&FreeverbFamily.member(&FreeverbControls::GENERAL_MIDI, rate));
@@ -61,7 +61,7 @@ fn retargeting_to_the_general_midi_network_changes_no_coefficient() {
 #[test]
 fn a_network_it_does_not_understand_is_ignored() {
     let rate = SampleRate::SR_44K1;
-    let mut realization = FreeverbFamily.realized();
+    let mut realization = FreeverbFamily.realized(rate);
     let before = realization.figures().comb;
     realization.retarget(&Network::new(rate));
     let mut flat = FreeverbFamily.member(&controls(0.9, 0.9), rate);
@@ -80,8 +80,9 @@ fn a_network_it_does_not_understand_is_ignored() {
 /// retargeted to, and its lines are those of a `Freeverb` built at that rate.
 #[test]
 fn prepare_retunes_the_lines_and_keeps_the_coefficients() {
-    let mut realization = FreeverbFamily.realized();
-    realization.retarget(&FreeverbFamily.member(&controls(0.9, 0.2), SampleRate::DEFAULT));
+    let built_at = SampleRate::SR_48K;
+    let mut realization = FreeverbFamily.realized(built_at);
+    realization.retarget(&FreeverbFamily.member(&controls(0.9, 0.2), built_at));
     let want = realization.figures().comb;
     let rate = SampleRate::SR_96K;
     let reach = Reach::at(rate);

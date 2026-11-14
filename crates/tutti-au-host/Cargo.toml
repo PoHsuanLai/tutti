@@ -19,6 +19,8 @@ workspace = true
 # walkers). Off in a production build.
 testing = ["tutti-au-ffi/testing"]
 [dependencies]
+# The editor's sizes, which name their unit (`dpi::Size`).
+dpi.workspace = true
 tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types" }
 # Every raw AudioToolbox, CoreAudio and CoreFoundation call; this crate forbids
 # `unsafe`.

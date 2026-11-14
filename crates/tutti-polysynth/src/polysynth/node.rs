@@ -16,7 +16,7 @@ use tutti_graph::{
     Chase, Cx, IntoNode, Io, Node, NodeParts, ParamNode, ParamSet, Prepare, Shape, Status,
 };
 use tutti_types::UnitParam;
-use tutti_types::{Amplitude, BusTopology, Cents, Spread};
+use tutti_types::{Amplitude, BusTopology, CentsSpan, Spread};
 use tutti_voicing::Voicing;
 
 use super::PolySynth;
@@ -27,7 +27,7 @@ use super::PolySynth;
 // same way: its value on the block's last frame.
 tutti_graph::declare_params!([] PolySynth, n {
     Volume => Amplitude = &n.master_volume,
-    Detune => Cents = n.unison.as_ref().map(|u| u.detune()),
+    Detune => CentsSpan = n.unison.as_ref().map(|u| u.detune()),
     StereoSpread => Spread = n.unison.as_ref().map(|u| u.spread()),
 });
 

@@ -10,6 +10,7 @@ use crate::generator_range;
 use crate::generator_type::GeneratorType;
 use crate::instrument_generator::InstrumentGenerator;
 use crate::loop_mode::LoopMode;
+use crate::sample_header::playing_rate;
 use crate::sample_header::{SampleHeader, Side};
 use crate::zone::Zone;
 
@@ -235,10 +236,11 @@ impl InstrumentRegion {
         )
     }
 
-    /// The rate the sample was recorded at, or `None` when the file states 0.
+    /// The rate the sample plays at: the rate its header states, or
+    /// [`NEAREST_PRACTICAL_RATE`](crate::NEAREST_PRACTICAL_RATE) when it states 0.
     #[must_use]
-    pub fn sample_rate(&self) -> Option<SampleRate> {
-        SampleRate::new(f64::from(self.sample_sample_rate))
+    pub fn sample_rate(&self) -> SampleRate {
+        playing_rate(self.sample_sample_rate)
     }
 
     /// The sample header's pitch correction.

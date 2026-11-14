@@ -17,8 +17,8 @@ use tutti_modulation::{Amount, Clock, ControlProgram, Law, Layer, LayerId, Polar
 use tutti_nodes::automation::ControlLaneNode;
 use tutti_polysynth::{Adsr, OscillatorType, PolySynth, SynthConfig, UnisonConfig, UnisonVoices};
 use tutti_types::{
-    Beat, BeatsPerCycle, Bpm, Cents, Depth, PhaseIncrement, SampleRate, Samples, Seconds, Spread,
-    UnitParam,
+    Beat, BeatsPerCycle, Bpm, CentsSpan, Depth, PhaseIncrement, SampleRate, Samples, Seconds,
+    Spread, UnitParam,
 };
 use tutti_ump::{MidiChannel, MidiGroup};
 
@@ -39,7 +39,7 @@ fn synth(unison: bool, detune: f32) -> PolySynth {
         },
         unison: unison.then_some(UnisonConfig {
             voice_count: UnisonVoices::of(3),
-            detune_cents: Cents(detune),
+            detune_cents: CentsSpan::of(detune),
             stereo_spread: Spread::POINT,
             phase_randomize: false,
         }),

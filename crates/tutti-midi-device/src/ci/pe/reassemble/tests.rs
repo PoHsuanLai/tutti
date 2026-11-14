@@ -502,7 +502,7 @@ fn the_buffer_cap_is_shared_by_all_messages() {
     assert_eq!(r.buffered().streams, 1);
 }
 
-fn flow_request(flow: bool) -> Vec<u8> {
+fn flow_request(flow: PeFlowControl) -> Vec<u8> {
     let mut request = PeRequest::new(ResourceName::new("State").unwrap());
     request.flow_control = flow;
     PeHeader::Request(request)
@@ -534,7 +534,7 @@ fn next(chunk: u16) -> Option<PeSignal> {
 fn flow_control_acknowledges_each_chunk_of_a_set_but_the_last() {
     let now = Instant::now();
     let mut r = reassembler();
-    let header = flow_request(true);
+    let header = flow_request(PeFlowControl::On);
     let first = with_header(header.clone(), 3, 1, b"ab");
     assert_eq!(pending(push(&mut r, KIND, first, now)), next(1));
     assert_eq!(
@@ -583,7 +583,7 @@ fn flow_control_acknowledges_every_chunk_of_a_get_reply() {
 fn no_flow_control_means_no_acknowledgement() {
     let now = Instant::now();
     let mut r = reassembler();
-    let header = flow_request(false);
+    let header = flow_request(PeFlowControl::Off);
     assert_eq!(
         pending(push(&mut r, KIND, with_header(header, 2, 1, b"ab"), now)),
         None

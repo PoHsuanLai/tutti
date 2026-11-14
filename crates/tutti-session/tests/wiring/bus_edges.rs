@@ -7,7 +7,9 @@
 
 use tutti_graph::{BusError, BusRef, BusSource, Buses, NodeKey, Unforkable};
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
-use tutti_session::{Committed, ConnectError, Edge, EdgeGainError, InPort, OutPort, Root, Session};
+use tutti_session::{
+    Committed, ConnectError, Edge, EdgeGainError, InPort, OutPort, Root, Session, SessionEvent,
+};
 use tutti_types::{
     Amplitude, BusTopology, ChannelLayout, ChannelTopology, FoldError, InterleavedMut, M3DB,
 };
@@ -349,6 +351,55 @@ fn an_undeclared_root_refuses_a_bus_edge() {
     assert!(g.bus_sources(Root).unwrap().is_empty());
 }
 
+/// A commit the editor refuses is an event of the update that first tried
+/// it, and of no later update that fails the same way; once a commit is sent,
+/// the next refusal is reported again.
+#[test]
+fn a_refused_commit_is_an_event_of_its_update() {
+    let mut s = offline();
+    s.declare_root_topology(Some(smpte(2))).expect("stereo");
+    let (src, _) = s.graph().add(Unforkable(Src {
+        values: vec![0.25, 0.75],
+        out: named(2),
+    }));
+    s.graph()
+        .connect(BusSource::Node(bus(src.erase())), Root)
+        .unwrap()
+        .hard();
+    let refused = |events: Vec<SessionEvent>| {
+        events
+            .iter()
+            .filter(|e| matches!(e, SessionEvent::CommitRefused(_)))
+            .count()
+    };
+    assert_eq!(
+        refused(s.update()),
+        0,
+        "a stereo bus into a stereo root commits"
+    );
+
+    // Named stereo has no place in one unassigned channel.
+    s.declare_root_topology(Some(ChannelTopology::unassigned(layout(1))))
+        .expect("an unassigned mono root");
+    assert_eq!(refused(s.update()), 1, "the refusal is reported once");
+    assert_eq!(
+        refused(s.update()),
+        0,
+        "and not again while it fails the same way"
+    );
+
+    s.declare_root_topology(Some(smpte(2)))
+        .expect("stereo again");
+    assert_eq!(refused(s.update()), 0, "stereo again commits");
+    s.declare_root_topology(Some(ChannelTopology::unassigned(layout(1))))
+        .expect("an unassigned mono root");
+    assert_eq!(
+        refused(s.update()),
+        1,
+        "a refusal after a sent commit is new"
+    );
+}
+
 /// A re-declaration that changes the root under a root edge re-lowers it at
 /// the next commit (stereo to mono is `0.5 L + 0.5 R`), and one the edge no
 /// longer folds to is a refused commit, the plan sent last standing.
@@ -384,7 +435,7 @@ fn a_redeclared_root_relowers_its_edges_and_a_misfit_refuses_the_commit() {
     // Named stereo has no place in one unassigned channel.
     s.declare_root_topology(Some(ChannelTopology::unassigned(layout(1))))
         .expect("an unassigned mono root");
-    assert_eq!(s.commit(), Committed::Refused);
+    assert!(matches!(s.commit(), Committed::Refused(_)));
     let [l, _] = stereo_block(&mut s);
     assert!(all_are(&l, 0.5), "the plan sent last stands");
 }

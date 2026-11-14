@@ -113,7 +113,7 @@ impl Family for BrickwallFamily {
         out.ceiling = amplitude(c.ceiling).unwrap_or(1.0);
     }
 
-    fn recurrence(&self) -> BrickwallRecurrence {
+    fn recurrence(&self, _: SampleRate) -> BrickwallRecurrence {
         BrickwallRecurrence
     }
 }

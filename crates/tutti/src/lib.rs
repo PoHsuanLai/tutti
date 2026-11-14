@@ -404,12 +404,12 @@ pub use tutti_transport::{
 
 // Units, channels, buffers, the edge traits and the musical meter.
 pub use tutti_types::{
-    Amplitude, At, BarNumber, Beat, BeatDuration, Bpm, Cents, ChannelLayout, ChannelTopology, Db,
-    Depth, FiniteSource, Frame, Hz, Interleaved, InterleavedMut, Latency, LoopRange,
-    LoopRangeError, MaxBlock, Meter, MeterMap, Moment, Note, NoteValue, Param, ParamAddr,
-    PhaseIncrement, PitchClass, Pull, Q, SamplePosition, SampleRate, Samples, Seconds, Semitones,
-    Sink, SinkFailed, Source, Speaker, StereoPlanes, Stop, Tail, TimeSignature, UnitAddr,
-    UnitParam, Velocity,
+    Amplitude, At, BarNumber, Beat, BeatDuration, Bpm, Cents, CentsSpan, ChannelLayout,
+    ChannelTopology, Db, Depth, FiniteSource, Frame, Hz, Interleaved, InterleavedMut, Latency,
+    LoopRange, LoopRangeError, MaxBlock, Meter, MeterMap, Moment, Note, NoteValue, Param,
+    ParamAddr, PhaseIncrement, PitchClass, Pull, Q, SamplePosition, SampleRate, Samples, Seconds,
+    Semitones, Sink, SinkFailed, Source, Speaker, StereoPlanes, Stop, Tail, TimeSignature,
+    UnitAddr, UnitParam, Velocity,
 };
 pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 

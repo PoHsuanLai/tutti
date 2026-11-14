@@ -168,10 +168,15 @@
 //! Every time constant here is derived from a sample rate: delay taps and ring
 //! lengths from [`Seconds`], filter coefficients from a cutoff in [`Hz`]
 //! against Nyquist, envelope attack and release coefficients, LFO phase
-//! increments. A constructor that needs a rate seeds [`SampleRate::DEFAULT`],
-//! and the graph calls the node's `prepare` with the device rate before its
-//! first block, so a node in a graph never renders at the placeholder. To
-//! drive a node outside a graph, prepare it first (`tutti_graph::Solo`, or
+//! increments. A node built over a family ([`FamilyNode`]: the filters, delays, dynamics,
+//! modulation effects and reverbs) has no rate until `prepare` gives it one: it builds its
+//! realization, its models and every figure derived from the rate there, so an unprepared
+//! node holds none. Before `prepare` it declares no latency and an unknown tail, which the
+//! graph reads again after it, and renders silence. A setting that names a frequency is
+//! checked for what a rate does not change (finite, above 0, in order), and a frequency
+//! past the prepared rate's Nyquist is held under it, not refused. The nodes outside the
+//! families ([`LfoNode`], [`ConvolverNode`]) take their rate from `prepare` too. To drive a node
+//! outside a graph, prepare it first (`tutti_graph::Solo`, or
 //! `tutti_graph::contract::prepared` in tests).
 //!
 //! ## Items
@@ -210,7 +215,6 @@
 //!   ([`ControlLaneNode`](automation::ControlLaneNode)).
 //! - Modules: [`automation`] (lanes and recording).
 //!
-//! [`SampleRate::DEFAULT`]: tutti_types::SampleRate::DEFAULT
 
 // The fallible constructions are the crossover's (`CrossoverControls::new`,
 // `CrossoverNode::new`, `MultibandCompressorNode::new`), all `CrossoverError`;
@@ -227,9 +231,9 @@ mod ramp;
 mod test_support;
 
 pub use tutti_types::{
-    Amplitude, ArcDegrees, Azimuth, Bpm, Cents, CompressionRatio, Db, Depth, Drive, Elevation,
-    Feedback, Hz, Mix, Param, Q, Resonance, SampleRate, Seconds, Semitones, Spread, StereoWidth,
-    Unit,
+    Amplitude, ArcDegrees, Azimuth, Bpm, Cents, CentsSpan, CompressionRatio, Db, Depth, Drive,
+    Elevation, Feedback, Hz, Mix, Param, Q, Resonance, SampleRate, Seconds, Semitones, Spread,
+    StereoWidth, Unit,
 };
 
 // The boundary this crate holds: pure DSP graph nodes plus the `ParamSet` /

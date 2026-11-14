@@ -34,7 +34,7 @@ impl Parts {
         _main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> Result<Option<EditorSize>, EditorError> {
+    ) -> Result<Option<Size>, EditorError> {
         if self.controller.get().is_none() {
             return Err(EditorError::NoController);
         }
@@ -118,18 +118,14 @@ impl Parts {
     }
 
     /// The latest size the editor asked the host for, taken.
-    pub fn take_editor_resize_request(&self, _main: &MainThread) -> Option<EditorSize> {
+    pub fn take_editor_resize_request(&self, _main: &MainThread) -> Option<Size> {
         self.editor.as_ref()?.plug_frame.take_resize_request()
     }
 
     /// The size the open editor snaps `requested` to; `None` with no editor
     /// open.
     #[must_use]
-    pub fn editor_size_constraint(
-        &self,
-        main: &MainThread,
-        requested: EditorSize,
-    ) -> Option<EditorSize> {
+    pub fn editor_size_constraint(&self, main: &MainThread, requested: Size) -> Option<Size> {
         let _scope = self.scoped(main);
         Some(self.editor.as_ref()?.constrain(requested).0)
     }
@@ -140,11 +136,7 @@ impl Parts {
     ///
     /// [`Vst3Error::NotInitialized`] with no editor open, or the view's
     /// refusal.
-    pub fn resize_editor(
-        &self,
-        main: &MainThread,
-        requested: EditorSize,
-    ) -> Result<EditorSize, Vst3Error> {
+    pub fn resize_editor(&self, main: &MainThread, requested: Size) -> Result<Size, Vst3Error> {
         let _scope = self.scoped(main);
         self.editor
             .as_ref()
@@ -159,14 +151,14 @@ impl Parts {
     ///
     /// [`Vst3Error::NotInitialized`] with no editor open.
     pub fn set_editor_scale(
-        &self,
+        &mut self,
         main: &MainThread,
         scale: ContentScale,
     ) -> Result<bool, Vst3Error> {
         let _scope = self.scoped(main);
         Ok(self
             .editor
-            .as_ref()
+            .as_mut()
             .ok_or(Vst3Error::NotInitialized)?
             .set_scale(scale))
     }

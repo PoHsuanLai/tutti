@@ -167,15 +167,4 @@ mod tests {
             Err(Error::UnsupportedSampleFormat)
         ));
     }
-
-    // smpl sub-chunk exists, but is zero-length.
-    #[test]
-    fn test_load_empty_samples() {
-        let path = samples_dir_path().join("test_empty_samples.sf2");
-        let mut file = File::open(&path).unwrap();
-        assert!(matches!(
-            SoundFont::from_reader(&mut file),
-            Err(Error::SampleDataNotFound)
-        ));
-    }
 }

@@ -75,6 +75,7 @@ units! {
         tutti_nodes::LfoNode { Depth => Depth, Rate => Hz }
         tutti_nodes::OscillatorNode { Frequency => Hz, Volume => Amplitude }
         tutti_nodes::FreeverbNode { RoomSize => Mix, Damping => Mix }
+        tutti_nodes::ConvolverNode { Volume => Amplitude }
         tutti_nodes::FdnNode {
             Decay => Seconds, RoomSize => Mix, Diffusion => Mix, DelayTime => Seconds,
             Depth => Depth, Rate => Hz, StereoSpread => StereoWidth, GainDb => Db, Freeze => bool
@@ -86,7 +87,7 @@ units! {
         tutti_nodes::HrtfBinauralNode { Azimuth => Azimuth, Elevation => Elevation, Wet => Mix }
     }
     the_synths_params_are_in_their_declared_unit #[cfg(feature = "synth")] {
-        tutti_polysynth::PolySynth { Volume => Amplitude, Detune => tutti_types::Cents, StereoSpread => Spread }
+        tutti_polysynth::PolySynth { Volume => Amplitude, Detune => tutti_types::CentsSpan, StereoSpread => Spread }
     }
     the_samplers_params_are_in_their_declared_unit #[cfg(feature = "sampler")] {
         tutti_sampler::VoiceNode { Volume => Amplitude }

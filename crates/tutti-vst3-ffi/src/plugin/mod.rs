@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
+use dpi::Size;
 use vst3::Steinberg::{
     FUnknown, IBStream, IPlugView, IPluginBaseTrait, TUID,
     Vst::{
@@ -29,9 +30,7 @@ use vst3::Steinberg::{
 };
 use vst3::{ComPtr, ComWrapper};
 
-use tutti_plugin_types::{
-    ContentScale, EditorCapabilities, EditorSize, MainThread, ParamId, WindowHandle,
-};
+use tutti_plugin_types::{ContentScale, EditorCapabilities, MainThread, ParamId, WindowHandle};
 use tutti_types::ChannelLayout;
 
 use crate::audio::{Arrangement, AudioSide, Setup, Shared};

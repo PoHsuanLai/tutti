@@ -58,11 +58,11 @@
 //! assert_send::<tutti_session::Session>();
 //! ```
 
+use dpi::Size;
 use raw_window_handle::HasWindowHandle;
 use tutti_graph::NodeKey;
 use tutti_plugin_types::{
-    ContentScale, EditorError, EditorSize, Features, KeyEvent, KeyUse, MainThread, PresetError,
-    WindowHandle,
+    ContentScale, EditorError, Features, KeyEvent, KeyUse, MainThread, PresetError, WindowHandle,
 };
 
 use crate::plugin::HostedPlugin;
@@ -210,12 +210,15 @@ impl MainPlugin<'_> {
 
 /// Whether the editor embedded in the parent the host gave, or the plugin
 /// opened a window of its own ([`EditorView::open`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum Opened {
     /// Embedded in the parent window, at this size: the host sizes the parent
-    /// to it.
-    Embedded(EditorSize),
+    /// to it. The size names its unit: a [`Size::Physical`] where the plugin's
+    /// format counts in device pixels, a [`Size::Logical`] where it counts in
+    /// points (macOS, and AU), so a windowing frontend that sizes its windows
+    /// in `dpi` units, as winit does, passes it on as it is.
+    Embedded(Size),
     /// The plugin made a floating window of its own (a CLAP plugin that cannot
     /// embed): there is no size, and nothing to lay out.
     Floating,
@@ -266,11 +269,14 @@ impl EditorView<'_> {
     /// Asks the plugin to take `requested` (the answer to
     /// [`PluginChange::EditorWantsSize`], or the host's own resize of its
     /// window) and returns the size it took, which may be snapped or clamped.
+    /// `requested` may be in either unit: the format converts it at the scale
+    /// the editor was last given. The size taken is in the format's own unit,
+    /// as [`Opened::Embedded`]'s is.
     ///
     /// # Errors
     ///
     /// No editor is open, or the plugin cannot resize.
-    pub fn resize(&mut self, requested: EditorSize) -> Result<EditorSize, EditorError> {
+    pub fn resize(&mut self, requested: Size) -> Result<Size, EditorError> {
         self.hosted.handle.set_editor_size(&self.main, requested)
     }
 

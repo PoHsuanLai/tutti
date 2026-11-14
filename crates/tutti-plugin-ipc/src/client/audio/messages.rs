@@ -7,8 +7,9 @@ use crate::protocol::{
     NoteExpressionTextChanges, ParamEdit, ParamId, ParameterChanges, ParameterInfo, PluginTail,
     Preset, PresetId, Samples, ScaleChanges, TransportChanges, TransportInfo,
 };
+use dpi::Size;
 use tutti_plugin_types::{
-    BlockStatus, ContentScale, EditorSize, PluginFailure, ResyncKind, StateError, StateUse,
+    BlockStatus, ContentScale, PluginFailure, ResyncKind, StateError, StateUse,
 };
 use tutti_types::SampleRate;
 
@@ -148,12 +149,12 @@ pub(super) enum Command {
     OpenEditor {
         parent: Option<u64>,
         scale: ContentScale,
-        reply: Reply<std::result::Result<Option<EditorSize>, String>>,
+        reply: Reply<std::result::Result<Option<Size>, String>>,
     },
     CloseEditor,
     SetEditorSize {
-        size: EditorSize,
-        reply: Reply<std::result::Result<EditorSize, String>>,
+        size: Size,
+        reply: Reply<std::result::Result<Size, String>>,
     },
 }
 
@@ -395,7 +396,7 @@ impl Unsolicited {
     }
 
     /// The server's editor asked its window for `size`.
-    pub(super) fn editor_wants_size(&mut self, size: EditorSize) {
+    pub(super) fn editor_wants_size(&mut self, size: Size) {
         if let Some(lifecycle) = &self.lifecycle {
             lifecycle.set_editor_wants(size);
         }

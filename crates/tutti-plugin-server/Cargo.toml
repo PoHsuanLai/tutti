@@ -37,6 +37,8 @@ tutti-plugin-ipc = { version = "0.0.1", path = "../tutti-plugin-ipc" }
 # The shared bundle-layout walk (`bundle::any_module_in_bundle`). Direct rather
 # than reached through the wire crate, because this is a dependency in its own
 # right and a re-export would hide that.
+# The editor's sizes, which name their unit (`dpi::Size`).
+dpi.workspace = true
 tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types" }
 
 tutti-rt = { version = "0.0.1", path = "../tutti-rt" }

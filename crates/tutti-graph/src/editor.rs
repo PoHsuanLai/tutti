@@ -474,19 +474,17 @@ pub struct Editor {
     /// Each open meter's lane capacity and reader, to see which were dropped.
     meter_readers: BTreeMap<MeterId, (usize, std::sync::Weak<()>)>,
     next_gen: BTreeMap<NodeKey, u32>,
-    /// The plan sent last: what the executor will be running once the queue
-    /// drains, and what the next commit is compiled against.
-    plan: Option<Arc<Plan>>,
+    /// Where the compile lifecycle stands: the plan sent last (what the
+    /// executor will be running once the queue drains, and what the next
+    /// commit is compiled against), a re-prepare between its two commits,
+    /// or the cause a re-prepare left the editor poisoned by.
+    life: Lifecycle,
     /// The spec and shapes that plan was compiled from, when
     /// [`commit`](Self::commit) sent it; `None` after a send by any other
     /// path (a re-prepare, [`package`](Self::package)). A commit that finds
     /// both unchanged, with nothing pending, sends nothing: it would compile
     /// the same plan with an empty delta.
     committed: Option<(GraphSpec, Shapes)>,
-    /// A re-prepare between its two commits.
-    repreparing: Option<Reprepare>,
-    /// Why a re-prepare failed with the units out, if one did.
-    poisoned: Option<String>,
     /// What the executor's host can take.
     limits: Limits,
     /// Where each forkable node's forks come from, handed over at insert
@@ -532,9 +530,9 @@ impl std::fmt::Debug for Editor {
             .field("fades", &self.fades)
             .field("latency_cuts", &self.latency_cuts)
             .field("next_gen", &self.next_gen)
-            .field("planned", &self.plan.is_some())
+            .field("planned", &self.life.plan().is_some())
             .field("committed", &self.committed)
-            .field("poisoned", &self.poisoned)
+            .field("poisoned", &self.poison_cause())
             .field("limits", &self.limits)
             .field("event_capacity", &self.event_capacity)
             .field("param_ranges", &self.param_ranges.len())
@@ -549,6 +547,61 @@ fn panic_text(p: Box<dyn std::any::Any + Send>) -> String {
         .map(|s| (*s).to_string())
         .or_else(|| p.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "a non-string panic".to_string())
+}
+
+/// The editor's compile lifecycle. A plan is sent by a commit, and a
+/// re-prepare suspends the executor between two commits; a failed second half
+/// leaves the units out, for good. The states are exclusive (a poisoned editor
+/// is not re-preparing, and a re-prepare cannot start poisoned), so the
+/// type says so.
+enum Lifecycle {
+    /// Nothing has been sent.
+    Unplanned,
+    /// `plan` is the plan sent last.
+    Running(Arc<Plan>),
+    /// A re-prepare is between its two commits; `plan` is the plan sent
+    /// before it, which the resume compiles against.
+    Repreparing {
+        plan: Option<Arc<Plan>>,
+        reprepare: Box<Reprepare>,
+    },
+    /// A re-prepare failed with its units out: `cause` says why, and `plan`
+    /// is the plan that was running.
+    Poisoned {
+        cause: String,
+        plan: Option<Arc<Plan>>,
+    },
+}
+
+impl Lifecycle {
+    /// The plan sent last, in whichever state.
+    fn plan(&self) -> Option<&Arc<Plan>> {
+        match self {
+            Self::Unplanned => None,
+            Self::Running(plan) => Some(plan),
+            Self::Repreparing { plan, .. } | Self::Poisoned { plan, .. } => plan.as_ref(),
+        }
+    }
+
+    /// Takes the state out, leaving [`Unplanned`](Self::Unplanned); the
+    /// caller puts one back.
+    fn take(&mut self) -> Self {
+        std::mem::replace(self, Self::Unplanned)
+    }
+
+    /// The plan sent last, by value.
+    fn into_plan(self) -> Option<Arc<Plan>> {
+        match self {
+            Self::Unplanned => None,
+            Self::Running(plan) => Some(plan),
+            Self::Repreparing { plan, .. } | Self::Poisoned { plan, .. } => plan,
+        }
+    }
+
+    /// The idle state holding `plan`.
+    fn idle(plan: Option<Arc<Plan>>) -> Self {
+        plan.map_or(Self::Unplanned, Self::Running)
+    }
 }
 
 /// A re-prepare waiting for the executor to hand its units back: the graph
@@ -1008,10 +1061,8 @@ impl Editor {
             pending_meters: Vec::new(),
             meter_readers: BTreeMap::new(),
             next_gen: BTreeMap::new(),
-            plan: None,
+            life: Lifecycle::Unplanned,
             committed: None,
-            repreparing: None,
-            poisoned: None,
             limits: Limits::NONE,
             forks: BTreeMap::new(),
             event_capacity: cap,
@@ -1062,7 +1113,7 @@ impl Editor {
             max_block: limits.max_block.min(self.limits.max_block),
         };
         self.collect();
-        if let Some(plan) = &self.plan {
+        if let Some(plan) = self.life.plan() {
             limits.outputs(plan.global_outputs())?;
         }
         limits.block(self.prepare.max_block().get())?;
@@ -1256,17 +1307,20 @@ impl Editor {
     /// with [`CommitError::Repreparing`]. A host that must not lose what it
     /// would pass to one of them (a `replace` consumes its node) asks first.
     pub fn is_repreparing(&self) -> bool {
-        self.repreparing.is_some()
+        matches!(self.life, Lifecycle::Repreparing { .. })
     }
 
     /// The cause the editor was poisoned by, if it is ([`CommitError::Poisoned`]).
     pub fn poison_cause(&self) -> Option<&str> {
-        self.poisoned.as_deref()
+        match &self.life {
+            Lifecycle::Poisoned { cause, .. } => Some(cause),
+            _ => None,
+        }
     }
 
     /// The plan sent last — what the next commit is compiled against.
     pub fn base(&self) -> Option<&Arc<Plan>> {
-        self.plan.as_ref()
+        self.life.plan()
     }
 
     /// Adds `node` at `key`, or replaces the unit there (a new generation).
@@ -1358,12 +1412,12 @@ impl Editor {
         fade: Fade,
     ) -> Result<N::Controls, CommitError> {
         self.check_poisoned()?;
-        if self.repreparing.is_some() {
+        if self.is_repreparing() {
             return Err(CommitError::Repreparing);
         }
         let running = self
-            .plan
-            .as_ref()
+            .life
+            .plan()
             .and_then(|p| p.unit(key))
             .map(|u| u.shape)
             .filter(|_| self.spec.topology.nodes.contains_key(&key))
@@ -1438,7 +1492,7 @@ impl Editor {
         fade: Fade,
     ) -> Result<N::Controls, CommitError> {
         self.check_poisoned()?;
-        if self.repreparing.is_some() {
+        if self.is_repreparing() {
             return Err(CommitError::Repreparing);
         }
         let kind = self
@@ -1448,11 +1502,7 @@ impl Editor {
             .get(&key)
             .map(|n| n.kind.clone())
             .expect("replace_or_swap names a node in the spec");
-        let running = self
-            .plan
-            .as_ref()
-            .and_then(|p| p.unit(key))
-            .map(|u| u.shape);
+        let running = self.life.plan().and_then(|p| p.unit(key)).map(|u| u.shape);
         let NodeParts {
             node: mut unit,
             controls,
@@ -1575,7 +1625,7 @@ impl Editor {
     pub fn set_latency(&mut self, key: NodeKey, latency: Latency) -> Result<(), CommitError> {
         self.collect();
         self.check_poisoned()?;
-        if self.repreparing.is_some() {
+        if self.is_repreparing() {
             return Err(CommitError::Repreparing);
         }
         let limit = Latency::new(MAX_NODE_LATENCY);
@@ -1643,7 +1693,7 @@ impl Editor {
     pub fn set_tail(&mut self, key: NodeKey, tail: Tail) -> Result<(), CommitError> {
         self.collect();
         self.check_poisoned()?;
-        if self.repreparing.is_some() {
+        if self.is_repreparing() {
             return Err(CommitError::Repreparing);
         }
         if let Tail::Finite(frames) = tail
@@ -1853,7 +1903,7 @@ impl Editor {
     /// commit has not, and fading it out is just removing it.
     #[must_use]
     pub fn edge_is_live(&self, id: EdgeId) -> bool {
-        self.plan.is_some()
+        self.life.plan().is_some()
             && self
                 .committed
                 .as_ref()
@@ -1864,7 +1914,7 @@ impl Editor {
     /// (`None`: the root).
     #[must_use]
     pub fn bus_edge_is_live(&self, from: BusSource, to: Option<BusRef>) -> bool {
-        self.plan.is_some()
+        self.life.plan().is_some()
             && self
                 .committed
                 .as_ref()
@@ -2494,9 +2544,9 @@ impl Editor {
 
     /// `Err(Poisoned)` once a re-prepare has failed with its units out.
     fn check_poisoned(&self) -> Result<(), CommitError> {
-        match &self.poisoned {
+        match self.poison_cause() {
             Some(cause) => Err(CommitError::Poisoned {
-                cause: cause.clone(),
+                cause: cause.to_owned(),
             }),
             None => Ok(()),
         }
@@ -2633,7 +2683,7 @@ impl Editor {
     pub fn reprepare(&mut self, prepare: Prepare) -> Result<(), CommitError> {
         self.collect();
         self.check_poisoned()?;
-        if self.repreparing.is_some() {
+        if self.is_repreparing() {
             return Err(CommitError::Repreparing);
         }
         if self.out >= QUEUE_CAPACITY {
@@ -2679,10 +2729,13 @@ impl Editor {
         }));
         if let Err(p) = prepared {
             let cause = format!("a node panicked in prepare: {}", panic_text(p));
-            self.poisoned = Some(cause.clone());
+            self.life = Lifecycle::Poisoned {
+                cause: cause.clone(),
+                plan: self.life.take().into_plan(),
+            };
             return Err(CommitError::Poisoned { cause });
         }
-        let units = self.plan.as_ref().map_or(0, |p| p.units().len());
+        let units = self.life.plan().map_or(0, |p| p.units().len());
         let suspend = Commit::suspend(self.sent + 1, prepare, units);
         if self.channels.to_executor.try_push(suspend).is_err() {
             unreachable!("the queue has a free slot for every credit");
@@ -2690,11 +2743,14 @@ impl Editor {
         self.sent += 1;
         self.out += 1;
         self.prepare = prepare;
-        self.repreparing = Some(Reprepare {
-            spec: self.spec.clone(),
-            shapes: self.shapes.clone(),
-            pending,
-        });
+        self.life = Lifecycle::Repreparing {
+            plan: self.life.take().into_plan(),
+            reprepare: Box::new(Reprepare {
+                spec: self.spec.clone(),
+                shapes: self.shapes.clone(),
+                pending,
+            }),
+        };
         Ok(())
     }
 
@@ -2710,10 +2766,12 @@ impl Editor {
         self.touch();
         let returned = done.take_retired();
         drop(done);
-        let rep = self
-            .repreparing
-            .take()
-            .expect("a suspend box answers a reprepare");
+        let Lifecycle::Repreparing { plan, reprepare } = self.life.take() else {
+            unreachable!("a suspend box answers a reprepare");
+        };
+        // The resume compiles against the plan sent before the re-prepare.
+        self.life = Lifecycle::idle(plan);
+        let rep = *reprepare;
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.finish_reprepare(returned, rep)
         }));
@@ -2723,15 +2781,18 @@ impl Editor {
                 self.send(plan, resume, units, &weights)
             }
             Ok(Err(e)) => {
-                self.poisoned = Some(format!(
-                    "the re-prepared units' shapes no longer compile against the graph: {e}"
-                ));
+                self.life = Lifecycle::Poisoned {
+                    cause: format!(
+                        "the re-prepared units' shapes no longer compile against the graph: {e}"
+                    ),
+                    plan: self.life.take().into_plan(),
+                };
             }
             Err(p) => {
-                self.poisoned = Some(format!(
-                    "a node panicked while being re-prepared: {}",
-                    panic_text(p)
-                ));
+                self.life = Lifecycle::Poisoned {
+                    cause: format!("a node panicked while being re-prepared: {}", panic_text(p)),
+                    plan: self.life.take().into_plan(),
+                };
             }
         }
     }
@@ -2749,7 +2810,7 @@ impl Editor {
             mut shapes,
             pending,
         } = rep;
-        let base = self.plan.clone();
+        let base = self.life.plan().cloned();
         let prepare = self.prepare;
         let mut units: BTreeMap<NodeKey, Box<dyn Node>> = BTreeMap::new();
         for (key, mut unit) in returned {
@@ -2805,6 +2866,41 @@ impl Editor {
         Ok((plan, resume, units, weights))
     }
 
+    /// Whether the spec as it stands would be accepted by
+    /// [`commit`](Self::commit): the refusals that depend on the spec alone,
+    /// checked now and without sending anything or changing the editor.
+    ///
+    /// It checks, in order, the [`Limits`] on the root's width, that every
+    /// open tap and meter still fits the reader opened for it, that every
+    /// node that may be bypassed or mixed has a dry path, and that the spec
+    /// lowers (its bus edges) and validates as a graph. It does not look at
+    /// the editor's state or at the units: a [`CommitError::Poisoned`],
+    /// [`CommitError::Repreparing`], [`CommitError::Backpressure`],
+    /// [`CommitError::MissingUnit`] or a compile against the plan sent last
+    /// is `commit`'s to report. A host that edits and wants to know whether
+    /// the edit stands asks here, then commits.
+    ///
+    /// # Errors
+    ///
+    /// [`CommitError::TooManyOutputs`], [`CommitError::TapWidth`],
+    /// [`CommitError::MeterWidth`], [`CommitError::Unplaced`] (a node whose
+    /// dry path is not declared), [`CommitError::Invalid`] or
+    /// [`CommitError::Compile`] (the bus edges do not lower): the same
+    /// values `commit` returns for them.
+    pub fn validate(&self) -> Result<(), CommitError> {
+        self.check_spec()?;
+        Self::lower_and_validate(&self.spec, &self.shapes).map(|_| ())
+    }
+
+    /// The cheap checks of [`validate`](Self::validate), before the spec is
+    /// lowered: what [`commit`](Self::commit) asks even when nothing changed.
+    fn check_spec(&self) -> Result<(), CommitError> {
+        self.limits.outputs(self.spec.topology.outputs.len())?;
+        self.check_tap_widths()?;
+        self.check_meter_widths()?;
+        self.check_passes()
+    }
+
     /// Validates, compiles against the plan sent last, and sends the result
     /// with the units it places. Returns `Backpressure` — having compiled and sent
     /// nothing — when [`QUEUE_CAPACITY`] commits are out, or when the fades
@@ -2844,16 +2940,13 @@ impl Editor {
     pub fn commit(&mut self) -> Result<(), CommitError> {
         self.collect();
         self.check_poisoned()?;
-        if self.repreparing.is_some() {
+        if self.is_repreparing() {
             return Err(CommitError::Repreparing);
         }
         if self.out >= QUEUE_CAPACITY {
             return Err(CommitError::Backpressure);
         }
-        self.limits.outputs(self.spec.topology.outputs.len())?;
-        self.check_tap_widths()?;
-        self.check_meter_widths()?;
-        self.check_passes()?;
+        self.check_spec()?;
         if self.pending.is_empty()
             && self.pending_taps.is_empty()
             && self.pending_event_taps.is_empty()
@@ -2894,7 +2987,7 @@ impl Editor {
             .collect();
         // The keys `set_latency` changed that this delta keeps: their
         // crossfades are cut (see `Delta::cuts`).
-        let base = self.plan.as_deref();
+        let base = self.life.plan().map(|p| &**p);
         delta.cuts = self
             .latency_cuts
             .iter()
@@ -2956,7 +3049,7 @@ impl Editor {
     ) -> Result<(), CommitError> {
         self.collect();
         self.check_poisoned()?;
-        if self.repreparing.is_some() {
+        if self.is_repreparing() {
             return Err(CommitError::Repreparing);
         }
         if self.out >= QUEUE_CAPACITY {
@@ -3022,10 +3115,10 @@ impl Editor {
         to: EventIn,
         kind: EventKind,
     ) -> Result<CommandId, ScheduleError> {
-        if self.poisoned.is_some() {
+        if self.poison_cause().is_some() {
             return Err(ScheduleError::Poisoned);
         }
-        let plan = self.plan.as_ref().ok_or(ScheduleError::NoPlan)?;
+        let plan = self.life.plan().ok_or(ScheduleError::NoPlan)?;
         let unit = plan.unit(to.node).filter(|u| to.port < u.shape.event_in);
         let Some(unit) = unit else {
             return Err(ScheduleError::NoSuchPort { to });
@@ -3051,7 +3144,7 @@ impl Editor {
     /// [`ScheduleError::UnknownCommand`] for an id this editor never issued,
     /// or [`ScheduleError::Poisoned`].
     pub fn cancel(&mut self, id: CommandId) -> Result<(), ScheduleError> {
-        if self.poisoned.is_some() {
+        if self.poison_cause().is_some() {
             return Err(ScheduleError::Poisoned);
         }
         self.commands.cancel(id)
@@ -3064,7 +3157,7 @@ impl Editor {
     /// [`ScheduleError::Backpressure`] when the cancel ring is full, or
     /// [`ScheduleError::Poisoned`].
     pub fn cancel_all(&mut self) -> Result<(), ScheduleError> {
-        if self.poisoned.is_some() {
+        if self.poison_cause().is_some() {
             return Err(ScheduleError::Poisoned);
         }
         self.commands.cancel_all()
@@ -3191,7 +3284,7 @@ impl Editor {
         }
         self.sent += 1;
         self.out += 1;
-        self.plan = Some(plan);
+        self.life = Lifecycle::Running(plan);
     }
 }
 

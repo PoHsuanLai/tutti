@@ -14,10 +14,12 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use dpi::Size;
+
 use crate::{
-    AutomationMode, ContentScale, EditorCapabilities, EditorError, EditorSize, KeyEvent, KeyUse,
-    Loaded, MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult, Ready, Request,
-    Wakeups, WindowHandle,
+    AutomationMode, ContentScale, EditorCapabilities, EditorError, KeyEvent, KeyUse, Loaded,
+    MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult, Ready, Request, Wakeups,
+    WindowHandle,
 };
 
 /// What to load from a plugin file: which plugin, when the file exports
@@ -180,7 +182,10 @@ pub trait EditorWindow {
 
     /// Embeds the editor into `parent`, whose backing-store scale is `scale`
     /// (forwarded where the format takes it; see [`ContentScale`]), and returns
-    /// its size.
+    /// its size, in the unit the format counts in ([`EditorUnit`](crate::EditorUnit)):
+    /// a [`Size::Physical`] where the window system works in device pixels, a
+    /// [`Size::Logical`] where it works in points. The editor keeps `scale` to
+    /// convert a size it is later given in the other unit.
     ///
     /// # Errors
     ///
@@ -190,7 +195,7 @@ pub trait EditorWindow {
         main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> PluginResult<EditorSize>;
+    ) -> PluginResult<Size>;
 
     /// Opens the editor as a plugin-owned floating window. No parent in, no
     /// size out.
@@ -284,20 +289,19 @@ pub trait EditorWindow {
     /// The view's static resize capabilities.
     fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities;
 
-    /// Asks the view to take `requested`; it answers with the size it took.
+    /// Asks the view to take `requested`, in either unit (converted at the
+    /// editor's scale where the format counts in the other); it answers with the
+    /// size it took, in the format's own unit as [`open_editor`](Self::open_editor)
+    /// does.
     ///
     /// # Errors
     ///
     /// The format or the plugin cannot resize.
-    fn set_editor_size(
-        &mut self,
-        main: &MainThread,
-        requested: EditorSize,
-    ) -> PluginResult<EditorSize>;
+    fn set_editor_size(&mut self, main: &MainThread, requested: Size) -> PluginResult<Size>;
 
     /// A size the plugin asked its window to take, if it asked since the last
-    /// poll.
-    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<EditorSize>;
+    /// poll, in the format's own unit.
+    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<Size>;
 }
 
 /// The editor-only instance an [`OutOfProcess`] format loads in the host

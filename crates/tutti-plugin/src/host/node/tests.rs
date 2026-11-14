@@ -509,7 +509,7 @@ fn handle_open_editor_errors_for_missing_plugin() {
     assert!(
         handle
             .open_editor(
-                &main_thread(),
+                main_thread(),
                 tutti_fixtures::StandInWindow.handle(),
                 tutti_plugin_types::ContentScale::IDENTITY
             )

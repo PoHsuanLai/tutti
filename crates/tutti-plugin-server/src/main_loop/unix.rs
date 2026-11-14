@@ -6,7 +6,7 @@
 //! loop's logic.
 
 use crate::transport::Transport;
-use tutti_plugin_types::{BridgeResult, FdId, Interest, MainThread, Ready, Wakeups};
+use tutti_plugin_types::{BridgeResult, FdId, Interest, MainThreadMarker, Ready, Wakeups};
 
 /// The platform's concrete listener and stream, not the crate's dispatch enum.
 ///
@@ -49,7 +49,7 @@ impl Native {
     pub(crate) fn wait(
         &mut self,
         transport: &mut dyn Transport,
-        main: &MainThread,
+        main: MainThreadMarker,
         timeout: std::time::Duration,
         wakeups: &Wakeups,
         ready: &mut Vec<Ready>,
@@ -128,7 +128,7 @@ impl Native {
     }
 
     /// Pumps the window system's events: none yet.
-    fn pump(&mut self, _main: &MainThread) {}
+    fn pump(&mut self, _main: MainThreadMarker) {}
 }
 
 /// Waits up to `timeout` for `stream` to have something to read: `Ok(true)` when a

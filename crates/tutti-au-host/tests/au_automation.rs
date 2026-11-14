@@ -17,7 +17,7 @@ use tutti_au_host::component::find_component;
 use tutti_au_host::types::{AudioComponentDescription, K_AUDIO_UNIT_TYPE_EFFECT};
 use tutti_au_host::{AuController, AuLoaded, AuProcessor};
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, Loaded, MainThread, MaxBlock, ParamEdit, ParamId,
+    AudioBuffer, AudioBufferMut, Loaded, MainThreadMarker, MaxBlock, ParamEdit, ParamId,
     ParameterChanges, PluginIo, Prepare, ProcessContext, ProcessOutput, Processor,
 };
 

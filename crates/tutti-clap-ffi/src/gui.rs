@@ -7,7 +7,7 @@ use clap_sys::ext::gui::{
 };
 use clap_sys::plugin::clap_plugin;
 use dpi::Size;
-use tutti_plugin_types::{ContentScale, EditorUnit, MainThread, WindowHandle};
+use tutti_plugin_types::{ContentScale, EditorUnit, MainThreadMarker, WindowHandle};
 
 use crate::plugin::Plugin;
 
@@ -360,14 +360,14 @@ impl Plugin {
     /// Whether the plugin can show an embedded editor on this platform's
     /// window API.
     #[must_use]
-    pub fn has_editor(&self, _main: &MainThread) -> bool {
+    pub fn has_editor(&self, _main: MainThreadMarker) -> bool {
         self.has_gui_api(false)
     }
 
     /// Whether the plugin can show a floating editor on this platform's
     /// window API.
     #[must_use]
-    pub fn has_floating_editor(&self, _main: &MainThread) -> bool {
+    pub fn has_floating_editor(&self, _main: MainThreadMarker) -> bool {
         self.has_gui_api(true)
     }
 
@@ -390,7 +390,7 @@ impl Plugin {
     /// `gui.get_preferred_api`: whether the plugin prefers floating, if it
     /// states a preference.
     #[must_use]
-    pub fn prefers_floating(&self, _main: &MainThread) -> Option<bool> {
+    pub fn prefers_floating(&self, _main: MainThreadMarker) -> Option<bool> {
         let get = self.gui_ext()?.get_preferred_api?;
         let mut api: *const c_char = std::ptr::null();
         let mut floating = false;
@@ -409,7 +409,7 @@ impl Plugin {
     /// is destroyed before the error returns.
     pub fn open_embedded(
         &mut self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         parent: &WindowHandle,
         scale: ContentScale,
     ) -> Result<EmbedOutcome, GuiError> {
@@ -448,7 +448,7 @@ impl Plugin {
     /// the plugin refuses.
     pub fn open_floating(
         &mut self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         transient: Option<&WindowHandle>,
         title: &CStr,
     ) -> Result<bool, GuiError> {
@@ -467,7 +467,7 @@ impl Plugin {
     /// `can_resize` and `get_resize_hints`, `None` without a `clap.gui` or
     /// before `create` (CLAP orders every `clap.gui` method after it).
     #[must_use]
-    pub fn gui_hints(&self, _main: &MainThread) -> Option<GuiHints> {
+    pub fn gui_hints(&self, _main: MainThreadMarker) -> Option<GuiHints> {
         let gui = self.gui_ext().filter(|_| self.gui_created)?;
         // SAFETY: the instance is live and `gui` is its `clap.gui`; a
         // `[main-thread]` call on the main-thread half.
@@ -482,7 +482,11 @@ impl Plugin {
     /// # Errors
     /// No `clap.gui`, no editor created, no usable adjusted size, no
     /// `set_size`, or a refused `set_size`.
-    pub fn resize_gui(&mut self, _main: &MainThread, requested: Size) -> Result<Size, GuiError> {
+    pub fn resize_gui(
+        &mut self,
+        _main: MainThreadMarker,
+        requested: Size,
+    ) -> Result<Size, GuiError> {
         let gui = self.gui()?;
         if !self.gui_created {
             return Err(GuiError::NotCreated);
@@ -512,7 +516,7 @@ impl Plugin {
     /// No `clap.gui`, or no editor created.
     pub fn rescale_gui(
         &mut self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         scale: ContentScale,
     ) -> Result<bool, GuiError> {
         let gui = self.gui()?;
@@ -535,7 +539,7 @@ impl Plugin {
 
     /// Hides the editor (unless its window is already gone) and destroys it. A
     /// no-op before `create` and after `destroy`, so `destroy` runs once.
-    pub fn close_gui(&mut self, _main: &MainThread, window_destroyed: bool) {
+    pub fn close_gui(&mut self, _main: MainThreadMarker, window_destroyed: bool) {
         self.destroy_gui(window_destroyed);
     }
 

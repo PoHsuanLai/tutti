@@ -21,8 +21,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tutti_graph::UmpAt;
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, Loaded, MainThread, MainWorkHandle, Origin, PluginDescriptor,
-    PluginIo, PluginTail, ProcessContext, ProcessOutput, Processor,
+    AudioBuffer, AudioBufferMut, Loaded, MainThreadMarker, MainWorkHandle, Origin,
+    PluginDescriptor, PluginIo, PluginTail, ProcessContext, ProcessOutput, Processor,
 };
 use tutti_rt::Rt;
 
@@ -410,7 +410,7 @@ pub(super) fn queue_sample_rate(cell: &AtomicU64, rate: SampleRate) {
 /// change starts with a recall and finishes at a later pump, once the audio
 /// thread has handed it back.
 pub(super) fn drain_sample_rate<F: Loaded>(
-    main: &MainThread,
+    main: MainThreadMarker,
     cell: &AtomicU64,
     inner: &Mutex<Instance<F>>,
 ) -> bool {
@@ -529,8 +529,8 @@ impl<F: Loaded> InProcClient<F> {
     /// reconfiguration. Takes the instance lock, so call it from a control
     /// thread, not the audio thread.
     pub fn set_render_mode(&self, mode: tutti_plugin_types::RenderMode) -> bool {
-        match MainThread::new() {
-            Some(main) => self.inner.lock().set_render_mode(&main, mode, None),
+        match MainThreadMarker::new() {
+            Some(main) => self.inner.lock().set_render_mode(main, mode, None),
             None => false,
         }
     }
@@ -634,11 +634,11 @@ impl<F: Loaded> InProcClient<F> {
         // node is out of any executor (`Node::prepare`'s contract), so its
         // realtime end hands the Processor back and takes the new one in this
         // call.
-        if let Some(main) = MainThread::new() {
+        if let Some(main) = MainThreadMarker::new() {
             let outcome = self
                 .inner
                 .lock()
-                .set_sample_rate(&main, rate, Some(&mut self.rt));
+                .set_sample_rate(main, rate, Some(&mut self.rt));
             // A refusal renders silence (no Processor is lent) and is reported
             // through the handle (`take_rate_report`).
             self.rate_refused = outcome.is_err();

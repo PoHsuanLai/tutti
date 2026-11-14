@@ -41,12 +41,12 @@ use conformance_support::*;
 fn prefetchable_support_is_queryable() {
     let main = main_thread();
     assert_eq!(
-        require_twin().prefetchable_support(&main),
+        require_twin().prefetchable_support(main),
         Some(PrefetchSupport::Yes),
         "the twin reports kIsYetPrefetchable"
     );
     assert_eq!(
-        require_probe().prefetchable_support(&main),
+        require_probe().prefetchable_support(main),
         None,
         "audio-probe does not implement IPrefetchableSupport"
     );
@@ -70,7 +70,7 @@ fn midi_learn_forwards_from_the_main_thread() {
     let before = inst.get_parameter(AUX);
     assert_eq!(before, 0.25, "aux starts at its default");
 
-    inst.loaded_mut().arm_midi_learn(&main_thread(), true);
+    inst.loaded_mut().arm_midi_learn(main_thread(), true);
     assert!(inst.loaded().is_midi_learn_armed());
 
     // Feed CCs through the *audio* path; the host must capture them there and
@@ -124,13 +124,13 @@ fn midi_learn_forwards_from_the_main_thread() {
     // The forward happens here, on this (main) thread.
     let _ = inst
         .loaded_mut()
-        .poll_plugin_notifications(&main_thread(), |_| {});
+        .poll_plugin_notifications(main_thread(), |_| {});
     assert_eq!(
         inst.get_parameter(AUX),
         f64::from(CCNumber::PAN.get()) / 127.0,
         "the poll forwards the captured controllers in order, so the last one (PAN) wins"
     );
-    inst.loaded_mut().arm_midi_learn(&main_thread(), false);
+    inst.loaded_mut().arm_midi_learn(main_thread(), false);
     assert!(!inst.loaded().is_midi_learn_armed());
 }
 

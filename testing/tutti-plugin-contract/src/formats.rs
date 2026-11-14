@@ -15,7 +15,7 @@ impl Format for Clap {
 
     fn load() -> Self::L {
         tutti_clap_host::ClapLoaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             plugin::clap(),
             tutti_clap_host::LoadOptions::new(),
@@ -49,7 +49,7 @@ impl Format for Vst2 {
 
     fn load() -> Self::L {
         tutti_vst2_host::Vst2Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             plugin::library(),
         )
@@ -59,7 +59,7 @@ impl Format for Vst2 {
 
 fn vst3(module: std::path::PathBuf) -> tutti_vst3_host::Vst3Loaded {
     tutti_vst3_host::Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         module,
         tutti_vst3_host::LoadOptions::new(),

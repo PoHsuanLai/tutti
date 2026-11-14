@@ -70,7 +70,7 @@ fn probe_still_answers_for_the_first_plugin() {
 #[test]
 fn a_plugin_past_index_zero_can_be_loaded() {
     let loaded = ClapLoaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         bundle(),
         LoadOptions::new().plugin_id(SECOND_PLUGIN_ID.to_str().unwrap()),
@@ -91,7 +91,7 @@ fn a_plugin_past_index_zero_can_be_loaded() {
 #[test]
 fn loading_without_an_id_gets_the_first_plugin() {
     let loaded = ClapLoaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         bundle(),
         LoadOptions::default(),
@@ -111,7 +111,7 @@ fn an_unknown_id_fails_rather_than_falling_back() {
     // Matched rather than `expect_err`, because `ClapLoaded` is not `Debug` —
     // and a loaded plugin is exactly what must not come back here.
     let msg = match ClapLoaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         bundle(),
         LoadOptions::new().plugin_id("tutti.no-such-plugin"),

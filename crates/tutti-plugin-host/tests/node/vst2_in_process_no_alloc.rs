@@ -34,7 +34,7 @@ fn at_start(event: Ump) -> Event {
 fn process_steady_state_does_not_allocate() {
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
     let (unit, handle) = tutti_plugin_host::load_client::<Vst2Loaded>(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::pumped_work(),
         tutti_fixtures::vst2_probe(),
         &Load::new(),
@@ -73,7 +73,7 @@ fn process_with_a_meter_does_not_allocate() {
 
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
     let (unit, handle) = tutti_plugin_host::load_client::<Vst2Loaded>(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::pumped_work(),
         tutti_fixtures::vst2_probe(),
         &Load::new(),
@@ -101,7 +101,7 @@ fn process_with_a_meter_does_not_allocate() {
 fn process_with_midi_does_not_allocate() {
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
     let (unit, handle) = tutti_plugin_host::load_client::<Vst2Loaded>(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::pumped_work(),
         tutti_fixtures::vst2_probe(),
         &Load::new(),
@@ -171,7 +171,7 @@ fn two_hundred_moving_parameters_do_not_allocate() {
     // process touches the environment. The probe reads it in its constructor.
     unsafe { std::env::set_var("TUTTI_VST2_PROBE_PARAMS", PARAMS.to_string()) };
     let loaded = tutti_plugin_host::load_client::<Vst2Loaded>(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::pumped_work(),
         tutti_fixtures::vst2_probe(),
         &Load::new(),

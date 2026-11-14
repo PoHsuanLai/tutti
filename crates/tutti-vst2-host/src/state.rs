@@ -26,7 +26,7 @@
 //! does with a program chunk it is handed while another program is current; setting the
 //! program first is the only order the opcodes' wording allows.
 
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 
 use crate::error::{Result, Vst2Error};
 use crate::loaded::Vst2Loaded;
@@ -161,7 +161,7 @@ impl Vst2Loaded {
     /// it declares parameters but exposes no `getParameter` to read them.
     ///
     /// `effGetChunk` is a main-thread opcode, so this takes the proof.
-    pub fn read_state(&self, main: &MainThread) -> Result<Vec<u8>> {
+    pub fn read_state(&self, main: MainThreadMarker) -> Result<Vec<u8>> {
         let info = self.instance.get_info();
         // `effGetProgram` is meaningful only for a plugin that has programs.
         let program = if self.instance.read_num_programs() > 0 {
@@ -232,7 +232,7 @@ impl Vst2Loaded {
     /// more parameters than the plugin declares, or if it exposes no `setParameter` to write
     /// parameters with. A plugin's own refusal of a chunk is not an error here: the header
     /// gives `effSetChunk` no return value to refuse with.
-    pub(crate) fn write_state(&self, main: &MainThread, data: &[u8]) -> Result<()> {
+    pub(crate) fn write_state(&self, main: MainThreadMarker, data: &[u8]) -> Result<()> {
         let state = parse_state_header(data)?;
         // The program first: a program chunk is the current program's, and a parameter
         // snapshot is its values. A recorded index the plugin does not have (or `-1`, for a

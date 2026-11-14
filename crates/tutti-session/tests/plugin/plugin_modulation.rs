@@ -41,7 +41,7 @@ fn set_env(key: &str, value: impl AsRef<std::ffi::OsStr>) {
     unsafe { std::env::set_var(key, value) };
 }
 
-fn main_thread() -> tutti_plugin_types::MainThread {
+fn main_thread() -> tutti_plugin_types::MainThreadMarker {
     tutti_fixtures::main_thread()
 }
 
@@ -62,7 +62,7 @@ fn detached() -> Session {
 fn add_probe(s: &mut Session) -> tutti_session::Key<tutti_session::PluginNode> {
     let node = s
         .add_plugin_blocking(
-            &main_thread(),
+            main_thread(),
             PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
         )
         .expect("the reference CLAP plugin loads");

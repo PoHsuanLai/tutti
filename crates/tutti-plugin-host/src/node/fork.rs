@@ -97,7 +97,7 @@
 //!   is inserted bare, like every forked node.
 
 use std::sync::{Arc, Weak};
-use tutti_plugin_types::{MainThread, MainWorkHandle};
+use tutti_plugin_types::{MainThreadMarker, MainWorkHandle};
 
 use parking_lot::Mutex;
 use tutti_graph::{ForkBuild, ForkCause, ForkMode, ForkSource, Forked};
@@ -166,7 +166,7 @@ where
     /// The six steps in the module docs, in order.
     fn instance(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         mode: ForkMode,
     ) -> Result<PluginNode<F>, PluginForkError> {
         // First, so a plugin that cannot save costs no second instance. The
@@ -267,9 +267,9 @@ where
         // The gather runs on the main thread (below), which `current` confirms;
         // off it there is no way to load a second instance, so the fork is
         // refused rather than loaded where the format forbids it.
-        let main =
-            MainThread::new().ok_or_else(|| ForkCause::new(PluginForkError::OffMainThread))?;
-        let fork = self.instance(&main, mode).map_err(ForkCause::new)?;
+        let main = MainThreadMarker::new()
+            .ok_or_else(|| ForkCause::new(PluginForkError::OffMainThread))?;
+        let fork = self.instance(main, mode).map_err(ForkCause::new)?;
         // In this process: nothing can fail while it renders that the render
         // would not see, so no health probe. Boxed bare: no fork of its own.
         Ok(Forked::new(Box::new(fork)))
@@ -322,7 +322,7 @@ where
     /// built is closed before this returns.
     pub fn fork_instance(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         mode: ForkMode,
     ) -> Result<PluginNode<F>, PluginForkError> {
         Fork::of(self)

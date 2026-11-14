@@ -70,7 +70,7 @@ fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
         unsafe { std::env::set_var(k, v) };
     }
     let (_unit, handle) = tutti_plugin_host::load_client::<Vst2Loaded>(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::pumped_work(),
         &path,
         &Load::new(),
@@ -154,7 +154,7 @@ fn handle_state_roundtrip() {
     modified.extend_from_slice(b"tutti-roundtrip-marker");
 
     handle
-        .load_state(&main_thread(), &modified)
+        .load_state(main_thread(), &modified)
         .expect("the probe accepts a chunk it just produced");
     let after = handle
         .any_thread()
@@ -185,7 +185,7 @@ fn an_accepted_chunk_reports_success() {
         .save_state()
         .expect("probe declares state");
     handle
-        .load_state(&main_thread(), &blob)
+        .load_state(main_thread(), &blob)
         .expect("a chunk the plugin just produced must be accepted");
 }
 
@@ -234,7 +234,7 @@ fn open_routes_a_vst2_to_the_in_process_backend() {
     // environment concurrently.
     unsafe { std::env::set_var("TUTTI_VST2_PROBE_EDITOR", "1") };
     let plugin = tutti_plugin::catalog::Plugin::open(
-        Some(&main_thread()),
+        Some(main_thread()),
         &tutti_fixtures::pumped_work(),
         &tutti_plugin::catalog::PluginRef::file(staged.clone()).expect("a plugin file"),
         tutti_plugin_types::SampleRate::of(SAMPLE_RATE),
@@ -328,7 +328,7 @@ fn the_node_carries_midi_on_its_event_ports() {
             std::env::set_var("TUTTI_VST2_PROBE_MIDI_OUTPUTS", outputs);
         }
         let plugin = tutti_plugin::catalog::Plugin::open(
-            Some(&main_thread()),
+            Some(main_thread()),
             &tutti_fixtures::pumped_work(),
             &tutti_plugin::catalog::PluginRef::file(staged.clone()).expect("a plugin file"),
             tutti_plugin_types::SampleRate::of(SAMPLE_RATE),
@@ -389,7 +389,7 @@ fn the_node_reports_the_decoded_tail_rather_than_unknown() {
         // the environment.
         unsafe { std::env::set_var("TUTTI_VST2_PROBE_TAIL_SIZE", raw) };
         let (unit, _handle) = tutti_plugin_host::load_client::<Vst2Loaded>(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::pumped_work(),
             &path,
             &Load::new(),
@@ -429,7 +429,7 @@ fn midi_past_the_blocks_capacity_is_counted() {
     let _lock = lock_probe();
     clear_probe_env();
     let (unit, _handle) = tutti_plugin_host::load_client::<Vst2Loaded>(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::pumped_work(),
         tutti_fixtures::vst2_probe(),
         &Load::new(),

@@ -85,7 +85,7 @@ fn session_built(
 /// Loads the probe into `s` (blocking), unwired.
 fn add_probe(s: &mut Session) -> NodeKey {
     s.add_plugin_blocking(
-        &main_thread(),
+        main_thread(),
         PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
     )
     .expect("the reference CLAP plugin loads")
@@ -803,7 +803,7 @@ fn a_reload_that_fails_to_load_carries_the_bridge_error_as_its_source() {
     });
     let node = s
         .add_plugin_blocking(
-            &main_thread(),
+            main_thread(),
             PluginLoadRequest::new(PluginRef::file(&copy).expect("a plugin file")),
         )
         .expect("the copy loads");
@@ -1827,6 +1827,6 @@ fn a_death_after_a_refused_restore_does_not_withhold_the_snapshot() {
 
 /// This process's main thread. Each test is its own process under nextest, so
 /// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
+fn main_thread() -> tutti_plugin_types::MainThreadMarker {
     tutti_fixtures::main_thread()
 }

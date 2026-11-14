@@ -12,7 +12,7 @@
 use std::path::Path;
 
 use crate::plugin::HostedPlugin;
-use tutti_plugin_types::{MainThread, Preset, PresetError, PresetId, PresetSupport};
+use tutti_plugin_types::{MainThreadMarker, Preset, PresetError, PresetId, PresetSupport};
 
 /// What a plugin's format does with presets ([`Presets::kind`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -34,7 +34,7 @@ pub enum PresetKind {
 #[derive(Debug)]
 pub struct Presets<'a> {
     hosted: &'a HostedPlugin,
-    main: MainThread,
+    main: MainThreadMarker,
     kind: PresetKind,
     list: Vec<Preset>,
 }
@@ -46,7 +46,10 @@ impl<'a> Presets<'a> {
     ///
     /// [`PresetError::Unsupported`]: the plugin has no preset surface;
     /// [`PresetError::Lost`]: it is gone.
-    pub(crate) fn of(hosted: &'a HostedPlugin, main: MainThread) -> Result<Self, PresetError> {
+    pub(crate) fn of(
+        hosted: &'a HostedPlugin,
+        main: MainThreadMarker,
+    ) -> Result<Self, PresetError> {
         let handle = &hosted.handle;
         let kind = match handle.preset_support() {
             // A format that lists but cannot load answers its loads `Refused`.
@@ -55,7 +58,7 @@ impl<'a> Presets<'a> {
             PresetSupport::None => return Err(PresetError::Unsupported),
         };
         let list = match kind {
-            PresetKind::Browse => handle.presets(&main)?,
+            PresetKind::Browse => handle.presets(main)?,
             PresetKind::File => Vec::new(),
         };
         Ok(Self {
@@ -97,7 +100,7 @@ impl<'a> Presets<'a> {
     /// The preset the plugin says is loaded, when it will say: not every format
     /// has the query, and the plugin may decline. Never "the first one".
     pub fn current(&self) -> Option<PresetId> {
-        self.hosted.handle.current_preset(&self.main)
+        self.hosted.handle.current_preset(self.main)
     }
 
     /// Loads the preset file at `path` ([`PresetKind::File`]).
@@ -113,7 +116,7 @@ impl<'a> Presets<'a> {
         }
         self.hosted
             .handle
-            .load_preset(&self.main, &PresetId::Location(path.as_ref().to_path_buf()))?;
+            .load_preset(self.main, &PresetId::Location(path.as_ref().to_path_buf()))?;
         self.hosted.refresh_values();
         Ok(())
     }
@@ -153,7 +156,7 @@ impl PresetEntry<'_> {
         presets
             .hosted
             .handle
-            .load_preset(&presets.main, &self.preset.id)?;
+            .load_preset(presets.main, &self.preset.id)?;
         presets.hosted.refresh_values();
         Ok(())
     }

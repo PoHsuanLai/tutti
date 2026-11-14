@@ -87,7 +87,7 @@ impl Drop for ProbeEnv {
 fn load() -> (PluginNode<Vst2Loaded>, PluginHandle) {
     let path = tutti_fixtures::vst2_probe();
     let (client, handle) = load_client::<Vst2Loaded>(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         path,
         &Load::new(),

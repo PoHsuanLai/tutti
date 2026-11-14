@@ -2,7 +2,7 @@
 //! by [`Vst3Loaded`] and, with parameter writes redirected, by
 //! [`Vst3Controller`](super::Vst3Controller).
 
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, EditorPresence, EditorWindow, Features, KeyEvent,
@@ -64,7 +64,7 @@ impl Vst3Loaded {
     /// writes: the Controller's, which no block has taken.
     pub(super) fn save_state_with(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         undrained: &[(ParamId, Normalized)],
     ) -> PluginResult<Vec<u8>> {
         self.read_state(main, undrained).map_err(plugin_error)
@@ -74,7 +74,7 @@ impl Vst3Loaded {
     /// the controller already, and owed to the component's next block.
     pub(super) fn restore_state(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         bytes: &[u8],
     ) -> PluginResult<Vec<(ParamId, Normalized)>> {
         self.carried.clear();
@@ -83,12 +83,12 @@ impl Vst3Loaded {
 
     /// The descriptor for this plugin as loaded: its factory info, with whether
     /// it has an editor measured from the plugin itself.
-    pub(super) fn measured_descriptor(&self, main: &MainThread) -> PluginDescriptor {
+    pub(super) fn measured_descriptor(&self, main: MainThreadMarker) -> PluginDescriptor {
         descriptor_of(&self.info, EditorPresence::measured(self.has_editor(main)))
     }
 
     /// The capabilities this plugin has, as the shared vocabulary names them.
-    fn features(&self, main: &MainThread) -> Features {
+    fn features(&self, main: MainThreadMarker) -> Features {
         let has_editor = self.has_editor(main);
         let mut features = Features::empty();
         // 64-bit only while activated as such: the session's format and the
@@ -125,7 +125,7 @@ impl Vst3Loaded {
     /// The tail figure. VST3 always answers `getTailSamples`, so there is no
     /// "unasked" case: `from_vst3_samples` maps 0 to `None` and the saturating
     /// maximum to `Unbounded`.
-    fn tail_figure(&self, main: &MainThread) -> PluginTail {
+    fn tail_figure(&self, main: MainThreadMarker) -> PluginTail {
         PluginTail::from_vst3_samples(self.tail_samples(main))
     }
 
@@ -144,7 +144,7 @@ impl Vst3Loaded {
     #[must_use]
     pub fn program_change_parameter(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         list_id: i32,
     ) -> Option<(ParamId, i32)> {
         let owning_unit = self
@@ -159,7 +159,7 @@ impl Vst3Loaded {
     /// not walk the unit tree, for a caller that already holds the unit.
     fn program_change_parameter_of(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         owning_unit: crate::UnitId,
     ) -> Option<(ParamId, i32)> {
         (0..self.parameter_count(main)).find_map(|i| {
@@ -182,7 +182,7 @@ impl Vst3Loaded {
     /// operation.
     pub(super) fn program_write(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         id: &PresetId,
     ) -> Option<(ParamId, Normalized)> {
         let PresetId::Program { list_id, index } = id else {
@@ -208,7 +208,7 @@ impl Vst3Loaded {
     /// controller.
     pub(super) fn write_normalized(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         id: ParamId,
         value: Normalized,
     ) -> bool {
@@ -226,7 +226,7 @@ impl Control for Vst3Loaded {
     /// plugin is active, which is when VST3 makes the figure valid
     /// (`getLatencySamples` is `[UI-thread & Setup Done]`, read after
     /// `setActive(1)`); a loaded plugin reports none.
-    fn wiring(&self, main: &MainThread) -> LoadedPlugin {
+    fn wiring(&self, main: MainThreadMarker) -> LoadedPlugin {
         let latency_samples = if self.active.is_active() {
             Samples(self.latency_samples(main) as usize)
         } else {
@@ -242,18 +242,18 @@ impl Control for Vst3Loaded {
         }
     }
 
-    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
+    fn parameters(&self, main: MainThreadMarker) -> Vec<ParameterInfo> {
         self.parameter_list(main)
     }
 
-    fn parameter_count(&self, main: &MainThread) -> usize {
+    fn parameter_count(&self, main: MainThreadMarker) -> usize {
         Vst3Loaded::parameter_count(self, main) as usize
     }
 
     /// Normalized `0..=1`, VST3's own domain. `None` for an id the plugin does
     /// not list (`getParamNormalized` would answer 0 for it) and for a plugin
     /// with no edit controller.
-    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
+    fn parameter(&self, main: MainThreadMarker, id: ParamId) -> Option<Normalized> {
         self.parameter_info(main, id)?;
         self.plugin
             .parameter_normalized(main, id)
@@ -270,7 +270,7 @@ impl Control for Vst3Loaded {
     /// inactive plugin waits in `carried`, which the next activation delivers in
     /// its first block and `save_state` stores beside the component's stream.
     /// While active, the Controller queues the write to the Processor instead.
-    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, main: MainThreadMarker, id: ParamId, value: Normalized) {
         let written = self.write_normalized(main, id, value);
         // A write the last activation left undelivered is older than this one.
         if let Some(slot) = self.carried.iter_mut().find(|(waiting, _)| *waiting == id) {
@@ -283,7 +283,12 @@ impl Control for Vst3Loaded {
     /// The controller's own `normalizedParamToPlain`, whatever shape it has
     /// ([`ControllerMapping`](crate::ControllerMapping)). `None` for an id the plugin does not list or with
     /// no controller.
-    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
+    fn parameter_plain(
+        &self,
+        main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<f64> {
         Some(self.mapping(main, id)?.plain(value))
     }
 
@@ -291,7 +296,7 @@ impl Control for Vst3Loaded {
     /// SDK does not bound it).
     fn parameter_normalized(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         id: ParamId,
         plain: f64,
     ) -> Option<Normalized> {
@@ -301,7 +306,12 @@ impl Control for Vst3Loaded {
     /// The plugin's own display string for `value`: the value is a *parameter*
     /// of the call, not the plugin's current one, which is what an automation
     /// lane drawing labels along a curve needs.
-    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+    fn parameter_text(
+        &self,
+        main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<String> {
         self.plugin.parameter_text(main, id, value.get())
     }
 
@@ -314,7 +324,7 @@ impl Control for Vst3Loaded {
     /// direction uses.
     fn parameter_value_from_text(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         id: ParamId,
         text: &str,
     ) -> Option<Normalized> {
@@ -323,14 +333,19 @@ impl Control for Vst3Loaded {
             .map(Normalized::clamped)
     }
 
-    fn save_state(&mut self, main: &MainThread, _: StateUse) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, main: MainThreadMarker, _: StateUse) -> PluginResult<Vec<u8>> {
         self.save_state_with(main, &[])
     }
 
     /// Restores the state. The writes a rejoin carried are older than it, and
     /// are dropped; the writes the blob itself carries wait in `carried`, for the
     /// next activation, or (active) for the Controller to queue to the Processor.
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8], _: StateUse) -> PluginResult<()> {
+    fn load_state(
+        &mut self,
+        main: MainThreadMarker,
+        bytes: &[u8],
+        _: StateUse,
+    ) -> PluginResult<()> {
         self.carried = self.restore_state(main, bytes)?;
         Ok(())
     }
@@ -344,7 +359,7 @@ impl Control for Vst3Loaded {
     /// plugin declines to name is kept with an empty name rather than skipped:
     /// the index is half the identifier, so dropping one would renumber every
     /// program after it within that list.
-    fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
+    fn presets(&mut self, main: MainThreadMarker) -> Vec<Preset> {
         self.program_lists(main)
             .into_iter()
             .flat_map(|list| {
@@ -366,7 +381,7 @@ impl Control for Vst3Loaded {
             .collect()
     }
 
-    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
+    fn load_preset(&mut self, main: MainThreadMarker, id: &PresetId) -> bool {
         match self.program_write(main, id) {
             Some((param, value)) => {
                 // A program replaces the plugin's other parameters too.
@@ -385,7 +400,7 @@ impl Control for Vst3Loaded {
     /// The program the plugin currently has selected, read back off the same
     /// parameter [`load_preset`](Control::load_preset) writes. `None` when no
     /// unit publishes a program list.
-    fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
+    fn current_preset(&mut self, main: MainThreadMarker) -> Option<PresetId> {
         // One unit walk, not two: `units()` is a COM round trip per unit and
         // enumerates the program lists to resolve each unit's `program_list`.
         let (list_id, owning_unit) = self
@@ -410,7 +425,7 @@ impl Control for Vst3Loaded {
         })
     }
 
-    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
+    fn set_automation_state(&mut self, main: MainThreadMarker, mode: AutomationMode) {
         // Encoded onto the `IAutomationState` bitmask here, at the VST3 edge,
         // by the crate's own SDK-backed conversion; a no-op if the plugin does
         // not implement the interface.
@@ -418,11 +433,11 @@ impl Control for Vst3Loaded {
     }
 
     /// Nothing is cached: parameters are read live from the controller.
-    fn rescan_parameters(&mut self, _main: &MainThread, scope: RescanScope) {
+    fn rescan_parameters(&mut self, _main: MainThreadMarker, scope: RescanScope) {
         let _ = scope;
     }
 
-    fn rebuild_midi_mapping(&mut self, main: &MainThread) {
+    fn rebuild_midi_mapping(&mut self, main: MainThreadMarker) {
         self.rebuild_midi_cc_mapping(main);
     }
 
@@ -436,13 +451,13 @@ impl Control for Vst3Loaded {
     /// and unit news stay for
     /// [`poll_plugin_notifications`](Vst3Loaded::poll_plugin_notifications) or
     /// [`discard_notifications`](Vst3Loaded::discard_notifications).
-    fn take_requests(&mut self, _main: &MainThread, out: &mut Vec<Request>) {
+    fn take_requests(&mut self, _main: MainThreadMarker, out: &mut Vec<Request>) {
         out.extend(tutti_plugin_types::taken(self.plugin.handler().requests()));
     }
 
     /// `OnActivation`: VST3 reads the mode only in `setupProcessing`
     /// (`kOffline`), a call on an inactive plugin.
-    fn render_mode_support(&self, _main: &MainThread) -> RenderModeSupport {
+    fn render_mode_support(&self, _main: MainThreadMarker) -> RenderModeSupport {
         RenderModeSupport::OnActivation
     }
 
@@ -462,7 +477,7 @@ impl Control for Vst3Loaded {
     /// unit news). The processor's `outputParameterChanges` are not here: they
     /// are not an editor's, and the [`Vst3Controller`](crate::Vst3Controller)
     /// adds them on [`flush_edits`](Control::flush_edits).
-    fn take_reported_edits(&mut self, _main: &MainThread, out: &mut Vec<ParamEdit>) {
+    fn take_reported_edits(&mut self, _main: MainThreadMarker, out: &mut Vec<ParamEdit>) {
         use crate::{ParameterEditEvent, PluginNotification};
         while let Some(notification) = self.plugin.handler().pop_notification() {
             match notification {
@@ -499,7 +514,7 @@ impl EditorWindow for Vst3Loaded {
     /// as [`KeyUse::Used`]. A key VST3 cannot write (a character outside the Basic
     /// Multilingual Plane) is not sent and is [`KeyUse::Ignored`], as is any key while
     /// no editor is open.
-    fn editor_key(&mut self, main: &MainThread, event: KeyEvent) -> PluginResult<KeyUse> {
+    fn editor_key(&mut self, main: MainThreadMarker, event: KeyEvent) -> PluginResult<KeyUse> {
         let Some(key) = view_key_of(&event, ModifierConvention::HOST) else {
             return Ok(KeyUse::Ignored);
         };
@@ -530,7 +545,7 @@ impl EditorWindow for Vst3Loaded {
     /// once, at scan time.
     ///
     /// A plugin with no controller at all answers `false`.
-    fn has_editor(&self, main: &MainThread) -> bool {
+    fn has_editor(&self, main: MainThreadMarker) -> bool {
         self.plugin.has_editor(main)
     }
 
@@ -552,7 +567,7 @@ impl EditorWindow for Vst3Loaded {
     /// `IPlugView::attached` fails.
     fn open_editor(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         parent: WindowHandle,
         scale: ContentScale,
     ) -> PluginResult<dpi::Size> {
@@ -568,7 +583,7 @@ impl EditorWindow for Vst3Loaded {
     }
 
     /// Closes the editor if open, calling `IPlugView::removed`. No-op otherwise.
-    fn close_editor(&mut self, main: &MainThread) {
+    fn close_editor(&mut self, main: MainThreadMarker) {
         self.plugin.close_editor(main);
     }
 
@@ -586,13 +601,13 @@ impl EditorWindow for Vst3Loaded {
     ///
     /// The handlers are plugin GUI code reaching into its X connection, and the
     /// spec's premise is that the host donates *its UI thread*: they run on the
-    /// thread that holds the [`MainThread`], never a timer thread.
-    fn editor_idle(&mut self, _main: &MainThread) {}
+    /// thread that holds the [`MainThreadMarker`], never a timer thread.
+    fn editor_idle(&mut self, _main: MainThreadMarker) {}
 
     /// The descriptors the plugin registered event handlers for and the
     /// earliest of its timers (Linux; nothing elsewhere, where the OS has the
     /// loop). The run loop is the module's, shared by its plugins.
-    fn wakeups(&mut self, main: &MainThread, out: &mut tutti_plugin_types::Wakeups) {
+    fn wakeups(&mut self, main: MainThreadMarker, out: &mut tutti_plugin_types::Wakeups) {
         self.plugin.editor_wakeups(main, out);
     }
 
@@ -600,7 +615,7 @@ impl EditorWindow for Vst3Loaded {
     /// at `now`, on the main thread.
     fn wake(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         ready: &[tutti_plugin_types::Ready],
         now: std::time::Instant,
     ) {
@@ -609,7 +624,10 @@ impl EditorWindow for Vst3Loaded {
 
     /// What the open editor's view supports, queried live (the inherent
     /// [`Vst3Loaded::editor_capabilities`]).
-    fn editor_capabilities(&mut self, main: &MainThread) -> tutti_plugin_types::EditorCapabilities {
+    fn editor_capabilities(
+        &mut self,
+        main: MainThreadMarker,
+    ) -> tutti_plugin_types::EditorCapabilities {
         Vst3Loaded::editor_capabilities(self, main)
     }
 
@@ -618,7 +636,7 @@ impl EditorWindow for Vst3Loaded {
     /// [`ScaleUnsupported`](tutti_plugin_types::EditorError::ScaleUnsupported).
     fn set_editor_scale(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         scale: tutti_plugin_types::ContentScale,
     ) -> tutti_plugin_types::PluginResult<()> {
         match Vst3Loaded::rescale_editor(self, main, scale) {
@@ -638,7 +656,7 @@ impl EditorWindow for Vst3Loaded {
     /// plugin snapped to.
     fn set_editor_size(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         requested: dpi::Size,
     ) -> PluginResult<dpi::Size> {
         Vst3Loaded::resize_editor(self, main, requested).map_err(|e| {
@@ -650,7 +668,7 @@ impl EditorWindow for Vst3Loaded {
 
     /// The latest `IPlugFrame::resizeView` the plugin made since the last poll
     /// ([`Vst3Loaded::poll_editor_resize_request`]).
-    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<dpi::Size> {
+    fn poll_editor_resize_request(&mut self, main: MainThreadMarker) -> Option<dpi::Size> {
         Vst3Loaded::poll_editor_resize_request(self, main)
     }
 }

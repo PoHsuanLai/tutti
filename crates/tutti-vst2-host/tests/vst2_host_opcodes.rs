@@ -114,7 +114,7 @@ impl Drop for Probe {
 /// The requests the plugin has raised since the last call.
 fn requests(instance: &mut Active) -> Vec<Request> {
     let mut asked = Vec::new();
-    instance.take_requests(&main_thread(), &mut asked);
+    instance.take_requests(main_thread(), &mut asked);
     asked
 }
 

@@ -61,7 +61,7 @@ impl Probe {
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
         ClapLoaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             path,
             LoadOptions::new().library(path),

@@ -99,7 +99,7 @@ use clap_sys::plugin::clap_plugin;
 use crate::host::Host;
 use crate::library::{Bundle, LoadError, Stage};
 use crate::roles::ThreadRoles;
-use tutti_plugin_types::{ContentScale, MainThread, MainWorkHandle};
+use tutti_plugin_types::{ContentScale, MainThreadMarker, MainWorkHandle};
 
 macro_rules! extensions {
     ($($(#[$m:meta])* $field:ident: $ty:ty = [$($id:expr),+];)*) => {
@@ -455,7 +455,7 @@ impl Plugin {
     /// and [`ActivateError::Refused`] when the plugin has no entry or says no.
     pub fn activate(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         sample_rate: f64,
         min_frames: u32,
         max_frames: u32,
@@ -500,7 +500,7 @@ impl Plugin {
 
     /// `plugin.deactivate` (after `stop_processing` if it was running), if the
     /// plugin is active. Waits for any audio-side call in flight.
-    pub fn deactivate(&mut self, _main: &MainThread) {
+    pub fn deactivate(&mut self, _main: MainThreadMarker) {
         let claim = self.core.roles.claim_lifecycle();
         self.stop_and_deactivate_claimed(&claim);
     }
@@ -533,7 +533,7 @@ impl Plugin {
     /// refuses, the prefix a host can present (the host crate truncates there
     /// too, so a hole in the plugin's enumeration is a shorter layout, never a
     /// shifted one).
-    fn port_channels(&self, main: &MainThread, is_input: bool) -> Vec<u32> {
+    fn port_channels(&self, main: MainThreadMarker, is_input: bool) -> Vec<u32> {
         (0..self.audio_port_count(main, is_input))
             .map_while(|i| {
                 self.audio_port_info(main, i, is_input)
@@ -569,7 +569,7 @@ impl Plugin {
     }
 
     /// `plugin.on_main_thread`.
-    pub fn on_main_thread(&self, _main: &MainThread) {
+    pub fn on_main_thread(&self, _main: MainThreadMarker) {
         // SAFETY: the instance is alive; a `[main-thread]` entry on the
         // main-thread half.
         unsafe {
@@ -583,13 +583,13 @@ impl Plugin {
 
     /// `params.count`.
     #[must_use]
-    pub fn param_count(&self, _main: &MainThread) -> u32 {
+    pub fn param_count(&self, _main: MainThreadMarker) -> u32 {
         call!(self.params.count() else 0)
     }
 
     /// `params.get_info` for the parameter at `index`.
     #[must_use]
-    pub fn param_info(&self, _main: &MainThread, index: u32) -> Option<crate::ParamInfo> {
+    pub fn param_info(&self, _main: MainThreadMarker, index: u32) -> Option<crate::ParamInfo> {
         let mut info: clap_sys::ext::params::clap_param_info = Plain::zeroed();
         // The cookie is the plugin's own pointer, for the plugin to read back
         // in an event; `ParamInfo` has none, and `EventRef` refuses any.
@@ -599,20 +599,25 @@ impl Plugin {
 
     /// `params.get_value`.
     #[must_use]
-    pub fn param_value(&self, _main: &MainThread, id: u32) -> Option<f64> {
+    pub fn param_value(&self, _main: MainThreadMarker, id: u32) -> Option<f64> {
         let mut value = 0.0_f64;
         call!(self.params.get_value(id, &mut value) else false).then_some(value)
     }
 
     /// `params.value_to_text`, up to 256 bytes of text.
     #[must_use]
-    pub fn param_value_to_text(&self, _main: &MainThread, id: u32, value: f64) -> Option<String> {
+    pub fn param_value_to_text(
+        &self,
+        _main: MainThreadMarker,
+        id: u32,
+        value: f64,
+    ) -> Option<String> {
         value_to_text(self.ext(self.core.exts.params)?, self.core.raw(), id, value)
     }
 
     /// `params.text_to_value`.
     #[must_use]
-    pub fn param_text_to_value(&self, _main: &MainThread, id: u32, text: &str) -> Option<f64> {
+    pub fn param_text_to_value(&self, _main: MainThreadMarker, id: u32, text: &str) -> Option<f64> {
         text_to_value(self.ext(self.core.exts.params)?, self.core.raw(), id, text)
     }
 
@@ -621,7 +626,7 @@ impl Plugin {
     /// takes the audio claim; on an inactive one it is `[main-thread]`.
     pub fn params_flush(
         &mut self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         input: &dyn crate::EventSource,
         output: &mut dyn crate::EventSink,
     ) -> bool {
@@ -643,7 +648,7 @@ impl Plugin {
     /// `param-indication.set_automation`.
     pub fn set_param_automation(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         param_id: u32,
         state: crate::AutomationState,
         color: Option<clap_sys::color::clap_color>,
@@ -654,7 +659,7 @@ impl Plugin {
 
     /// `track-info.changed`: the host's answer to `get` is different now. A
     /// plugin without the extension is not told.
-    pub fn track_info_changed(&self, _main: &MainThread) {
+    pub fn track_info_changed(&self, _main: MainThreadMarker) {
         call!(self.track_info.changed() else ());
     }
 
@@ -669,7 +674,7 @@ impl Plugin {
     /// The extension or entry is missing, or the plugin answered `false`.
     pub fn state_save(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         out: &mut crate::OutputStream,
     ) -> Result<(), CallError> {
         let f = self
@@ -690,7 +695,7 @@ impl Plugin {
     /// As [`state_save`](Self::state_save).
     pub fn state_load(
         &mut self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         input: &mut crate::InputStream<'_>,
     ) -> Result<(), CallError> {
         let f = self
@@ -711,7 +716,7 @@ impl Plugin {
     /// As [`state_save`](Self::state_save).
     pub fn state_save_with_context(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         out: &mut crate::OutputStream,
         context: crate::StateContext,
     ) -> Result<(), CallError> {
@@ -732,7 +737,7 @@ impl Plugin {
     /// As [`state_save`](Self::state_save).
     pub fn state_load_with_context(
         &mut self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         input: &mut crate::InputStream<'_>,
         context: crate::StateContext,
     ) -> Result<(), CallError> {
@@ -753,7 +758,11 @@ impl Plugin {
     /// # Errors
     /// The extension or entry is missing, the path has an interior nul, or the
     /// plugin answered `false` ([`CallError::Failed`]).
-    pub fn preset_load_file(&mut self, _main: &MainThread, path: &Path) -> Result<(), CallError> {
+    pub fn preset_load_file(
+        &mut self,
+        _main: MainThreadMarker,
+        path: &Path,
+    ) -> Result<(), CallError> {
         let f = self
             .ext(self.core.exts.preset_load)
             .ok_or(CallError::NoExtension)?
@@ -779,20 +788,20 @@ impl Plugin {
 
     /// `latency.get`, 0 without the extension.
     #[must_use]
-    pub fn latency(&self, _main: &MainThread) -> u32 {
+    pub fn latency(&self, _main: MainThreadMarker) -> u32 {
         call!(self.latency.get() else 0)
     }
 
     /// `tail.get`, `None` without the extension.
     #[must_use]
-    pub fn tail(&self, _main: &MainThread) -> Option<u32> {
+    pub fn tail(&self, _main: MainThreadMarker) -> Option<u32> {
         let ext = self.ext(self.core.exts.tail)?;
         // SAFETY: the plugin's own `get` of a returned extension.
         ext.get.map(|f| unsafe { f(self.core.raw()) })
     }
 
     /// `render.set`: offline or realtime.
-    pub fn set_render_offline(&self, _main: &MainThread, offline: bool) -> bool {
+    pub fn set_render_offline(&self, _main: MainThreadMarker, offline: bool) -> bool {
         use clap_sys::ext::render::{CLAP_RENDER_OFFLINE, CLAP_RENDER_REALTIME};
         let mode = if offline {
             CLAP_RENDER_OFFLINE
@@ -804,26 +813,26 @@ impl Plugin {
 
     /// `render.has_hard_realtime_requirement`.
     #[must_use]
-    pub fn has_hard_realtime_requirement(&self, _main: &MainThread) -> bool {
+    pub fn has_hard_realtime_requirement(&self, _main: MainThreadMarker) -> bool {
         call!(self.render.has_hard_realtime_requirement() else false)
     }
 
     /// `voice-info.get`.
     #[must_use]
-    pub fn voice_info(&self, _main: &MainThread) -> Option<crate::VoiceInfo> {
+    pub fn voice_info(&self, _main: MainThreadMarker) -> Option<crate::VoiceInfo> {
         let mut info = Plain::zeroed();
         call!(self.voice_info.get(&mut info) else false).then(|| crate::VoiceInfo::from_raw(&info))
     }
 
     /// `note-name.count`.
     #[must_use]
-    pub fn note_name_count(&self, _main: &MainThread) -> u32 {
+    pub fn note_name_count(&self, _main: MainThreadMarker) -> u32 {
         call!(self.note_name.count() else 0)
     }
 
     /// `note-name.get`.
     #[must_use]
-    pub fn note_name(&self, _main: &MainThread, index: u32) -> Option<crate::NoteName> {
+    pub fn note_name(&self, _main: MainThreadMarker, index: u32) -> Option<crate::NoteName> {
         let mut info = Plain::zeroed();
         call!(self.note_name.get(index, &mut info) else false)
             .then(|| crate::NoteName::from_raw(&info))
@@ -833,7 +842,7 @@ impl Plugin {
 
     /// `note-ports.count`.
     #[must_use]
-    pub fn note_port_count(&self, _main: &MainThread, is_input: bool) -> u32 {
+    pub fn note_port_count(&self, _main: MainThreadMarker, is_input: bool) -> u32 {
         call!(self.note_ports.count(is_input) else 0)
     }
 
@@ -841,7 +850,7 @@ impl Plugin {
     #[must_use]
     pub fn note_port_info(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         index: u32,
         is_input: bool,
     ) -> Option<crate::NotePortDecl> {
@@ -852,7 +861,7 @@ impl Plugin {
 
     /// `audio-ports.count`.
     #[must_use]
-    pub fn audio_port_count(&self, _main: &MainThread, is_input: bool) -> u32 {
+    pub fn audio_port_count(&self, _main: MainThreadMarker, is_input: bool) -> u32 {
         call!(self.audio_ports.count(is_input) else 0)
     }
 
@@ -860,7 +869,7 @@ impl Plugin {
     #[must_use]
     pub fn audio_port_info(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         index: u32,
         is_input: bool,
     ) -> Option<AudioPortInfo> {
@@ -871,7 +880,7 @@ impl Plugin {
 
     /// `audio-ports-config.count`.
     #[must_use]
-    pub fn audio_ports_config_count(&self, _main: &MainThread) -> u32 {
+    pub fn audio_ports_config_count(&self, _main: MainThreadMarker) -> u32 {
         call!(self.audio_ports_config.count() else 0)
     }
 
@@ -879,7 +888,7 @@ impl Plugin {
     #[must_use]
     pub fn audio_ports_config(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         index: u32,
     ) -> Option<crate::AudioPortsConfig> {
         let mut config = Plain::zeroed();
@@ -893,7 +902,7 @@ impl Plugin {
     /// [`CallError::WrongState`] while the plugin is active.
     pub fn select_audio_ports_config(
         &mut self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         config_id: u32,
     ) -> Result<bool, CallError> {
         self.require_inactive()?;
@@ -902,7 +911,7 @@ impl Plugin {
 
     /// `audio-ports-config-info.current_config`.
     #[must_use]
-    pub fn current_audio_ports_config(&self, _main: &MainThread) -> Option<u32> {
+    pub fn current_audio_ports_config(&self, _main: MainThreadMarker) -> Option<u32> {
         let ext = self.ext(self.core.exts.audio_ports_config_info)?;
         // SAFETY: the plugin's own `current_config` of a returned extension.
         ext.current_config.map(|f| unsafe { f(self.core.raw()) })
@@ -912,7 +921,7 @@ impl Plugin {
     #[must_use]
     pub fn audio_ports_config_port_info(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         config_id: u32,
         port_index: u32,
         is_input: bool,
@@ -929,7 +938,7 @@ impl Plugin {
     /// [`CallError::WrongState`] while the plugin is active.
     pub fn can_apply_audio_port_configuration(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         requests: &[PortConfigRequest],
     ) -> Result<bool, CallError> {
         self.require_inactive()?;
@@ -946,7 +955,7 @@ impl Plugin {
     /// [`CallError::WrongState`] while the plugin is active.
     pub fn apply_audio_port_configuration(
         &mut self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         requests: &[PortConfigRequest],
     ) -> Result<bool, CallError> {
         self.require_inactive()?;
@@ -958,7 +967,7 @@ impl Plugin {
 
     /// `audio-ports-activation.can_activate_while_processing`.
     #[must_use]
-    pub fn can_activate_audio_port_while_processing(&self, _main: &MainThread) -> bool {
+    pub fn can_activate_audio_port_while_processing(&self, _main: MainThreadMarker) -> bool {
         call!(self.audio_ports_activation.can_activate_while_processing() else false)
     }
 
@@ -971,7 +980,7 @@ impl Plugin {
     /// [`CallError::WrongState`] for a processing plugin that cannot.
     pub fn set_audio_port_active(
         &mut self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         is_input: bool,
         port_index: u32,
         is_active: bool,
@@ -992,7 +1001,7 @@ impl Plugin {
     #[must_use]
     pub fn is_ambisonic_config_supported(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         config: &clap_sys::ext::ambisonic::clap_ambisonic_config,
     ) -> bool {
         call!(self.ambisonic.is_config_supported(config) else false)
@@ -1002,7 +1011,7 @@ impl Plugin {
     #[must_use]
     pub fn ambisonic_config(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         is_input: bool,
         port_index: u32,
     ) -> Option<crate::AmbisonicDecl> {
@@ -1015,7 +1024,7 @@ impl Plugin {
     #[must_use]
     pub fn is_surround_channel_mask_supported(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         channel_mask: u64,
     ) -> bool {
         call!(self.surround.is_channel_mask_supported(channel_mask) else false)
@@ -1026,7 +1035,7 @@ impl Plugin {
     #[must_use]
     pub fn surround_channel_map(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         is_input: bool,
         port_index: u32,
     ) -> Option<([u8; 64], usize)> {
@@ -1047,13 +1056,13 @@ impl Plugin {
     }
 
     /// `timer-support.on_timer`; `false` when the plugin has none.
-    pub fn fire_timer(&mut self, _main: &MainThread, id: u32) -> bool {
+    pub fn fire_timer(&mut self, _main: MainThreadMarker, id: u32) -> bool {
         call!(self.timer_support.on_timer(id) else ());
         self.has_on_timer()
     }
 
     /// `posix-fd-support.on_fd`; `false` when the plugin has none.
-    pub fn fire_fd(&mut self, _main: &MainThread, fd: i32, ready: u32) -> bool {
+    pub fn fire_fd(&mut self, _main: MainThreadMarker, fd: i32, ready: u32) -> bool {
         match self
             .ext(self.core.exts.posix_fd_support)
             .and_then(|e| e.on_fd)

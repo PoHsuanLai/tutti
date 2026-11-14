@@ -11,7 +11,7 @@
 //! back at the audio thread's next poll.
 
 use std::path::Path;
-use tutti_plugin_types::{MainThread, MainWorkHandle};
+use tutti_plugin_types::{MainThreadMarker, MainWorkHandle};
 
 use tutti_plugin_types::{
     Event, Hand, HostOp, InProcess, Lifecycle, Load, Loaded, MaxBlock, Notice, Origin, PluginError,
@@ -76,7 +76,7 @@ impl<F: InProcess> Instance<F> {
     /// state's. Its outcome is returned beside the instance; a refusal does not
     /// fail the load (a plugin at its defaults beats none).
     pub(super) fn load(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,
@@ -104,7 +104,7 @@ impl<F: Loaded> Instance<F> {
     ///
     /// The stage that failed and the reason.
     pub(super) fn start(
-        main: &MainThread,
+        main: MainThreadMarker,
         loaded: F,
         origin: Option<Origin>,
         sample_rate: SampleRate,
@@ -168,7 +168,7 @@ impl<F: Loaded> Instance<F> {
 
     /// Steps `event` and keeps what it told; the reason of a refused
     /// activation, if it was one.
-    fn drive(&mut self, main: &MainThread, event: Event) -> Option<String> {
+    fn drive(&mut self, main: MainThreadMarker, event: Event) -> Option<String> {
         let mut refused = None;
         let changes = &mut self.changes;
         let state = self.state.clone();
@@ -237,7 +237,7 @@ impl<F: Loaded> Instance<F> {
     /// [`pump`](Self::pump) finishes it.
     pub(super) fn set_render_mode(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         mode: RenderMode,
         rt: Option<&mut Rt<F::Processor>>,
     ) -> bool {
@@ -291,7 +291,7 @@ impl<F: Loaded> Instance<F> {
     /// hears of one the audio thread's parked rate caused.
     pub(super) fn set_sample_rate(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         rate: SampleRate,
         rt: Option<&mut Rt<F::Processor>>,
     ) -> Result<(), String> {
@@ -347,7 +347,7 @@ impl<F: Loaded> Instance<F> {
     /// Re-reads on `audioMasterIOChanged` (the plugin's own signal: its pin
     /// counts and latency may both have moved), and reports what an activation
     /// read. Main thread: a re-read dispatches `effGetTailSize`.
-    pub(super) fn pump(&mut self, main: &MainThread) -> Changes {
+    pub(super) fn pump(&mut self, main: MainThreadMarker) -> Changes {
         let mut asked = Vec::new();
         if let Some(control) = self.lifecycle.control() {
             control.take_requests(main, &mut asked);
@@ -378,7 +378,7 @@ impl<F: Loaded> Instance<F> {
     }
 
     /// The plugin's parameter edits since the last call.
-    pub(super) fn drain_param_changes(&mut self, main: &MainThread) -> Vec<ParamEdit> {
+    pub(super) fn drain_param_changes(&mut self, main: MainThreadMarker) -> Vec<ParamEdit> {
         let mut edits = Vec::new();
         if let Some(control) = self.lifecycle.control() {
             control.take_reported_edits(main, &mut edits);
@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn a_load_with_no_block_is_refused() {
         match Instance::<Vst2Loaded>::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             tutti_fixtures::vst2_probe(),
             &Load::new(),
@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn a_rate_the_plugin_takes_reports_nothing() {
         let (mut instance, _rt, _) = Instance::<Vst2Loaded>::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             tutti_fixtures::vst2_probe(),
             &Load::new(),
@@ -461,7 +461,7 @@ mod tests {
         .expect("loads");
         assert_eq!(instance.take_rate_report(), None, "nothing to report yet");
         instance
-            .set_sample_rate(&main_thread(), SampleRate::SR_96K, None)
+            .set_sample_rate(main_thread(), SampleRate::SR_96K, None)
             .expect("a real rate is taken");
         assert_eq!(instance.prepare.rate(), SampleRate::SR_96K);
         assert_eq!(instance.take_rate_report(), None, "a plain change");
@@ -478,7 +478,7 @@ mod tests {
     fn a_parked_rate_change_completes_at_the_pump() {
         let main = main_thread();
         let (mut instance, mut rt, _) = Instance::<Vst2Loaded>::load(
-            &main,
+            main,
             &tutti_fixtures::detached_work(),
             tutti_fixtures::vst2_probe(),
             &Load::new(),
@@ -489,11 +489,11 @@ mod tests {
         .expect("loads");
         assert!(rt.poll(Processor::stop).is_some(), "lent at the load");
         instance
-            .set_sample_rate(&main, SampleRate::SR_96K, None)
+            .set_sample_rate(main, SampleRate::SR_96K, None)
             .expect("the change starts");
         assert!(rt.poll(Processor::stop).is_none(), "handed back");
         assert!(instance.state.is_parked(), "waits for the Processor");
-        let _ = instance.pump(&main);
+        let _ = instance.pump(main);
         assert!(instance.renders());
         assert_eq!(instance.rate(), SampleRate::SR_96K);
         assert!(rt.poll(Processor::stop).is_some(), "the new Processor");
@@ -512,12 +512,12 @@ mod tests {
         let (fake, loaded) = tutti_plugin_types::fake::FakePlugin::new();
         fake.take_render_mode(support);
         let main = main_thread();
-        let wiring = loaded.wiring(&main);
+        let wiring = loaded.wiring(main);
         let prepare = Prepare::new(
             SampleRate::SR_48K,
             tutti_types::MaxBlock::new(Samples(64)).expect("a block"),
         );
-        let Ok((processor, controller)) = loaded.activate(&main, prepare) else {
+        let Ok((processor, controller)) = loaded.activate(main, prepare) else {
             panic!("the fake activates");
         };
         let (instance, rt) = Instance::adopt(processor, controller, prepare, &wiring);
@@ -539,7 +539,7 @@ mod tests {
     #[test]
     fn a_mode_read_at_activation_cycles_the_plugin() {
         let (mut instance, mut rt, fake) = adopted(RenderModeSupport::OnActivation);
-        assert!(instance.set_render_mode(&main_thread(), RenderMode::Offline, Some(&mut rt)));
+        assert!(instance.set_render_mode(main_thread(), RenderMode::Offline, Some(&mut rt)));
         assert!(cycled(&fake), "{:?}", fake.calls());
         assert_eq!(instance.render_mode(), RenderMode::Offline);
         assert!(instance.renders());
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn a_plugin_without_a_render_mode_is_not_cycled() {
         let (mut instance, mut rt, fake) = adopted(RenderModeSupport::Unsupported);
-        assert!(!instance.set_render_mode(&main_thread(), RenderMode::Offline, Some(&mut rt)));
+        assert!(!instance.set_render_mode(main_thread(), RenderMode::Offline, Some(&mut rt)));
         assert_eq!(fake.told_render_mode(), None);
         assert!(!cycled(&fake), "{:?}", fake.calls());
         assert_eq!(instance.render_mode(), RenderMode::Offline, "kept");
@@ -563,7 +563,7 @@ mod tests {
     #[test]
     fn a_live_plugin_is_told_and_not_cycled() {
         let (mut instance, mut rt, fake) = adopted(RenderModeSupport::Live);
-        assert!(instance.set_render_mode(&main_thread(), RenderMode::Offline, Some(&mut rt)));
+        assert!(instance.set_render_mode(main_thread(), RenderMode::Offline, Some(&mut rt)));
         assert_eq!(fake.told_render_mode(), Some(RenderMode::Offline));
         assert!(!cycled(&fake), "{:?}", fake.calls());
     }

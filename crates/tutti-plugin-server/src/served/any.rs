@@ -12,7 +12,7 @@
 use std::path::Path;
 
 use tutti_plugin_types::{
-    Hand, Load, LoadStage, MainThread, MainWorkHandle, PluginError, PluginResult, StateUse,
+    Hand, Load, LoadStage, MainThreadMarker, MainWorkHandle, PluginError, PluginResult, StateUse,
 };
 
 use super::{Served, ServedPlugin};
@@ -43,7 +43,7 @@ macro_rules! served {
             /// row names, else the format's own.
             #[allow(clippy::too_many_arguments)] // one load's parameters, as the wire carries them
             pub(crate) fn load(
-                main: &MainThread,
+                main: MainThreadMarker,
                 work: &MainWorkHandle,
                 path: &Path,
                 load: &Load,

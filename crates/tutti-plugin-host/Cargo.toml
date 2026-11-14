@@ -65,7 +65,7 @@ libloading.workspace = true
 tutti-vst2-test-plugin = { path = "../../testing/tutti-vst2-test-plugin" }
 
 # The in-process node tells a plugin its rate, and forks it, on the process's
-# main thread only (`MainThread::new` asks the OS), which the default harness never
+# main thread only (`MainThreadMarker::new` asks the OS), which the default harness never
 # runs a test on: these targets own `main()` (`tutti_fixtures::main_thread_cases`).
 [[test]]
 name = "vst2_in_process_params"

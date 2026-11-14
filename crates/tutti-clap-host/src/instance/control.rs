@@ -4,7 +4,7 @@
 
 use std::path::Path;
 use std::time::Instant;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
@@ -108,13 +108,13 @@ pub(super) fn denormalize(bounds: Option<ParamBounds>, value: Normalized) -> f64
 impl ClapLoaded {
     /// The descriptor for this plugin as loaded: its factory info, with whether
     /// it has an editor measured from the plugin itself.
-    pub(crate) fn measured_descriptor(&self, main: &MainThread) -> PluginDescriptor {
+    pub(crate) fn measured_descriptor(&self, main: MainThreadMarker) -> PluginDescriptor {
         let bits = editor_bits(self.has_editor(main), self.has_floating_editor(main));
         descriptor_of(&self.info, EditorPresence::measured(bits.has_editor))
     }
 
     /// The descriptor with the editor measured, asking the plugin the first time.
-    fn measured(&self, main: &MainThread) -> &PluginDescriptor {
+    fn measured(&self, main: MainThreadMarker) -> &PluginDescriptor {
         self.descriptor
             .get_or_init(|| self.measured_descriptor(main))
     }
@@ -122,7 +122,7 @@ impl ClapLoaded {
     /// What the plugin declares on its audio ports now: per port, its width,
     /// what `clap.surround` says (`None` for a port the plugin will not answer
     /// for: no extension, or no `get_channel_map`) and its role.
-    pub fn layout(&self, main: &MainThread) -> Layout {
+    pub fn layout(&self, main: MainThreadMarker) -> Layout {
         Layout {
             inputs: self.buses(main, true),
             outputs: self.buses(main, false),
@@ -137,7 +137,7 @@ impl ClapLoaded {
     /// the port at its index. A plugin without the extension (no ports) is
     /// read as its aggregate total on a single main bus; none at all stays
     /// none.
-    fn buses(&self, main: &MainThread, is_input: bool) -> PluginBuses {
+    fn buses(&self, main: MainThreadMarker, is_input: bool) -> PluginBuses {
         let count = self.audio_port_count(main, is_input);
         let buses: PluginBuses = (0..count)
             .map_while(|i| {
@@ -168,7 +168,7 @@ impl ClapLoaded {
     }
 
     /// The capabilities this plugin has, as the shared vocabulary names them.
-    fn features(&self, main: &MainThread) -> Features {
+    fn features(&self, main: MainThreadMarker) -> Features {
         let bits = editor_bits(self.has_editor(main), self.has_floating_editor(main));
         let editor_resizable =
             bits.resize_allowed && self.editor_capabilities(main).resize.resizable;
@@ -203,7 +203,7 @@ impl ClapLoaded {
 
     /// The tail figure; a plugin without `clap.tail` has not answered, which is
     /// not the `None` a plugin answering 0 gives.
-    fn tail_figure(&self, main: &MainThread) -> PluginTail {
+    fn tail_figure(&self, main: MainThreadMarker) -> PluginTail {
         self.tail_samples(main)
             .map_or(PluginTail::Unknown, PluginTail::from_clap_samples)
     }
@@ -227,7 +227,7 @@ impl ClapLoaded {
     /// [`Control::take_requests`]: what the plugin raised from any thread, and
     /// the timers and descriptors a [`wake`](EditorWindow::wake) latched since
     /// the last take, as requests for the lifecycle to serve.
-    pub(crate) fn take_requests_now(&mut self, main: &MainThread, out: &mut Vec<Request>) {
+    pub(crate) fn take_requests_now(&mut self, main: MainThreadMarker, out: &mut Vec<Request>) {
         // `gui.closed` is `[thread-safe]` and the plugin may raise it from its
         // own window thread, while `gui.destroy` is the main thread's: this
         // pass is where it is acknowledged (`ext/gui.h`: "the host must call
@@ -255,15 +255,15 @@ impl ClapLoaded {
 
 impl Control for ClapLoaded {
     /// The editor is measured from the plugin on the first ask that holds a
-    /// `MainThread` (`wiring`, or this one on the main thread); a thread that
+    /// `MainThreadMarker` (`wiring`, or this one on the main thread); a thread that
     /// holds none before then gets the unmeasured descriptor
     /// ([`EditorPresence::Unknown`]) and measures nothing.
     fn info(&self) -> &PluginDescriptor {
         if let Some(measured) = self.descriptor.get() {
             return measured;
         }
-        match MainThread::new() {
-            Some(main) => self.measured(&main),
+        match MainThreadMarker::new() {
+            Some(main) => self.measured(main),
             None => &self.unmeasured,
         }
     }
@@ -271,7 +271,7 @@ impl Control for ClapLoaded {
     /// The wiring read from the plugin now. Latency is read only while the
     /// plugin is active, which is when CLAP lets it change; a loaded plugin
     /// reports none.
-    fn wiring(&self, main: &MainThread) -> LoadedPlugin {
+    fn wiring(&self, main: MainThreadMarker) -> LoadedPlugin {
         self.measured(main);
         let layout = self.layout(main);
         let latency_samples = if self.flags.active {
@@ -289,18 +289,18 @@ impl Control for ClapLoaded {
         }
     }
 
-    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
+    fn parameters(&self, main: MainThreadMarker) -> Vec<ParameterInfo> {
         self.parameter_list(main)
     }
 
-    fn parameter_count(&self, main: &MainThread) -> usize {
+    fn parameter_count(&self, main: MainThreadMarker) -> usize {
         ClapLoaded::parameter_count(self, main)
     }
 
     /// `param-indication.set_automation` for every automatable parameter: the
     /// mode is the plugin's whole, and CLAP names automation per parameter.
     /// A plugin without `clap.param-indication` is not told.
-    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
+    fn set_automation_state(&mut self, main: MainThreadMarker, mode: AutomationMode) {
         let state = ParamAutomationState::from(mode);
         for info in self.parameter_list(main) {
             if info.flag(ParamFlags::AUTOMATABLE) == Some(true) {
@@ -313,7 +313,7 @@ impl Control for ClapLoaded {
     /// told (`track-info.changed`) when it differs from the last. A plugin
     /// without `clap.track-info` is told nothing, and its host callback still
     /// answers.
-    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) -> Delivered {
+    fn set_track_info(&mut self, main: MainThreadMarker, info: &TrackInfo) -> Delivered {
         {
             // A poisoned lock means a thread died holding the value: the
             // instance's host state is lost, which is the plugin's death here.
@@ -331,7 +331,7 @@ impl Control for ClapLoaded {
 
     /// Normalized `0..=1`; CLAP has no normalization concept, so the plugin
     /// answers in its plain range and the declared bounds map it back.
-    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
+    fn parameter(&self, main: MainThreadMarker, id: ParamId) -> Option<Normalized> {
         let plain = self.plain_value(main, id.get())?;
         Some(Normalized::clamped(normalize(
             self.parameter_bounds(main, id.get()),
@@ -341,7 +341,7 @@ impl Control for ClapLoaded {
 
     /// Applied now, as a flushed `PARAM_VALUE` event. CLAP events carry the
     /// plain value, so the declared range denormalizes it.
-    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, main: MainThreadMarker, id: ParamId, value: Normalized) {
         let bounds = self.parameter_bounds(main, id.get());
         // A read-only parameter "can't be changed by the host" (`params.h`).
         if bounds.is_some_and(|b| b.read_only) {
@@ -354,14 +354,19 @@ impl Control for ClapLoaded {
     /// Plain from [`ParamBounds`]'s [`ParamMapping`], which CLAP's own range
     /// owns (stepped values on their integer). `None` for an id the plugin does
     /// not declare.
-    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
+    fn parameter_plain(
+        &self,
+        main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<f64> {
         Some(self.parameter_bounds(main, id.get())?.plain(value))
     }
 
     /// The inverse, [`ParamMapping::normalized`].
     fn parameter_normalized(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         id: ParamId,
         plain: f64,
     ) -> Option<Normalized> {
@@ -370,7 +375,12 @@ impl Control for ClapLoaded {
 
     /// The plugin's own display string. `value_to_text` takes a plain value, so
     /// the same range conversion `set_parameter` applies is applied here.
-    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+    fn parameter_text(
+        &self,
+        main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<String> {
         let plain = denormalize(self.parameter_bounds(main, id.get()), value);
         self.value_to_text(main, id.get(), plain)
     }
@@ -379,7 +389,7 @@ impl Control for ClapLoaded {
     /// [`set_parameter`](Self::set_parameter).
     fn parameter_value_from_text(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         id: ParamId,
         text: &str,
     ) -> Option<Normalized> {
@@ -392,14 +402,14 @@ impl Control for ClapLoaded {
 
     /// `state-context` for the context `state_use` names when the plugin has
     /// it, plain `state` when not.
-    fn save_state(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, main: MainThreadMarker, state_use: StateUse) -> PluginResult<Vec<u8>> {
         self.state_with_context(main, state_use.into())
             .map_err(plugin_error)
     }
 
     fn load_state(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         bytes: &[u8],
         state_use: StateUse,
     ) -> PluginResult<()> {
@@ -419,7 +429,7 @@ impl Control for ClapLoaded {
     /// preset-discovery extension, which this host does not bind, so `presets`
     /// keeps its empty default. That is not the same claim as an empty list from
     /// AU: `Features::PRESET_LIST` is *unprobed* for CLAP.
-    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
+    fn load_preset(&mut self, main: MainThreadMarker, id: &PresetId) -> bool {
         match preset_path(id) {
             Some(path) => self.load_preset_file(main, path).is_ok(),
             None => false,
@@ -428,19 +438,19 @@ impl Control for ClapLoaded {
 
     /// Nothing is cached here to re-read: the Processor's ranges are the
     /// Controller's to republish.
-    fn rescan_parameters(&mut self, _main: &MainThread, scope: RescanScope) {
+    fn rescan_parameters(&mut self, _main: MainThreadMarker, scope: RescanScope) {
         let _ = scope;
     }
 
-    fn run_main_thread(&mut self, main: &MainThread) {
+    fn run_main_thread(&mut self, main: MainThreadMarker) {
         self.on_main_thread(main);
     }
 
-    fn run_timer(&mut self, main: &MainThread, id: TimerId) {
+    fn run_timer(&mut self, main: MainThreadMarker, id: TimerId) {
         self.fire_timer(main, id.0);
     }
 
-    fn service_fd(&mut self, main: &MainThread, id: FdId) {
+    fn service_fd(&mut self, main: MainThreadMarker, id: FdId) {
         self.fire_fd(main, id.0);
     }
 
@@ -459,14 +469,14 @@ impl Control for ClapLoaded {
     /// Timers and callbacks are served only while the host keeps calling this
     /// and feeding the requests to the core: a loop that blocks waiting for the
     /// next message serves none until one arrives.
-    fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
+    fn take_requests(&mut self, main: MainThreadMarker, out: &mut Vec<Request>) {
         self.take_requests_now(main, out);
     }
 
     /// `Live` with `clap.render` (`render.set` is a main-thread call on an
     /// active plugin), `Unsupported` without: the extension is optional, and a
     /// plugin whose rendering does not depend on the mode leaves it out.
-    fn render_mode_support(&self, _main: &MainThread) -> RenderModeSupport {
+    fn render_mode_support(&self, _main: MainThreadMarker) -> RenderModeSupport {
         if self.plugin.supports_render() {
             RenderModeSupport::Live
         } else {
@@ -477,13 +487,13 @@ impl Control for ClapLoaded {
     /// Switches between real-time and offline rendering per `CLAP_EXT_RENDER`.
     /// `true` when the plugin accepted, `false` when it has no `clap.render` or
     /// refused.
-    fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
+    fn set_render_mode(&mut self, main: MainThreadMarker, mode: RenderMode) -> bool {
         self.plugin.set_render_offline(main, mode.is_offline())
     }
 
     /// Nothing: CLAP reports the edits a plugin's own editor makes in the
     /// block's `ProcessOutput`.
-    fn take_reported_edits(&mut self, _main: &MainThread, _out: &mut Vec<ParamEdit>) {}
+    fn take_reported_edits(&mut self, _main: MainThreadMarker, _out: &mut Vec<ParamEdit>) {}
 
     /// `0`: CLAP reports the edits a plugin's own editor makes in the block's
     /// `ProcessOutput`, not through a queue that can drop them.
@@ -520,7 +530,7 @@ impl EditorWindow for ClapLoaded {
     /// `create` then fails still reports `true` here; that surfaces as
     /// [`open_editor`](EditorWindow::open_editor)'s error. An absent `is_api_supported`
     /// is not a refusal — the same reading `embed_editor_sequence` uses.
-    fn has_editor(&self, main: &MainThread) -> bool {
+    fn has_editor(&self, main: MainThreadMarker) -> bool {
         self.plugin.has_editor(main)
     }
 
@@ -539,7 +549,7 @@ impl EditorWindow for ClapLoaded {
     /// embedded window API is unsupported, or if `create`/`set_parent` fails.
     fn open_editor(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         parent: WindowHandle,
         scale: ContentScale,
     ) -> PluginResult<dpi::Size> {
@@ -551,7 +561,7 @@ impl EditorWindow for ClapLoaded {
     /// `set_transient` is a stacking hint the plugin may ignore anyway. A host
     /// that has both uses
     /// [`open_floating_editor_with`](ClapLoaded::open_floating_editor_with).
-    fn open_floating_editor(&mut self, main: &MainThread) -> PluginResult<()> {
+    fn open_floating_editor(&mut self, main: MainThreadMarker) -> PluginResult<()> {
         let title = std::ffi::CString::new(self.info().name.as_str())
             .unwrap_or_else(|_| c"Plugin Editor".to_owned());
         self.open_floating_editor_with(main, None, &title)
@@ -567,7 +577,7 @@ impl EditorWindow for ClapLoaded {
     /// acknowledge the gui destruction", and the spec's own lifecycle pairs
     /// `destroy` (step 14) with `create` (step 2), so it releases the gui
     /// resources `create` allocated rather than the window that just closed.
-    fn close_editor(&mut self, main: &MainThread) {
+    fn close_editor(&mut self, main: MainThreadMarker) {
         self.destroy_editor(main);
     }
     /// Nothing, on purpose: CLAP's editor timers, callbacks and file
@@ -575,24 +585,27 @@ impl EditorWindow for ClapLoaded {
     /// whose requests the shell feeds to `Lifecycle::drive` (`run_timer`,
     /// `run_main_thread`, `service_fd`). A second pass here would take
     /// requests that belong to it.
-    fn editor_idle(&mut self, _main: &MainThread) {}
+    fn editor_idle(&mut self, _main: MainThreadMarker) {}
 
     /// The plugin's descriptors (`posix-fd-support`) and the earliest of its
     /// timers (`timer-support`).
-    fn wakeups(&mut self, _main: &MainThread, out: &mut tutti_plugin_types::Wakeups) {
+    fn wakeups(&mut self, _main: MainThreadMarker, out: &mut tutti_plugin_types::Wakeups) {
         self.describe_wakeups(out);
     }
 
     /// Latches what fired for [`take_requests`](Control::take_requests): the
     /// lifecycle serves it within its budget, so the plugin's `on_fd` and
     /// `on_timer` run where its other main-thread work does.
-    fn wake(&mut self, _main: &MainThread, ready: &[tutti_plugin_types::Ready], now: Instant) {
+    fn wake(&mut self, _main: MainThreadMarker, ready: &[tutti_plugin_types::Ready], now: Instant) {
         self.latch_wakeups(ready, now);
     }
 
     /// What the open editor supports (the inherent [`ClapLoaded::editor_capabilities`]):
     /// the same answer the editor-only instance gives, whatever hosts the plugin.
-    fn editor_capabilities(&mut self, main: &MainThread) -> tutti_plugin_types::EditorCapabilities {
+    fn editor_capabilities(
+        &mut self,
+        main: MainThreadMarker,
+    ) -> tutti_plugin_types::EditorCapabilities {
         ClapLoaded::editor_capabilities(self, main)
     }
 
@@ -601,7 +614,7 @@ impl EditorWindow for ClapLoaded {
     /// [`ScaleUnsupported`](tutti_plugin_types::EditorError::ScaleUnsupported).
     fn set_editor_scale(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         scale: tutti_plugin_types::ContentScale,
     ) -> tutti_plugin_types::PluginResult<()> {
         match ClapLoaded::rescale_editor(self, main, scale) {
@@ -616,7 +629,7 @@ impl EditorWindow for ClapLoaded {
     /// `gui.adjust_size` and `gui.set_size` through [`ClapLoaded::resize_editor`].
     fn set_editor_size(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         requested: dpi::Size,
     ) -> PluginResult<dpi::Size> {
         ClapLoaded::resize_editor(self, main, requested).map_err(plugin_error)
@@ -624,7 +637,7 @@ impl EditorWindow for ClapLoaded {
 
     /// The plugin's pending `gui.request_resize`, once
     /// ([`ClapLoaded::take_editor_resize_request`]).
-    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<dpi::Size> {
+    fn poll_editor_resize_request(&mut self, _main: MainThreadMarker) -> Option<dpi::Size> {
         ClapLoaded::take_editor_resize_request(self)
     }
 }
@@ -660,11 +673,11 @@ impl Wraps for ClapController {
 
     /// Applied at the head of the Processor's next block. A full ring keeps the
     /// latest value per parameter and retries on the next tick.
-    fn queue_write(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
+    fn queue_write(&mut self, _main: MainThreadMarker, id: ParamId, value: Normalized) {
         self.queue_edit(id, value);
     }
 
-    fn after_restore(&mut self, _main: &MainThread) {
+    fn after_restore(&mut self, _main: MainThreadMarker) {
         self.reset_edits();
     }
 
@@ -672,7 +685,7 @@ impl Wraps for ClapController {
     /// order: each output `CLAP_EVENT_PARAM_VALUE` as a change, and
     /// `CLAP_EVENT_PARAM_GESTURE_BEGIN` and `_END` as a gesture's ends, which
     /// carry no value in CLAP.
-    fn collect_reports(&mut self, _main: &MainThread, out: &mut Vec<ParamEdit>, _from: usize) {
+    fn collect_reports(&mut self, _main: MainThreadMarker, out: &mut Vec<ParamEdit>, _from: usize) {
         self.reported.drain(|edit| {
             if let tutti_plugin_types::Edit::Reported(edit) = edit {
                 out.push(edit);
@@ -687,12 +700,12 @@ impl Wraps for ClapController {
 
     /// An `INFO` or `ALL` rescan changed what the parameters are, so the ranges
     /// the Processor denormalizes against are read again and republished.
-    fn republish_ranges(&mut self, main: &MainThread) {
+    fn republish_ranges(&mut self, main: MainThreadMarker) {
         let table = self.loaded_mut().read_param_ranges(main);
         self.ranges.publish(table);
     }
 
-    fn tick(&mut self, _main: &MainThread) {
+    fn tick(&mut self, _main: MainThreadMarker) {
         self.retry_edits();
     }
 }

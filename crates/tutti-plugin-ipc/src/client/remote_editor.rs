@@ -9,7 +9,7 @@
 
 use dpi::Size;
 use tutti_plugin_types::{
-    ContentScale, EditorCapabilities, EditorError, EditorWindow, MainThread, PluginError,
+    ContentScale, EditorCapabilities, EditorError, EditorWindow, MainThreadMarker, PluginError,
     PluginResult, WindowHandle,
 };
 
@@ -54,7 +54,7 @@ impl EditorWindow for RemoteEditor {
     /// Always `true`: whether the plugin has an editor is the descriptor's to
     /// say (`PluginDescriptor::editor`, which the host asks), and one without
     /// is refused by the server when it is asked to open it.
-    fn has_editor(&self, _main: &MainThread) -> bool {
+    fn has_editor(&self, _main: MainThreadMarker) -> bool {
         true
     }
 
@@ -64,7 +64,7 @@ impl EditorWindow for RemoteEditor {
     /// [`open_floating_editor`](Self::open_floating_editor).
     fn open_editor(
         &mut self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         parent: WindowHandle,
         scale: ContentScale,
     ) -> PluginResult<Size> {
@@ -89,7 +89,7 @@ impl EditorWindow for RemoteEditor {
         Ok(size)
     }
 
-    fn open_floating_editor(&mut self, _main: &MainThread) -> PluginResult<()> {
+    fn open_floating_editor(&mut self, _main: MainThreadMarker) -> PluginResult<()> {
         self.hear_closed();
         self.audio
             .open_editor_in_server(None, ContentScale::IDENTITY)
@@ -98,7 +98,7 @@ impl EditorWindow for RemoteEditor {
         Ok(())
     }
 
-    fn close_editor(&mut self, _main: &MainThread) {
+    fn close_editor(&mut self, _main: MainThreadMarker) {
         self.hear_closed();
         if self.open {
             let _ = self.audio.close_editor_in_server();
@@ -108,16 +108,16 @@ impl EditorWindow for RemoteEditor {
 
     /// Nothing: the server ticks the editor's idle itself, in its own event
     /// loop.
-    fn editor_idle(&mut self, _main: &MainThread) {
+    fn editor_idle(&mut self, _main: MainThreadMarker) {
         self.hear_closed();
     }
 
     /// The default: the server's view is not asked over the wire.
-    fn editor_capabilities(&mut self, _main: &MainThread) -> EditorCapabilities {
+    fn editor_capabilities(&mut self, _main: MainThreadMarker) -> EditorCapabilities {
         EditorCapabilities::default()
     }
 
-    fn set_editor_size(&mut self, _main: &MainThread, requested: Size) -> PluginResult<Size> {
+    fn set_editor_size(&mut self, _main: MainThreadMarker, requested: Size) -> PluginResult<Size> {
         self.hear_closed();
         if !self.open {
             return Err(plugin_error(EditorError::PluginError(
@@ -129,7 +129,7 @@ impl EditorWindow for RemoteEditor {
             .map_err(plugin_error)
     }
 
-    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<Size> {
+    fn poll_editor_resize_request(&mut self, _main: MainThreadMarker) -> Option<Size> {
         self.audio.take_editor_wants_size()
     }
 }

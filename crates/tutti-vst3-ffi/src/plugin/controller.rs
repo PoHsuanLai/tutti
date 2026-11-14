@@ -7,7 +7,7 @@ impl Parts {
 
     /// How many parameters the controller reports; zero without a controller.
     #[must_use]
-    pub fn parameter_count(&self, main: &MainThread) -> u32 {
+    pub fn parameter_count(&self, main: MainThreadMarker) -> u32 {
         let _scope = self.scoped(main);
         match self.controller.get() {
             // SAFETY: a plain getter on a live controller.
@@ -19,7 +19,7 @@ impl Parts {
 
     /// The `index`-th parameter's description.
     #[must_use]
-    pub fn parameter_info(&self, main: &MainThread, index: u32) -> Option<Vst3ParameterInfo> {
+    pub fn parameter_info(&self, main: MainThreadMarker, index: u32) -> Option<Vst3ParameterInfo> {
         let _scope = self.scoped(main);
         let controller = self.controller.get()?;
         let mut raw = zeroed::<vst3::Steinberg::Vst::ParameterInfo>();
@@ -31,7 +31,12 @@ impl Parts {
     /// `normalizedParamToPlain` for the parameter `id`; `None` without a
     /// controller.
     #[must_use]
-    pub fn normalized_to_plain(&self, main: &MainThread, id: u32, normalized: f64) -> Option<f64> {
+    pub fn normalized_to_plain(
+        &self,
+        main: MainThreadMarker,
+        id: u32,
+        normalized: f64,
+    ) -> Option<f64> {
         let _scope = self.scoped(main);
         let controller = self.controller.get()?;
         // SAFETY: a plain conversion on a live controller.
@@ -41,7 +46,7 @@ impl Parts {
     /// `plainParamToNormalized` for the parameter `id`; `None` without a
     /// controller.
     #[must_use]
-    pub fn plain_to_normalized(&self, main: &MainThread, id: u32, plain: f64) -> Option<f64> {
+    pub fn plain_to_normalized(&self, main: MainThreadMarker, id: u32, plain: f64) -> Option<f64> {
         let _scope = self.scoped(main);
         let controller = self.controller.get()?;
         // SAFETY: a plain conversion on a live controller.
@@ -50,7 +55,7 @@ impl Parts {
 
     /// The parameter's current normalized value; `None` without a controller.
     #[must_use]
-    pub fn parameter_normalized(&self, main: &MainThread, id: ParamId) -> Option<f64> {
+    pub fn parameter_normalized(&self, main: MainThreadMarker, id: ParamId) -> Option<f64> {
         let _scope = self.scoped(main);
         let controller = self.controller.get()?;
         // SAFETY: a plain getter on a live controller.
@@ -58,7 +63,12 @@ impl Parts {
     }
 
     /// Sets the parameter's normalized value; `false` without a controller.
-    pub fn set_parameter_normalized(&self, main: &MainThread, id: ParamId, value: f64) -> bool {
+    pub fn set_parameter_normalized(
+        &self,
+        main: MainThreadMarker,
+        id: ParamId,
+        value: f64,
+    ) -> bool {
         let _scope = self.scoped(main);
         let Some(controller) = self.controller.get() else {
             return false;
@@ -72,7 +82,7 @@ impl Parts {
     #[must_use]
     pub fn parameter_text(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         id: ParamId,
         normalized: f64,
     ) -> Option<String> {
@@ -90,7 +100,12 @@ impl Parts {
     ///
     /// `text` is cut to 127 UTF-16 units, the `String128` the ABI allows.
     #[must_use]
-    pub fn parameter_from_text(&self, main: &MainThread, id: ParamId, text: &str) -> Option<f64> {
+    pub fn parameter_from_text(
+        &self,
+        main: MainThreadMarker,
+        id: ParamId,
+        text: &str,
+    ) -> Option<f64> {
         let _scope = self.scoped(main);
         let controller = self.controller.get()?;
         let mut buf: Vec<u16> = text.encode_utf16().take(127).collect();
@@ -109,7 +124,12 @@ impl Parts {
     /// `INoteExpressionController::getNoteExpressionCount`, floored at zero;
     /// zero without the interface.
     #[must_use]
-    pub fn note_expression_count(&self, main: &MainThread, bus_index: i32, channel: i16) -> u32 {
+    pub fn note_expression_count(
+        &self,
+        main: MainThreadMarker,
+        bus_index: i32,
+        channel: i16,
+    ) -> u32 {
         let _scope = self.scoped(main);
         match &self.ext.note_expression {
             // SAFETY: a plain getter on a live interface.
@@ -126,7 +146,7 @@ impl Parts {
     #[must_use]
     pub fn note_expression_info(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         bus_index: i32,
         channel: i16,
         index: u32,
@@ -150,7 +170,7 @@ impl Parts {
     /// `IKeyswitchController::getKeyswitchCount`, floored at zero; zero without
     /// the interface.
     #[must_use]
-    pub fn keyswitch_count(&self, main: &MainThread, bus_index: i32, channel: i16) -> u32 {
+    pub fn keyswitch_count(&self, main: MainThreadMarker, bus_index: i32, channel: i16) -> u32 {
         let _scope = self.scoped(main);
         match &self.ext.keyswitch {
             // SAFETY: a plain getter on a live interface.
@@ -167,7 +187,7 @@ impl Parts {
     #[must_use]
     pub fn keyswitch_info(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         bus_index: i32,
         channel: i16,
         index: u32,
@@ -189,7 +209,7 @@ impl Parts {
     #[must_use]
     pub fn compatible_param_id(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         plugin_to_replace_uid: &[i8; 16],
         old_param_id: u32,
     ) -> Option<u32> {
@@ -212,7 +232,7 @@ impl Parts {
     #[must_use]
     pub fn param_id_for_function_name(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         unit_id: crate::UnitId,
         function_name: &str,
     ) -> Option<u32> {
@@ -231,7 +251,7 @@ impl Parts {
 
     /// Every program list the plugin declares.
     #[must_use]
-    pub fn program_lists(&self, main: &MainThread) -> Vec<Vst3ProgramListInfo> {
+    pub fn program_lists(&self, main: MainThreadMarker) -> Vec<Vst3ProgramListInfo> {
         let _scope = self.scoped(main);
         let Some(ctrl) = self.ext.unit_info.as_ref() else {
             return Vec::new();
@@ -252,7 +272,7 @@ impl Parts {
     /// Every unit the plugin declares, with each unit's program list resolved
     /// against the lists the plugin actually has.
     #[must_use]
-    pub fn units(&self, main: &MainThread) -> Vec<Vst3UnitInfo> {
+    pub fn units(&self, main: MainThreadMarker) -> Vec<Vst3UnitInfo> {
         let _scope = self.scoped(main);
         let Some(ctrl) = self.ext.unit_info.as_ref() else {
             return Vec::new();
@@ -277,7 +297,7 @@ impl Parts {
     #[must_use]
     pub fn program_name(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         list_id: i32,
         program_index: u32,
     ) -> Option<String> {
@@ -294,7 +314,7 @@ impl Parts {
 
     /// The selected unit.
     #[must_use]
-    pub fn selected_unit(&self, main: &MainThread) -> Option<crate::UnitId> {
+    pub fn selected_unit(&self, main: MainThreadMarker) -> Option<crate::UnitId> {
         let _scope = self.scoped(main);
         let ctrl = self.ext.unit_info.as_ref()?;
         // SAFETY: a plain getter on a live interface.
@@ -303,7 +323,7 @@ impl Parts {
 
     /// Selects a unit; `false` without the interface or if refused.
     #[must_use]
-    pub fn select_unit(&self, main: &MainThread, unit_id: crate::UnitId) -> bool {
+    pub fn select_unit(&self, main: MainThreadMarker, unit_id: crate::UnitId) -> bool {
         let _scope = self.scoped(main);
         let Some(ctrl) = self.ext.unit_info.as_ref() else {
             return false;
@@ -316,7 +336,7 @@ impl Parts {
     #[must_use]
     pub fn unit_by_bus(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         media_type: MediaType,
         direction: BusDirection,
         bus_index: i32,
@@ -345,7 +365,7 @@ impl Parts {
     #[must_use]
     pub fn physical_ui_mapping(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         bus_index: i32,
         channel: i16,
     ) -> Vec<(crate::PhysicalUiType, u32)> {
@@ -386,7 +406,7 @@ impl Parts {
     #[must_use]
     pub fn xml_representation(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         vendor: &str,
         name: &str,
         version: &str,
@@ -410,7 +430,11 @@ impl Parts {
     }
 
     /// `IAutomationState::setAutomationState`; `false` without the interface.
-    pub fn set_automation_state(&self, main: &MainThread, state: crate::AutomationStates) -> bool {
+    pub fn set_automation_state(
+        &self,
+        main: MainThreadMarker,
+        state: crate::AutomationStates,
+    ) -> bool {
         let _scope = self.scoped(main);
         match &self.ext.automation_state {
             Some(a) => {
@@ -426,7 +450,7 @@ impl Parts {
 
     /// Whether the controller implements `IMidiMapping`.
     #[must_use]
-    pub fn has_midi_mapping(&self, main: &MainThread) -> bool {
+    pub fn has_midi_mapping(&self, main: MainThreadMarker) -> bool {
         let _scope = self.scoped(main);
         self.controller
             .get()
@@ -438,7 +462,7 @@ impl Parts {
     #[must_use]
     pub fn midi_controller_assignment(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         channel: i16,
         controller: i16,
     ) -> Option<u32> {
@@ -464,7 +488,7 @@ impl Parts {
     /// whole sweep.
     pub fn midi_controller_assignments(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         channels: std::ops::Range<i16>,
         controllers: std::ops::Range<i16>,
         mut visit: impl FnMut(i16, i16, u32),

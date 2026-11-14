@@ -53,21 +53,21 @@ fn the_served_control_and_any_thread_answer_alike() {
     let catalog = AnyThread::parameter_descriptors(&any).expect("the probe lists its parameters");
     assert!(!catalog.is_empty());
     assert_eq!(
-        format!("{:?}", Control::parameters(&control, &main)),
+        format!("{:?}", Control::parameters(&control, main)),
         format!("{catalog:?}"),
         "the catalog"
     );
 
     let value = AnyThread::parameter_value(&any, GAIN).expect("the probe answers a value");
     assert_eq!(
-        Control::parameter(&control, &main, GAIN),
+        Control::parameter(&control, main, GAIN),
         Some(value),
         "the value"
     );
 
     let text = AnyThread::parameter_text(&any, GAIN, value).expect("the probe gives a text");
     assert_eq!(
-        Control::parameter_text(&control, &main, GAIN, value),
+        Control::parameter_text(&control, main, GAIN, value),
         Some(text.clone()),
         "the text"
     );
@@ -75,14 +75,14 @@ fn the_served_control_and_any_thread_answer_alike() {
     let parsed = AnyThread::parameter_value_from_text(&any, GAIN, &text)
         .expect("the probe parses its own text");
     assert_eq!(
-        Control::parameter_value_from_text(&control, &main, GAIN, &text),
+        Control::parameter_value_from_text(&control, main, GAIN, &text),
         Some(parsed),
         "the parse"
     );
 
     let state = AnyThread::save_state(&any).expect("the probe saves");
     assert_eq!(
-        Control::save_state(&mut control, &main, tutti_plugin_types::StateUse::Project)
+        Control::save_state(&mut control, main, tutti_plugin_types::StateUse::Project)
             .expect("the probe saves"),
         state,
         "the state"
@@ -91,7 +91,7 @@ fn the_served_control_and_any_thread_answer_alike() {
     assert!(AnyThread::set_render_mode(&any, RenderMode::Offline));
     assert!(Control::set_render_mode(
         &mut control,
-        &main,
+        main,
         RenderMode::Realtime
     ));
     assert!(
@@ -127,13 +127,13 @@ fn a_live_served_load_reaches_the_plugin_in_the_context_it_names() {
     let main = main_thread();
     let mut control = ipc.controller();
 
-    let copy = Control::save_state(&mut control, &main, StateUse::Duplicate)
+    let copy = Control::save_state(&mut control, main, StateUse::Duplicate)
         .expect("the probe saves for a duplicate");
-    Control::load_state(&mut control, &main, &copy, StateUse::Duplicate)
+    Control::load_state(&mut control, main, &copy, StateUse::Duplicate)
         .expect("a duplicate's state loads in the duplicate context");
     Control::load_state(
         &mut control,
-        &main,
+        main,
         &copy,
         tutti_plugin_types::StateUse::Project,
     )
@@ -169,7 +169,7 @@ fn a_client_with_no_editor_loader_asks_the_real_server_for_its_editor() {
     let main = main_thread();
 
     let refused = ipc
-        .open_floating_editor(&main)
+        .open_floating_editor(main)
         .expect_err("the probe has no gui in the server");
     let reason = refused.to_string();
     assert!(
@@ -182,7 +182,7 @@ fn a_client_with_no_editor_loader_asks_the_real_server_for_its_editor() {
         "the refused open left the server serving"
     );
     let resize = ipc
-        .set_editor_size(&main, dpi::PhysicalSize::new(100, 100).into())
+        .set_editor_size(main, dpi::PhysicalSize::new(100, 100).into())
         .expect_err("no editor is open");
     assert!(resize.to_string().contains("not open"), "{resize}");
 }

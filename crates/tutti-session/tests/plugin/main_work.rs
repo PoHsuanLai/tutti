@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 use tutti_plugin::catalog::PluginRef;
 use tutti_plugin_host::PluginHandle;
-use tutti_plugin_types::{MainThread, MainWork};
+use tutti_plugin_types::{MainThreadMarker, MainWork};
 use tutti_session::{PluginLoadRequest, Session};
 use tutti_types::{ChannelLayout, SampleRate};
 
@@ -43,7 +43,7 @@ fn session() -> Session {
 
 /// A probe plugin loaded in `session`, then removed from it and let go of by the session:
 /// what is left of it is the returned handle, so dropping that is the last release.
-fn loaded_and_released(session: &mut Session, main: &MainThread) -> PluginHandle {
+fn loaded_and_released(session: &mut Session, main: MainThreadMarker) -> PluginHandle {
     let node = session
         .add_plugin_blocking(
             main,
@@ -54,7 +54,7 @@ fn loaded_and_released(session: &mut Session, main: &MainThread) -> PluginHandle
     session.remove(node).expect("the plugin is removed");
     let mut frame = [0.0f32; 2];
     for _ in 0..4 {
-        let _ = session.main(*main).update();
+        let _ = session.main(main).update();
         session.render_frame(&mut frame);
     }
     assert_eq!(session.retired_plugins(), 0, "the session let go of it");
@@ -71,8 +71,8 @@ fn a_sessions_update_runs_only_its_own_plugins_closes() {
     let (mut a, mut b) = (session(), session());
     let before = closes();
     let (handle_a, handle_b) = (
-        loaded_and_released(&mut a, &main),
-        loaded_and_released(&mut b, &main),
+        loaded_and_released(&mut a, main),
+        loaded_and_released(&mut b, main),
     );
     assert_eq!(closes(), before, "nothing closed while the handles live");
 
@@ -88,8 +88,8 @@ fn a_sessions_update_runs_only_its_own_plugins_closes() {
     let _ = a.main(main).update();
     let _ = b.main(main).update();
     assert_eq!(closes(), before + 2, "each close ran once");
-    a.close(&main);
-    b.close(&main);
+    a.close(main);
+    b.close(main);
 }
 
 /// **`Session::close` runs every close that is owed.** A plugin dropped off its own thread
@@ -99,10 +99,10 @@ fn close_runs_the_closes_the_session_is_owed() {
     let main = tutti_fixtures::main_thread();
     let mut session = session();
     let before = closes();
-    let handle = loaded_and_released(&mut session, &main);
+    let handle = loaded_and_released(&mut session, main);
     std::thread::spawn(move || drop(handle)).join().unwrap();
     assert_eq!(closes(), before, "the drop closed nothing");
-    session.close(&main);
+    session.close(main);
     assert_eq!(closes(), before + 1, "close ran the owed close");
 }
 
@@ -117,7 +117,7 @@ fn a_session_dropped_off_the_main_thread_counts_its_stranded_closes() {
     for _ in 0..2 {
         session
             .add_plugin_blocking(
-                &main,
+                main,
                 PluginLoadRequest::new(PluginRef::file(probe()).expect("a plugin file")),
             )
             .expect("the in-process VST2 loads");
@@ -138,7 +138,7 @@ fn a_session_dropped_off_the_main_thread_counts_its_stranded_closes() {
 /// so a spawned thread cannot make one, whatever a test thread stands in for.
 #[test]
 fn a_spawned_thread_cannot_make_a_main_thread_token() {
-    let none = std::thread::spawn(|| MainThread::new().is_none())
+    let none = std::thread::spawn(|| MainThreadMarker::new().is_none())
         .join()
         .unwrap();
     assert!(none);

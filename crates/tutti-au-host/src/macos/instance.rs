@@ -24,7 +24,9 @@ use std::sync::Arc;
 
 use tutti_au_ffi::property::{BypassEffect, ClassInfo, ClassInfoFromDocument, Latency};
 use tutti_au_ffi::{AuEditor, Element, HostCallbacks, Scope, TransportState, Unit};
-use tutti_plugin_types::{ChannelLayout, MainThread, PluginDescriptor, RequestWord, TransportInfo};
+use tutti_plugin_types::{
+    ChannelLayout, MainThreadMarker, PluginDescriptor, RequestWord, TransportInfo,
+};
 use tutti_types::value::units::Seconds;
 use tutti_types::{SampleRate, Samples};
 
@@ -1310,7 +1312,7 @@ impl AuLoaded {
     /// Returns the **fallback's** error if both properties fail, since that is the
     /// path a host without this method would have taken anyway. A refusal of
     /// property 50 alone is not an error — it is the documented normal case.
-    pub fn load_document_state(&mut self, _main: &MainThread, data: &[u8]) -> Result<()> {
+    pub fn load_document_state(&mut self, _main: MainThreadMarker, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
@@ -1340,7 +1342,7 @@ impl AuLoaded {
     /// [`AuError::InvalidPreset`](crate::AuError::InvalidPreset) if what it hands over is not a dictionary.
     pub fn save_preset_file(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         path: &std::path::Path,
         name: &str,
     ) -> Result<()> {
@@ -1370,7 +1372,7 @@ impl AuLoaded {
     /// the state it had and is still renderable.
     pub fn load_preset_file(
         &mut self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         path: &std::path::Path,
     ) -> Result<crate::aupreset::AuPresetIdentity> {
         let identity =

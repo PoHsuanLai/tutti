@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use crate::{cdylib, main_thread};
 use tutti_plugin_types::{Loaded, MainWork, MainWorkHandle, PluginError, Prepare, WindowHandle};
-use tutti_rt::MainThread;
+use tutti_rt::MainThreadMarker;
 
 /// A [`MainWorkHandle`] whose collector is gone: for a test that loads a plugin
 /// and does not look at what an off-thread drop hands over. A close sent to it
@@ -33,10 +33,10 @@ pub fn pump(work: MainWork) -> Pump {
     let thread = std::thread::spawn(move || {
         let main = main_thread();
         while !seen.load(std::sync::atomic::Ordering::Acquire) {
-            work.run(&main);
+            work.run(main);
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        work.run(&main);
+        work.run(main);
     });
     Pump {
         stop,
@@ -117,7 +117,7 @@ pub trait Activation {
     /// The plugin's refusal.
     #[allow(clippy::type_complexity, clippy::result_large_err)]
     fn activate(
-        main: &MainThread,
+        main: MainThreadMarker,
         loaded: Self::Loaded,
         prepare: Prepare,
     ) -> Result<(Self::Processor, Self::Controller), (Option<Self::Loaded>, PluginError)>;
@@ -128,7 +128,7 @@ pub trait Activation {
     ///
     /// Why the halves would not rejoin.
     fn deactivate(
-        main: &MainThread,
+        main: MainThreadMarker,
         processor: Self::Processor,
         controller: Self::Controller,
     ) -> Result<Self::Loaded, PluginError>;
@@ -145,7 +145,7 @@ impl<L: Loaded> Activation for Whole<L> {
     type Controller = L::Controller;
 
     fn activate(
-        main: &MainThread,
+        main: MainThreadMarker,
         loaded: L,
         prepare: Prepare,
     ) -> Result<(L::Processor, L::Controller), (Option<L>, PluginError)> {
@@ -155,7 +155,7 @@ impl<L: Loaded> Activation for Whole<L> {
     }
 
     fn deactivate(
-        main: &MainThread,
+        main: MainThreadMarker,
         processor: L::Processor,
         controller: L::Controller,
     ) -> Result<L, PluginError> {
@@ -202,7 +202,7 @@ impl<A: Activation> Active<A> {
         loaded: A::Loaded,
         prepare: Prepare,
     ) -> Result<Self, (Option<A::Loaded>, PluginError)> {
-        A::activate(&main_thread(), loaded, prepare).map(|pair| Self {
+        A::activate(main_thread(), loaded, prepare).map(|pair| Self {
             pair: Some(pair),
             prepare,
         })
@@ -249,7 +249,7 @@ impl<A: Activation> Active<A> {
     #[must_use]
     pub fn deactivate(mut self) -> A::Loaded {
         let (processor, controller) = self.pair.take().expect("an Active holds its pair");
-        A::deactivate(&main_thread(), processor, controller)
+        A::deactivate(main_thread(), processor, controller)
             .unwrap_or_else(|reason| panic!("the halves would not rejoin: {reason}"))
     }
 
@@ -268,9 +268,9 @@ impl<A: Activation> Active<A> {
     pub fn reconfigure(&mut self, wanted: Prepare) -> Result<(), PluginError> {
         let main = main_thread();
         let (processor, controller) = self.pair.take().expect("an Active holds its pair");
-        let loaded = A::deactivate(&main, processor, controller)
+        let loaded = A::deactivate(main, processor, controller)
             .unwrap_or_else(|reason| panic!("the halves would not rejoin: {reason}"));
-        match A::activate(&main, loaded, wanted) {
+        match A::activate(main, loaded, wanted) {
             Ok(pair) => {
                 self.pair = Some(pair);
                 self.prepare = wanted;
@@ -278,7 +278,7 @@ impl<A: Activation> Active<A> {
             }
             Err((plugin, reason)) => {
                 let plugin = plugin.expect("the format hands the plugin back");
-                match A::activate(&main, plugin, self.prepare) {
+                match A::activate(main, plugin, self.prepare) {
                     Ok(pair) => self.pair = Some(pair),
                     Err((_, again)) => {
                         panic!("the plugin refused the configuration it had: {again}")
@@ -392,7 +392,7 @@ mod tests {
         type Controller = Other;
 
         fn activate(
-            _: &MainThread,
+            _: MainThreadMarker,
             _: Plugin,
             prepare: Prepare,
         ) -> Result<(Half, Other), (Option<Plugin>, PluginError)> {
@@ -403,7 +403,7 @@ mod tests {
             Ok((Half(rate), Other(rate)))
         }
 
-        fn deactivate(_: &MainThread, _: Half, _: Other) -> Result<Plugin, PluginError> {
+        fn deactivate(_: MainThreadMarker, _: Half, _: Other) -> Result<Plugin, PluginError> {
             Ok(Plugin)
         }
     }

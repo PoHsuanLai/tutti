@@ -61,7 +61,7 @@ fn load_handle(env: &[(&str, &str)]) -> PluginHandle {
         unsafe { std::env::set_var(k, v) };
     }
     let (_client, handle) = load_client::<Vst2Loaded>(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::pumped_work(),
         &path,
         &Load::new(),
@@ -85,7 +85,7 @@ fn a_listed_preset_loads_the_program_it_names() {
     let handle = load_handle(&[("TUTTI_VST2_PROBE_PROGRAMS", "3")]);
 
     let presets = handle
-        .presets(&main_thread())
+        .presets(main_thread())
         .expect("the VST2 path carries presets");
     assert_eq!(presets.len(), 3, "the probe declared 3 programs");
 
@@ -93,12 +93,12 @@ fn a_listed_preset_loads_the_program_it_names() {
     // from the listing is what a caller does.
     let wanted = presets[2].id.clone();
     assert_eq!(
-        handle.load_preset(&main_thread(), &wanted),
+        handle.load_preset(main_thread(), &wanted),
         Ok(()),
         "loading a preset the plugin listed must be accepted"
     );
     assert_eq!(
-        handle.current_preset(&main_thread()),
+        handle.current_preset(main_thread()),
         Some(wanted),
         "the plugin must report the program the handle just loaded"
     );
@@ -117,11 +117,11 @@ fn an_id_from_another_format_is_refused() {
 
     // `Refused`, not "not Ok": a lost route answers another error, which would
     // otherwise read as a refusal and pass this test rather than fail it.
-    let before = handle.current_preset(&main_thread());
+    let before = handle.current_preset(main_thread());
 
     assert_eq!(
         handle.load_preset(
-            &main_thread(),
+            main_thread(),
             &PresetId::Program {
                 list_id: 0,
                 index: 1
@@ -132,7 +132,7 @@ fn an_id_from_another_format_is_refused() {
     );
     assert_eq!(
         handle.load_preset(
-            &main_thread(),
+            main_thread(),
             &PresetId::Location(PathBuf::from("/x.clap-preset"))
         ),
         Err(PresetError::Refused),
@@ -140,7 +140,7 @@ fn an_id_from_another_format_is_refused() {
     );
 
     assert_eq!(
-        handle.current_preset(&main_thread()),
+        handle.current_preset(main_thread()),
         before,
         "a refused load must not move the program"
     );
@@ -175,7 +175,7 @@ fn a_plugin_with_no_programs_declines_rather_than_going_silent() {
     // cannot ask, which a browser must not confuse with a plugin that was asked
     // and has nothing. The capability handle splits them, so assert both.
     assert_eq!(
-        handle.presets(&main_thread()),
+        handle.presets(main_thread()),
         Ok(Vec::new()),
         "the plugin was asked and listed nothing"
     );

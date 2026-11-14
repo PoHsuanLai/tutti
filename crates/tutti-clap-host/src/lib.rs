@@ -62,7 +62,7 @@
 //! on disk.
 //!
 //! ```rust,no_run
-//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let main = tutti_plugin_types::MainThreadMarker::new().expect("on the UI thread");
 //! # let (_collector, work) = tutti_plugin_types::MainWork::new();
 //! use tutti_graph::Offset;
 //! use tutti_ump::{MidiChannel, MidiGroup};
@@ -73,14 +73,14 @@
 //!
 //! // `ClapLoaded` is the GUI / parameter / state stage. The rate and the block
 //! // length are not load parameters: they are the activation's.
-//! let loaded = ClapLoaded::load(&main, &work, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
+//! let loaded = ClapLoaded::load(main, &work, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
 //! println!("{} by {}", loaded.info().name, loaded.info().vendor);
 //!
 //! // A refusal hands the plugin back in the error, so a plugin that declines f64
 //! // can be retried at f32 without reloading.
 //! let prepare = Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512)));
 //! let (mut processor, controller) = loaded
-//!     .activate(&main, prepare)
+//!     .activate(main, prepare)
 //!     .map_err(|refused| tutti_clap_host::ClapError::ProcessError(refused.reason.to_string()))?;
 //!
 //! // 512 is the block length in FRAMES; each channel slice holds that many.
@@ -99,7 +99,7 @@
 //! })?;
 //!
 //! // The halves rejoin into the plugin, deactivated.
-//! let _loaded = ClapLoaded::deactivate(&main, processor, controller)
+//! let _loaded = ClapLoaded::deactivate(main, processor, controller)
 //!     .map_err(|stuck| tutti_clap_host::ClapError::ProcessError(stuck.reason.to_string()))?;
 //! # Ok::<(), tutti_clap_host::ClapError>(())
 //! ```
@@ -114,33 +114,33 @@
 //! # use tutti_clap_host::{ClapLoaded, LoadOptions, StateContext};
 //! use tutti_plugin_types::{Control, Normalized, ParamId, StateUse};
 //! # fn ex() -> Result<(), Box<dyn std::error::Error>> {
-//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let main = tutti_plugin_types::MainThreadMarker::new().expect("on the UI thread");
 //! # let (_collector, work) = tutti_plugin_types::MainWork::new();
-//! let mut plugin = ClapLoaded::load(&main, &work, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
+//! let mut plugin = ClapLoaded::load(main, &work, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
 //!
 //! // CLAP addresses parameters by an opaque, plugin-chosen `clap_id`, never by
 //! // position. `parameters` projects them into the shared `ParameterInfo`, so a
 //! // consumer never learns which format it is reading.
-//! for info in plugin.parameters(&main) {
+//! for info in plugin.parameters(main) {
 //!     println!("{} {:?}", info.qualified_name(), info.bounds());
 //! }
 //!
 //! // Values are normalized `0..=1` at the trait. A loaded plugin takes the write
 //! // now; a controller queues it to the Processor, which applies it at the head
 //! // of its next block.
-//! plugin.set_parameter(&main, ParamId::new(0), Normalized::of(0.75));
-//! plugin.set_parameter(&main, ParamId::new(1), Normalized::of(0.5));
+//! plugin.set_parameter(main, ParamId::new(0), Normalized::of(0.75));
+//! plugin.set_parameter(main, ParamId::new(1), Normalized::of(0.5));
 //!
 //! // State save/restore is legal before any buffer exists. A project's state is
 //! // saved for `CLAP_STATE_CONTEXT_FOR_PROJECT` when the plugin implements
 //! // `clap.state-context`, and through plain `clap.state` when it does not.
-//! let saved = plugin.save_state(&main, StateUse::Project)?;
-//! plugin.load_state(&main, &saved, StateUse::Project)?;
+//! let saved = plugin.save_state(main, StateUse::Project)?;
+//! plugin.load_state(main, &saved, StateUse::Project)?;
 //!
 //! // A duplicate of the instance is saved and restored for its own context. A
 //! // plugin that implements `clap.state-context` and refuses is not answered with
 //! // a plain save: the two legitimately differ.
-//! let copy = plugin.state_with_context(&main, StateContext::ForDuplicate)?;
+//! let copy = plugin.state_with_context(main, StateContext::ForDuplicate)?;
 //! println!("{} bytes of duplicate state", copy.len());
 //! # Ok(()) }
 //! ```
@@ -151,16 +151,16 @@
 //! # use tutti_clap_host::{ClapLoaded, ContentScale, LoadOptions, WindowHandle};
 //! # use tutti_plugin_types::{Control, EditorWindow};
 //! # fn ex(window: &impl raw_window_handle::HasWindowHandle) -> Result<(), Box<dyn std::error::Error>> {
-//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let main = tutti_plugin_types::MainThreadMarker::new().expect("on the UI thread");
 //! # let (_collector, work) = tutti_plugin_types::MainWork::new();
-//! # let mut plugin = ClapLoaded::load(&main, &work, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
-//! if plugin.has_editor(&main) {
+//! # let mut plugin = ClapLoaded::load(main, &work, "/usr/lib/clap/MyPlugin.clap", LoadOptions::default())?;
+//! if plugin.has_editor(main) {
 //!     // Any winit or other `raw-window-handle` window.
 //!     let handle = WindowHandle::from_window(window)?;
-//!     let size = plugin.open_editor(&main, handle, ContentScale::IDENTITY)?;
+//!     let size = plugin.open_editor(main, handle, ContentScale::IDENTITY)?;
 //!     println!("editor is {size:?}");
 //! }
-//! plugin.close_editor(&main);
+//! plugin.close_editor(main);
 //! # Ok(()) }
 //! ```
 //!
@@ -203,7 +203,7 @@
 //! tagged `[active ? audio-thread : main-thread]` and branches on that live flag, so
 //! the same code reached through a `ClapController`'s `loaded_mut` takes the
 //! audio-thread claim (`tutti_clap_ffi::AudioClaim`) where a bare `ClapLoaded` is a
-//! main-thread call (it takes the `&MainThread` either way).
+//! main-thread call (it takes the `MainThreadMarker` either way).
 //!
 //! The distinction that gates it is *active* versus *processing*, and they are not
 //! the same fact. They disagree for the whole window between activation and the
@@ -234,7 +234,7 @@
 //!
 //! CLAP tags every call `[main-thread]` or `[audio-thread]`, and this crate follows
 //! the tags. Load, activate, deactivate, state, the editor and polling belong on
-//! the thread that loaded the plugin; each takes a `&tutti_plugin_types::MainThread`
+//! the thread that loaded the plugin; each takes a `tutti_plugin_types::MainThreadMarker`
 //! as proof.
 //! [`ClapProcessor::process`] belongs on the audio thread and does not allocate: the
 //! scratch it renders through is sized at activation.

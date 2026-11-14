@@ -56,7 +56,7 @@ fn report(events: Vec<SessionEvent>) {
 /// `midi` into the master `master` names (a file or memory, which `M` says
 /// and the result's type follows).
 fn play<M: Master>(
-    main: &tutti::plugin::MainThread,
+    main: tutti::plugin::MainThreadMarker,
     plugin: &Path,
     state: Option<Vec<u8>>,
     midi: &Path,
@@ -97,7 +97,7 @@ fn play<M: Master>(
 
 /// [`play`] into a 24-bit WAV at `out`.
 fn play_to_file(
-    main: &tutti::plugin::MainThread,
+    main: tutti::plugin::MainThreadMarker,
     plugin: &Path,
     state: Option<Vec<u8>>,
     midi: &Path,
@@ -146,7 +146,7 @@ fn notes_plugin() -> (PathBuf, Vec<u8>) {
 
 /// The phrase through the reference plugin, in `dir`.
 fn reference(
-    main: &tutti::plugin::MainThread,
+    main: tutti::plugin::MainThreadMarker,
     dir: &Path,
 ) -> Result<Written, Box<dyn std::error::Error>> {
     // SAFETY: set before the first server is spawned, on the only thread
@@ -160,11 +160,11 @@ fn reference(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The thread that opens an in-process plugin is the main thread: the token is made once.
-    let main = tutti::plugin::MainThread::new().ok_or("run on the process's main thread")?;
+    let main = tutti::plugin::MainThreadMarker::new().ok_or("run on the process's main thread")?;
     let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     let written = match args.as_slice() {
-        [plugin, midi, out] => play_to_file(&main, plugin, None, midi, out)?,
-        [] => reference(&main, &std::env::temp_dir())?,
+        [plugin, midi, out] => play_to_file(main, plugin, None, midi, out)?,
+        [] => reference(main, &std::env::temp_dir())?,
         _ => return Err("usage: plugin_midi_export [PLUGIN MIDI OUT]".into()),
     };
     println!("wrote {} ({} bytes)", written.path.display(), written.bytes);
@@ -187,7 +187,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tutti-5-2-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let written =
-            super::reference(&tutti_fixtures::main_thread(), &dir).expect("the example runs");
+            super::reference(tutti_fixtures::main_thread(), &dir).expect("the example runs");
         let frames = 6 * 48_000 + u64::from(tutti_shared_plugin::core::TAIL);
         let header = written.bytes.checked_sub(frames * 6);
         assert!(
@@ -223,7 +223,7 @@ mod tests {
         // Into buffers, not the file: the plugin's output is a key number,
         // far past full scale, which a WAV clips.
         let rendered = super::play(
-            &tutti_fixtures::main_thread(),
+            tutti_fixtures::main_thread(),
             &plugin,
             Some(state),
             &midi,

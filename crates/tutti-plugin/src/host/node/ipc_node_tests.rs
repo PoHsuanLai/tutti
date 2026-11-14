@@ -327,7 +327,7 @@ fn the_server_is_sent_the_schedule_on_the_chunks_frames() {
 /// **A served plugin reopens and restores its state off the main thread**,
 /// against a real `plugin-server` and the reference CLAP plugin: the
 /// token-free [`Ipc::reopen_restoring`], called on a thread that holds no
-/// [`MainThread`](tutti_plugin_types::MainThread), starts a server of its own
+/// [`MainThreadMarker`], starts a server of its own
 /// (another process), hands it the saved state before it is activated, and the
 /// state is taken (`Some(Ok(()))`). The reopened plugin is the same plugin and
 /// renders through the generic node: a click comes out a declared latency
@@ -363,7 +363,7 @@ fn a_served_plugin_reopens_and_restores_off_the_main_thread() {
     let first_pid = first.guard().pid();
     let reopened = std::thread::spawn(move || {
         assert!(
-            tutti_plugin_types::MainThread::new().is_none(),
+            tutti_plugin_types::MainThreadMarker::new().is_none(),
             "no main thread here"
         );
         first.reopen_restoring(Some(&state)).map(|r| (first, r))

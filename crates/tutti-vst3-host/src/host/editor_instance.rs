@@ -10,8 +10,8 @@ use std::path::Path;
 use dpi::Size;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorWindow,
-    InProcess, KeyEvent, KeyUse, Load, MainThread, MainWorkHandle, Normalized, ParamEdit, ParamId,
-    PluginError, PluginResult, WindowHandle,
+    InProcess, KeyEvent, KeyUse, Load, MainThreadMarker, MainWorkHandle, Normalized, ParamEdit,
+    ParamId, PluginError, PluginResult, WindowHandle,
 };
 
 use super::loaded::Vst3Loaded;
@@ -47,7 +47,7 @@ impl Vst3Editor {
     /// Loads the editor-only instance. It is never activated and never
     /// processes audio: the audio instance runs elsewhere.
     pub(crate) fn load(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,
@@ -67,7 +67,7 @@ impl Vst3Editor {
     /// not refresh the host's parameter values (its state still reaches the
     /// audio instance on close). Progress / unit notifications
     /// are not surfaced either.
-    fn drain(&mut self, main: &MainThread) {
+    fn drain(&mut self, main: MainThreadMarker) {
         use crate::{ParameterEditEvent, PluginNotification};
         let (edits, dirty) = (&mut self.edits, &mut self.dirty);
         let _restart = self.inner.poll_plugin_notifications(main, |n| match n {
@@ -102,12 +102,12 @@ impl Vst3Editor {
 }
 
 impl Editor for Vst3Editor {
-    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, main: MainThreadMarker, id: ParamId, value: Normalized) {
         // VST3's `setParamNormalized` takes the host domain unchanged.
         Control::set_parameter(&mut self.inner, main, id, value);
     }
 
-    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
+    fn set_automation_state(&mut self, main: MainThreadMarker, mode: AutomationMode) {
         // Deliver the host automation-state advisory to the GUI instance: this
         // is the instance whose editor shows the knob-glow feedback. The host
         // crate encodes the format-neutral mode onto the VST3 `IAutomationState`
@@ -115,7 +115,7 @@ impl Editor for Vst3Editor {
         Control::set_automation_state(&mut self.inner, main, mode);
     }
 
-    fn set_state(&mut self, main: &MainThread, data: &[u8]) -> PluginResult<()> {
+    fn set_state(&mut self, main: MainThreadMarker, data: &[u8]) -> PluginResult<()> {
         Control::load_state(
             &mut self.inner,
             main,
@@ -126,29 +126,29 @@ impl Editor for Vst3Editor {
         Ok(())
     }
 
-    fn poll_edits(&mut self, main: &MainThread) -> Vec<ParamEdit> {
+    fn poll_edits(&mut self, main: MainThreadMarker) -> Vec<ParamEdit> {
         self.drain(main);
         std::mem::take(&mut self.edits)
     }
 
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, main: MainThreadMarker) -> PluginResult<Vec<u8>> {
         Control::save_state(&mut self.inner, main, tutti_plugin_types::StateUse::Project)
     }
 
-    fn take_dirty(&mut self, main: &MainThread) -> bool {
+    fn take_dirty(&mut self, main: MainThreadMarker) -> bool {
         self.drain(main);
         std::mem::take(&mut self.dirty)
     }
 }
 
 impl EditorWindow for Vst3Editor {
-    fn has_editor(&self, main: &MainThread) -> bool {
+    fn has_editor(&self, main: MainThreadMarker) -> bool {
         EditorWindow::has_editor(&self.inner, main)
     }
 
     fn open_editor(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         parent: WindowHandle,
         scale: ContentScale,
     ) -> PluginResult<Size> {
@@ -157,11 +157,11 @@ impl EditorWindow for Vst3Editor {
             .map_err(|e| editor_error(format!("VST3 open_editor failed: {e}")))
     }
 
-    fn editor_key(&mut self, main: &MainThread, event: KeyEvent) -> PluginResult<KeyUse> {
+    fn editor_key(&mut self, main: MainThreadMarker, event: KeyEvent) -> PluginResult<KeyUse> {
         EditorWindow::editor_key(&mut self.inner, main, event)
     }
 
-    fn close_editor(&mut self, main: &MainThread) {
+    fn close_editor(&mut self, main: MainThreadMarker) {
         EditorWindow::close_editor(&mut self.inner, main);
     }
 
@@ -170,28 +170,32 @@ impl EditorWindow for Vst3Editor {
     /// instance is the one a served plugin's window lives in, so the host waits
     /// on and runs them through [`wakeups`](EditorWindow::wakeups) and
     /// [`wake`](EditorWindow::wake). Windows and macOS have the OS's.
-    fn editor_idle(&mut self, main: &MainThread) {
+    fn editor_idle(&mut self, main: MainThreadMarker) {
         EditorWindow::editor_idle(&mut self.inner, main);
     }
 
-    fn wakeups(&mut self, main: &MainThread, out: &mut tutti_plugin_types::Wakeups) {
+    fn wakeups(&mut self, main: MainThreadMarker, out: &mut tutti_plugin_types::Wakeups) {
         EditorWindow::wakeups(&mut self.inner, main, out);
     }
 
     fn wake(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         ready: &[tutti_plugin_types::Ready],
         now: std::time::Instant,
     ) {
         EditorWindow::wake(&mut self.inner, main, ready, now);
     }
 
-    fn set_editor_scale(&mut self, main: &MainThread, scale: ContentScale) -> PluginResult<()> {
+    fn set_editor_scale(
+        &mut self,
+        main: MainThreadMarker,
+        scale: ContentScale,
+    ) -> PluginResult<()> {
         EditorWindow::set_editor_scale(&mut self.inner, main, scale)
     }
 
-    fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
+    fn editor_capabilities(&mut self, main: MainThreadMarker) -> EditorCapabilities {
         let inner = self.inner.editor_capabilities(main);
         EditorCapabilities {
             resize: inner.resize,
@@ -200,13 +204,13 @@ impl EditorWindow for Vst3Editor {
         }
     }
 
-    fn set_editor_size(&mut self, main: &MainThread, requested: Size) -> PluginResult<Size> {
+    fn set_editor_size(&mut self, main: MainThreadMarker, requested: Size) -> PluginResult<Size> {
         self.inner
             .resize_editor(main, requested)
             .map_err(|e| editor_error(format!("VST3 resize_editor failed: {e}")))
     }
 
-    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<Size> {
+    fn poll_editor_resize_request(&mut self, main: MainThreadMarker) -> Option<Size> {
         self.inner.poll_editor_resize_request(main)
     }
 }

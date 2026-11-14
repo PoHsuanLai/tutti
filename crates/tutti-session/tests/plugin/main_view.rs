@@ -18,7 +18,7 @@ use tutti_nodes::testing::Const;
 use tutti_plugin_host::PluginHandle;
 use tutti_plugin_types::fake::{Call, FakePlugin};
 use tutti_plugin_types::{
-    ContentScale, EditorError, MainThread, Normalized, ParamId, ParameterInfo, PluginFailure,
+    ContentScale, EditorError, MainThreadMarker, Normalized, ParamId, ParameterInfo, PluginFailure,
 };
 use tutti_session::{Opened, PluginChange, PluginEvent, Session, SessionEvent};
 use tutti_types::{ChannelLayout, SampleRate};
@@ -76,7 +76,7 @@ impl tutti_plugin_types::Health for Inert {
     fn terminate(&self, _reason: tutti_plugin_types::TerminationReason) {}
 }
 
-fn main_thread() -> MainThread {
+fn main_thread() -> MainThreadMarker {
     tutti_fixtures::main_thread()
 }
 

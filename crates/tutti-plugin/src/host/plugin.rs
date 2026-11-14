@@ -7,7 +7,7 @@
 //! note expression, reached here through capability accessors.
 
 use crate::host::plugin_ref::{Hosting, PluginRef};
-use tutti_plugin_types::{MainThread, MainWorkHandle};
+use tutti_plugin_types::{MainThreadMarker, MainWorkHandle};
 
 use crate::host::node::PluginClient;
 #[cfg(any(
@@ -177,7 +177,7 @@ impl Plugin {
     /// [`Plugins::is_blacklisted`]: super::catalog::Catalog::is_blacklisted
     /// [`AudioConfig`]: crate::BridgeConfig
     pub fn open(
-        main: Option<&MainThread>,
+        main: Option<MainThreadMarker>,
         work: &MainWorkHandle,
         plugin: &PluginRef,
         sample_rate: impl Into<SampleRate>,
@@ -193,7 +193,7 @@ impl Plugin {
     ///
     /// The same as [`open`](Self::open).
     pub(crate) fn open_with(
-        main: Option<&MainThread>,
+        main: Option<MainThreadMarker>,
         work: &MainWorkHandle,
         audio: &AudioConfig,
         plugin: &PluginRef,
@@ -214,7 +214,7 @@ impl Plugin {
     ///
     /// The same as [`open`](Self::open).
     pub fn open_with_state(
-        main: Option<&MainThread>,
+        main: Option<MainThreadMarker>,
         work: &MainWorkHandle,
         audio: &AudioConfig,
         plugin: &PluginRef,
@@ -268,7 +268,7 @@ impl Plugin {
     /// The in-process load, by format.
     #[allow(unused_variables)]
     fn open_in_process(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         plugin: &PluginRef,
         sample_rate: SampleRate,
@@ -329,7 +329,7 @@ impl Plugin {
         all(feature = "au", target_os = "macos")
     ))]
     fn load_in_process<F>(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         plugin: &PluginRef,
         sample_rate: SampleRate,

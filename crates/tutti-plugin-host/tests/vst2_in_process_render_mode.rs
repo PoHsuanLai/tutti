@@ -118,7 +118,7 @@ fn load() -> Loaded {
     let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_probe(&path);
     let (unit, handle) = load_client::<Vst2Loaded>(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         &Load::new(),
@@ -289,7 +289,7 @@ fn a_rate_change_keeps_the_render_mode() {
     );
     drive_blocks_at(&mut loaded.unit, 44_100.0, BLOCK, BLOCK);
     // The drain point of the rate the audio side parked.
-    loaded.handle.editor_idle(&main_thread());
+    loaded.handle.editor_idle(main_thread());
     drive_blocks_at(&mut loaded.unit, 44_100.0, BLOCK, BLOCK);
     let cap = read_capture(&loaded.path);
 

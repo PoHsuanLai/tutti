@@ -16,7 +16,7 @@ use tutti_au_ffi::AuEditor;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AuComponentType, AutomationMode, ContentScale, Control, EditorCapabilities, EditorError,
-    EditorPresence, EditorWindow, Features, LoadedPlugin, MainThread, Normalized, ParamEdit,
+    EditorPresence, EditorWindow, Features, LoadedPlugin, MainThreadMarker, Normalized, ParamEdit,
     ParamFlags, ParamId, ParamMapping, ParamRange, ParamSteps, ParameterInfo, PluginBus,
     PluginBuses, PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail, Preset,
     PresetId, RenderModeSupport, Request, RescanScope, StateUse, WindowHandle, Wraps, taken,
@@ -279,7 +279,7 @@ impl Control for AuLoaded {
         self.descriptor()
     }
 
-    fn wiring(&self, _main: &MainThread) -> LoadedPlugin {
+    fn wiring(&self, _main: MainThreadMarker) -> LoadedPlugin {
         LoadedPlugin {
             inputs: self.buses(BusDirection::Input).unwrap_or_default(),
             outputs: self.buses(BusDirection::Output).unwrap_or_default(),
@@ -291,7 +291,7 @@ impl Control for AuLoaded {
     }
 
     /// Every parameter the AU declares.
-    fn parameters(&self, _main: &MainThread) -> Vec<ParameterInfo> {
+    fn parameters(&self, _main: MainThreadMarker) -> Vec<ParameterInfo> {
         let unit = self.unit();
         let params = parameters::list(unit);
 
@@ -356,14 +356,19 @@ impl Control for AuLoaded {
     /// Plain, in the AU's own units: `ParamBounds`'s [`ParamMapping`] over the
     /// declared range (see it for why the display curves do not apply). `None`
     /// for an id the AU never declared.
-    fn parameter_plain(&self, _main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
+    fn parameter_plain(
+        &self,
+        _main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<f64> {
         Some(self.ranges.bounds(id.get())?.plain(value))
     }
 
     /// The inverse, [`ParamMapping::normalized`].
     fn parameter_normalized(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         id: ParamId,
         plain: f64,
     ) -> Option<Normalized> {
@@ -372,7 +377,7 @@ impl Control for AuLoaded {
 
     /// Normalized `0..=1`: `AudioUnitGetParameter` answers in plain units, so
     /// the declared range maps it back. `None` for an id the AU refuses.
-    fn parameter(&self, _main: &MainThread, id: ParamId) -> Option<Normalized> {
+    fn parameter(&self, _main: MainThreadMarker, id: ParamId) -> Option<Normalized> {
         let plain = parameters::get(self.unit(), id.get()).ok()?;
         Some(self.normalize(id.get(), plain))
     }
@@ -381,7 +386,7 @@ impl Control for AuLoaded {
     /// active unit takes it directly rather than through a queue to the
     /// Processor). Normalized in, denormalized against the same table the
     /// automation path uses, so the two cannot disagree about a range.
-    fn set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, _main: MainThreadMarker, id: ParamId, value: Normalized) {
         let plain = self.denormalize(id, value);
         let _ = parameters::set(self.unit(), id.get(), plain);
     }
@@ -393,7 +398,12 @@ impl Control for AuLoaded {
     ///
     /// Measured on macOS 15.6: no Apple AU implements the property; third-party
     /// AUs do.
-    fn parameter_text(&self, _main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+    fn parameter_text(
+        &self,
+        _main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<String> {
         parameters::string_from_value(self.unit(), id.get(), self.denormalize(id, value))
     }
 
@@ -401,7 +411,7 @@ impl Control for AuLoaded {
     /// [`set_parameter`](Control::set_parameter).
     fn parameter_value_from_text(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         id: ParamId,
         text: &str,
     ) -> Option<Normalized> {
@@ -409,12 +419,17 @@ impl Control for AuLoaded {
         Some(self.normalize(id.get(), plain))
     }
 
-    fn save_state(&mut self, _main: &MainThread, _: StateUse) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, _main: MainThreadMarker, _: StateUse) -> PluginResult<Vec<u8>> {
         self.class_info()
             .map_err(|e| PluginError::State(e.to_string()))
     }
 
-    fn load_state(&mut self, _main: &MainThread, bytes: &[u8], _: StateUse) -> PluginResult<()> {
+    fn load_state(
+        &mut self,
+        _main: MainThreadMarker,
+        bytes: &[u8],
+        _: StateUse,
+    ) -> PluginResult<()> {
         self.set_class_info(bytes)
             .map_err(|e| PluginError::State(e.to_string()))
     }
@@ -422,7 +437,7 @@ impl Control for AuLoaded {
     /// The AU's factory presets. `AuPreset::number` is a **unit-assigned
     /// selector**, not a position, so the id is built from it and never from the
     /// enumeration index. `bank` is `None`: AU exposes one flat factory set.
-    fn presets(&mut self, _main: &MainThread) -> Vec<Preset> {
+    fn presets(&mut self, _main: MainThreadMarker) -> Vec<Preset> {
         self.factory_presets()
             .into_iter()
             .map(|p| Preset::new(PresetId::Number(p.number), p.name))
@@ -432,7 +447,7 @@ impl Control for AuLoaded {
     /// `false` for an id this format cannot address, and for a number the unit
     /// does not advertise (the AU is still renderable afterwards, parameters
     /// untouched).
-    fn load_preset(&mut self, _main: &MainThread, id: &PresetId) -> bool {
+    fn load_preset(&mut self, _main: MainThreadMarker, id: &PresetId) -> bool {
         match au_selector(id) {
             Some(number) => self.load_factory_preset(number).is_ok(),
             None => false,
@@ -441,21 +456,21 @@ impl Control for AuLoaded {
 
     /// `None` when the unit does not implement `kAudioUnitProperty_PresentPreset`:
     /// there is no honest value to fabricate.
-    fn current_preset(&mut self, _main: &MainThread) -> Option<PresetId> {
+    fn current_preset(&mut self, _main: MainThreadMarker) -> Option<PresetId> {
         self.current_preset_figure()
     }
 
-    fn set_automation_state(&mut self, _main: &MainThread, mode: AutomationMode) {
+    fn set_automation_state(&mut self, _main: MainThreadMarker, mode: AutomationMode) {
         let _ = mode;
     }
 
-    fn rescan_parameters(&mut self, _main: &MainThread, scope: RescanScope) {
+    fn rescan_parameters(&mut self, _main: MainThreadMarker, scope: RescanScope) {
         if matches!(scope, RescanScope::Info | RescanScope::All) {
             self.reread_ranges();
         }
     }
 
-    fn take_requests(&mut self, _main: &MainThread, out: &mut Vec<Request>) {
+    fn take_requests(&mut self, _main: MainThreadMarker, out: &mut Vec<Request>) {
         out.extend(taken(&self.requests));
     }
 
@@ -463,7 +478,7 @@ impl Control for AuLoaded {
     /// `Unsupported` where it refuses it (the property is optional). A unit
     /// that sizes an oversampling or look-ahead buffer from the flag does so at
     /// `AudioUnitInitialize`, so the mode is written before each activation.
-    fn render_mode_support(&self, _main: &MainThread) -> RenderModeSupport {
+    fn render_mode_support(&self, _main: MainThreadMarker) -> RenderModeSupport {
         if self.render_mode_accepted() {
             RenderModeSupport::OnActivation
         } else {
@@ -475,7 +490,7 @@ impl Control for AuLoaded {
     /// it), heard through the parameter listener `watch_properties` installs.
     /// The host's own writes are not among them: they name the listener as their
     /// sender.
-    fn take_reported_edits(&mut self, _main: &MainThread, out: &mut Vec<ParamEdit>) {
+    fn take_reported_edits(&mut self, _main: MainThreadMarker, out: &mut Vec<ParamEdit>) {
         self.drain_edits(out);
     }
 
@@ -493,7 +508,7 @@ impl AuLoaded {
 }
 
 impl EditorWindow for AuLoaded {
-    fn has_editor(&self, _main: &MainThread) -> bool {
+    fn has_editor(&self, _main: MainThreadMarker) -> bool {
         // Asks the live unit for its Cocoa view property: the AU host takes no
         // token for the read, and an uninitialized unit answers it.
         AuEditor::has_editor(self.unit())
@@ -508,7 +523,7 @@ impl EditorWindow for AuLoaded {
     /// hold two.
     fn open_editor(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         parent: WindowHandle,
         _scale: ContentScale,
     ) -> PluginResult<Size> {
@@ -521,29 +536,29 @@ impl EditorWindow for AuLoaded {
     }
 
     /// Detaches and releases the editor view. The teardown is AppKit's
-    /// `removeFromSuperview` / `release`, which the `&MainThread` proves is on
+    /// `removeFromSuperview` / `release`, which the `MainThreadMarker` proves is on
     /// the main thread.
-    fn close_editor(&mut self, _main: &MainThread) {
+    fn close_editor(&mut self, _main: MainThreadMarker) {
         if let Some(mut editor) = self.editor_slot().take() {
             editor.close();
         }
     }
 
-    fn editor_idle(&mut self, _main: &MainThread) {
+    fn editor_idle(&mut self, _main: MainThreadMarker) {
         // AUv2 Cocoa views are driven by the AppKit run loop.
     }
 
-    fn editor_capabilities(&mut self, _main: &MainThread) -> EditorCapabilities {
+    fn editor_capabilities(&mut self, _main: MainThreadMarker) -> EditorCapabilities {
         EditorCapabilities::default()
     }
 
-    fn set_editor_size(&mut self, _main: &MainThread, _requested: Size) -> PluginResult<Size> {
+    fn set_editor_size(&mut self, _main: MainThreadMarker, _requested: Size) -> PluginResult<Size> {
         Err(PluginError::Editor(EditorError::PluginError(
             "set_editor_size not supported".into(),
         )))
     }
 
-    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<Size> {
+    fn poll_editor_resize_request(&mut self, _main: MainThreadMarker) -> Option<Size> {
         None
     }
 }
@@ -560,7 +575,7 @@ impl Wraps for AuController {
     }
 
     /// Reads the ranges again and publishes them to the Processor.
-    fn republish_ranges(&mut self, _main: &MainThread) {
+    fn republish_ranges(&mut self, _main: MainThreadMarker) {
         AuController::republish_ranges(self);
     }
 
@@ -569,7 +584,7 @@ impl Wraps for AuController {
     /// here, between blocks, and never from the render. Also the range table's
     /// reclaim: a retired table is let go on this tick even when the parameters
     /// go quiet and nothing republishes.
-    fn tick(&mut self, _main: &MainThread) {
+    fn tick(&mut self, _main: MainThreadMarker) {
         self.ranges.reclaim();
         self.apply_deferred();
     }

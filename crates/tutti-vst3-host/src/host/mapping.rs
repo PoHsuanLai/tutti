@@ -1,6 +1,6 @@
 //! One VST3 parameter's [`ParamMapping`]: the plugin's own conversion.
 
-use tutti_plugin_types::{MainThread, Normalized, ParamMapping};
+use tutti_plugin_types::{MainThreadMarker, Normalized, ParamMapping};
 use tutti_vst3_ffi::Plugin;
 
 /// The controller's `normalizedParamToPlain` and `plainParamToNormalized` for
@@ -8,7 +8,7 @@ use tutti_vst3_ffi::Plugin;
 /// `ivsteditcontroller.h:508-514`): the plugin's own map, so a decreasing or
 /// exponential parameter converts as its editor shows it.
 ///
-/// It borrows the plugin and the [`MainThread`] token the two controller calls
+/// It borrows the plugin and the [`MainThreadMarker`] token the two controller calls
 /// need (`[UI-thread & Connected]`), so it lives for the call that builds it:
 /// [`Vst3Loaded::mapping`](crate::Vst3Loaded::mapping).
 ///
@@ -19,7 +19,7 @@ use tutti_vst3_ffi::Plugin;
 #[derive(Clone, Copy)]
 pub struct ControllerMapping<'a> {
     pub(super) plugin: &'a Plugin,
-    pub(super) main: &'a MainThread,
+    pub(super) main: MainThreadMarker,
     pub(super) id: u32,
 }
 

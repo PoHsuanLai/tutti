@@ -75,14 +75,14 @@
 //! # {
 //! use tutti_au_host::component::enumerate_components_of_type;
 //! use tutti_au_host::{AuLoaded, AuType};
-//! use tutti_plugin_types::{Loaded, MainThread, MaxBlock, Prepare, SampleRate, Samples};
+//! use tutti_plugin_types::{Loaded, MainThreadMarker, MaxBlock, Prepare, SampleRate, Samples};
 //!
 //! let effects = enumerate_components_of_type(AuType::Effect);
 //! if let Some(info) = effects.first() {
-//!     let main = MainThread::new().unwrap();
+//!     let main = MainThreadMarker::new().unwrap();
 //!     let au = AuLoaded::new(info.component, SampleRate::SR_44K1, 512).unwrap();
 //!     let prepare = Prepare::new(SampleRate::SR_44K1, MaxBlock::of(Samples(512)));
-//!     let Ok((mut processor, _controller)) = au.activate(&main, prepare) else {
+//!     let Ok((mut processor, _controller)) = au.activate(main, prepare) else {
 //!         return;
 //!     };
 //!
@@ -182,7 +182,7 @@
 //! `AuProcessor::render` (and `render_f32`/`render_f64`) belong on the audio thread and does not allocate in the
 //! steady state: render buffers are sized at initialization. Loading,
 //! initialization, state, presets and the editor belong on the main thread; the
-//! editor, state and preset-file methods take a `tutti_plugin_types::MainThread`,
+//! editor, state and preset-file methods take a `tutti_plugin_types::MainThreadMarker`,
 //! and `AuEditor` also asks the OS (`pthread_main_np`).
 //!
 //! [`AuComponentInfo`]: crate::AuComponentInfo

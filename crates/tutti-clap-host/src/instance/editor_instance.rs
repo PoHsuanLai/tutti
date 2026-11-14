@@ -10,7 +10,7 @@ use std::path::Path;
 use dpi::Size;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorWindow,
-    InProcess, Load, MainThread, MainWorkHandle, Normalized, ParamEdit, ParamId, PluginError,
+    InProcess, Load, MainThreadMarker, MainWorkHandle, Normalized, ParamEdit, ParamId, PluginError,
     PluginResult, Request, RescanScope, WindowHandle,
 };
 
@@ -60,7 +60,7 @@ impl ClapEditor {
     /// Loads the editor-only instance. It is never activated and never
     /// processes audio: the audio instance runs elsewhere.
     pub(crate) fn load(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,
@@ -91,7 +91,7 @@ impl ClapEditor {
 }
 
 /// The plugin's declared plain-unit bounds per parameter id, sorted by id.
-fn read_param_ranges(main: &MainThread, inner: &ClapLoaded) -> Vec<ParamBounds> {
+fn read_param_ranges(main: MainThreadMarker, inner: &ClapLoaded) -> Vec<ParamBounds> {
     let mut ranges: Vec<ParamBounds> = inner
         .native_parameters(main)
         .into_iter()
@@ -108,7 +108,7 @@ fn read_param_ranges(main: &MainThread, inner: &ClapLoaded) -> Vec<ParamBounds> 
 }
 
 impl Editor for ClapEditor {
-    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, main: MainThreadMarker, id: ParamId, value: Normalized) {
         // CLAP values are in the plugin's native plain range, so the host's
         // normalized value is denormalized against the declared bounds — the
         // same conversion the subprocess loader applies on the audio path.
@@ -127,13 +127,13 @@ impl Editor for ClapEditor {
         self.inner.set_plain_value(main, id.get(), plain);
     }
 
-    fn set_state(&mut self, main: &MainThread, data: &[u8]) -> PluginResult<()> {
+    fn set_state(&mut self, main: MainThreadMarker, data: &[u8]) -> PluginResult<()> {
         self.inner
             .load_state(main, data, tutti_plugin_types::StateUse::Project)
             .map_err(|e| editor_error(format!("CLAP set_state failed: {e}")))
     }
 
-    fn poll_edits(&mut self, main: &MainThread) -> Vec<ParamEdit> {
+    fn poll_edits(&mut self, main: MainThreadMarker) -> Vec<ParamEdit> {
         // A CLAP editor reports its knob movements as output events on the next
         // `params.flush`, so an empty flush is how the host collects them. This
         // is the only bridge back to the audio instance in the subprocess —
@@ -156,20 +156,20 @@ impl Editor for ClapEditor {
             .collect()
     }
 
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, main: MainThreadMarker) -> PluginResult<Vec<u8>> {
         Control::save_state(&mut self.inner, main, tutti_plugin_types::StateUse::Project)
     }
 
-    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
+    fn set_automation_state(&mut self, main: MainThreadMarker, mode: AutomationMode) {
         // The editor instance is the one whose UI shows the indication.
         Control::set_automation_state(&mut self.inner, main, mode);
     }
 
-    fn take_requests(&mut self, _main: &MainThread, out: &mut Vec<Request>) {
+    fn take_requests(&mut self, _main: MainThreadMarker, out: &mut Vec<Request>) {
         out.append(&mut self.asked);
     }
 
-    fn take_dirty(&mut self, _main: &MainThread) -> bool {
+    fn take_dirty(&mut self, _main: MainThreadMarker) -> bool {
         // `state.mark_dirty` from the editor instance: the user changed
         // something the plugin saves.
         self.inner.take_state_dirty()
@@ -177,13 +177,13 @@ impl Editor for ClapEditor {
 }
 
 impl EditorWindow for ClapEditor {
-    fn has_editor(&self, main: &MainThread) -> bool {
+    fn has_editor(&self, main: MainThreadMarker) -> bool {
         EditorWindow::has_editor(&self.inner, main)
     }
 
     fn open_editor(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         parent: WindowHandle,
         scale: ContentScale,
     ) -> PluginResult<Size> {
@@ -192,7 +192,7 @@ impl EditorWindow for ClapEditor {
             .map_err(|e| editor_error(format!("CLAP open_editor failed: {e}")))
     }
 
-    fn open_floating_editor(&mut self, main: &MainThread) -> PluginResult<()> {
+    fn open_floating_editor(&mut self, main: MainThreadMarker) -> PluginResult<()> {
         // No transient parent: this crate does not hold the host's window, and
         // `set_transient` is a stacking hint the plugin may ignore anyway. The
         // title is what the host would have put on a window it owned.
@@ -203,24 +203,24 @@ impl EditorWindow for ClapEditor {
             .map_err(|e| editor_error(format!("CLAP floating open failed: {e}")))
     }
 
-    fn close_editor(&mut self, main: &MainThread) {
+    fn close_editor(&mut self, main: MainThreadMarker) {
         EditorWindow::close_editor(&mut self.inner, main);
     }
 
-    fn wakeups(&mut self, main: &MainThread, out: &mut tutti_plugin_types::Wakeups) {
+    fn wakeups(&mut self, main: MainThreadMarker, out: &mut tutti_plugin_types::Wakeups) {
         EditorWindow::wakeups(&mut self.inner, main, out);
     }
 
     fn wake(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         ready: &[tutti_plugin_types::Ready],
         now: std::time::Instant,
     ) {
         EditorWindow::wake(&mut self.inner, main, ready, now);
     }
 
-    fn editor_idle(&mut self, main: &MainThread) {
+    fn editor_idle(&mut self, main: MainThreadMarker) {
         // The editor's timers (a UI toolkit's repaint tick), its callbacks to
         // the main thread and its file descriptors are all served from here:
         // this is the only main-thread tick the instance has. What the host's
@@ -263,14 +263,18 @@ impl EditorWindow for ClapEditor {
         }
     }
 
-    fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
+    fn editor_capabilities(&mut self, main: MainThreadMarker) -> EditorCapabilities {
         // Pass-through from the host crate — the shared `EditorCapabilities`
         // is already the union of vst3/clap fields, and `appkit_autoresize_friendly`
         // defaults to `false` which matches CLAP's pinned-NSView behavior.
         self.inner.editor_capabilities(main)
     }
 
-    fn set_editor_scale(&mut self, main: &MainThread, scale: ContentScale) -> PluginResult<()> {
+    fn set_editor_scale(
+        &mut self,
+        main: MainThreadMarker,
+        scale: ContentScale,
+    ) -> PluginResult<()> {
         match self.inner.rescale_editor(main, scale) {
             Ok(true) => Ok(()),
             Ok(false) => Err(PluginError::Editor(EditorError::ScaleUnsupported)),
@@ -278,13 +282,13 @@ impl EditorWindow for ClapEditor {
         }
     }
 
-    fn set_editor_size(&mut self, main: &MainThread, requested: Size) -> PluginResult<Size> {
+    fn set_editor_size(&mut self, main: MainThreadMarker, requested: Size) -> PluginResult<Size> {
         self.inner
             .resize_editor(main, requested)
             .map_err(|e| editor_error(format!("CLAP resize_editor failed: {e}")))
     }
 
-    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<Size> {
+    fn poll_editor_resize_request(&mut self, _main: MainThreadMarker) -> Option<Size> {
         self.inner.take_editor_resize_request()
     }
 }

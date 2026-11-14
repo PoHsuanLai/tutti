@@ -56,7 +56,7 @@ use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use tutti_plugin_types::{
-    AutomationMode, MainThread, Request, RescanScope, WireMidi, sysex_packets,
+    AutomationMode, MainThreadMarker, Request, RescanScope, WireMidi, sysex_packets,
 };
 use tutti_rt::RequestWord;
 use vst::api::{AutomationState, ProcessLevel, Supported};
@@ -192,7 +192,7 @@ pub(crate) struct HostState {
     /// create, `0` when the load names none (and for a plugin that is no shell, which
     /// never asks).
     current_id: i32,
-    /// The thread the host was made on, under a `&MainThread`: the one a call from
+    /// The thread the host was made on, under a `MainThreadMarker`: the one a call from
     /// outside a process scope answers `User` for.
     main_thread: std::thread::ThreadId,
 }
@@ -210,7 +210,7 @@ impl HostState {
     }
 
     pub(crate) fn new(
-        _main: &MainThread,
+        _main: MainThreadMarker,
         param_tx: Arc<ArrayQueue<ParameterChange>>,
         midi_out_tx: Arc<ArrayQueue<WireMidi>>,
         time_info: TransportReader,
@@ -490,7 +490,7 @@ impl Host for HostState {
 
     /// The level of the thread asking (`audioMasterGetCurrentProcessLevel`): from inside the
     /// plugin's process call, `Offline` while the host renders offline and `Realtime`
-    /// otherwise; from the thread the host was made on under a `MainThread`, `User`; from any other thread,
+    /// otherwise; from the thread the host was made on under a `MainThreadMarker`, `User`; from any other thread,
     /// `Unknown`. `Prefetch` is never answered: the host runs no sequencing thread. The
     /// caller is told what its own thread is, never a guess.
     fn get_process_level(&self) -> ProcessLevel {
@@ -633,7 +633,7 @@ mod tests {
 
     fn make_host(time_info: TransportReader, default_sample_rate: f64) -> HostState {
         HostState::new(
-            &tutti_fixtures::main_thread(),
+            tutti_fixtures::main_thread(),
             Arc::new(ArrayQueue::new(PARAM_QUEUE_CAPACITY)),
             Arc::new(ArrayQueue::new(MIDI_OUT_QUEUE_CAPACITY)),
             time_info,
@@ -794,7 +794,7 @@ mod tests {
         let none = make_host(TransportWriter::new().reader(), 48_000.0);
         assert_eq!(none.get_plugin_id(), 0);
         let chosen = HostState::new(
-            &tutti_fixtures::main_thread(),
+            tutti_fixtures::main_thread(),
             Arc::new(ArrayQueue::new(PARAM_QUEUE_CAPACITY)),
             Arc::new(ArrayQueue::new(MIDI_OUT_QUEUE_CAPACITY)),
             TransportWriter::new().reader(),

@@ -7,7 +7,12 @@ impl Parts {
 
     /// `IComponent::getBusCount`.
     #[must_use]
-    pub fn bus_count(&self, main: &MainThread, media: MediaType, direction: BusDirection) -> i32 {
+    pub fn bus_count(
+        &self,
+        main: MainThreadMarker,
+        media: MediaType,
+        direction: BusDirection,
+    ) -> i32 {
         let _scope = self.scoped(main);
         // SAFETY: a plain getter on a live component.
         unsafe { self.component.getBusCount(media.raw(), direction.raw()) }
@@ -20,7 +25,7 @@ impl Parts {
     /// The plugin's refusal.
     pub fn bus_info(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         media: MediaType,
         direction: BusDirection,
         index: i32,
@@ -43,7 +48,7 @@ impl Parts {
     /// refusal (a plugin may decline an optional bus).
     pub fn activate_bus(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         media: MediaType,
         direction: BusDirection,
         index: i32,
@@ -76,7 +81,7 @@ impl Parts {
     #[must_use]
     pub fn audio_bus_channel_count(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         direction: BusDirection,
     ) -> Option<ChannelLayout> {
         let _scope = self.scoped(main);
@@ -93,7 +98,11 @@ impl Parts {
     /// bus whose query fails contributes 0 so the vec length always equals the
     /// bus count.
     #[must_use]
-    pub fn audio_bus_channels(&self, main: &MainThread, direction: BusDirection) -> Vec<usize> {
+    pub fn audio_bus_channels(
+        &self,
+        main: MainThreadMarker,
+        direction: BusDirection,
+    ) -> Vec<usize> {
         let _scope = self.scoped(main);
         let num_buses = self.bus_count(main, MediaType::Audio, direction);
         if num_buses <= 0 {
@@ -115,7 +124,7 @@ impl Parts {
     #[must_use]
     pub fn first_unrepresentable_audio_bus(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         direction: BusDirection,
     ) -> Option<(i32, i32)> {
         let _scope = self.scoped(main);
@@ -136,7 +145,7 @@ impl Parts {
     /// up again before an audio half is handed out.
     pub fn set_bus_arrangements(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         inputs: &mut [SpeakerArrangement],
         outputs: &mut [SpeakerArrangement],
     ) -> Result<(), Vst3Error> {
@@ -163,7 +172,7 @@ impl Parts {
     /// The plugin's refusal.
     pub fn bus_arrangement(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         direction: BusDirection,
         index: i32,
     ) -> Result<SpeakerArrangement, Vst3Error> {
@@ -179,7 +188,7 @@ impl Parts {
 
     /// Whether the processor accepts 64-bit samples.
     #[must_use]
-    pub fn can_process_f64(&self, main: &MainThread) -> bool {
+    pub fn can_process_f64(&self, main: MainThreadMarker) -> bool {
         let _scope = self.scoped(main);
         // SAFETY: a plain query on a live processor.
         is_ok(unsafe { self.processor.canProcessSampleSize(K_SAMPLE_64_INT) })
@@ -202,7 +211,7 @@ impl Parts {
     /// one is forgotten when the call is made.
     pub fn setup_processing(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         mut setup: ProcessSetup,
     ) -> Result<(), Vst3Error> {
         let _scope = self.scoped(main);
@@ -222,7 +231,7 @@ impl Parts {
 
     /// `IAudioProcessor::getLatencySamples`.
     ///
-    /// Takes no `&MainThread`, deliberately: a plain getter that the host reads
+    /// Takes no `MainThreadMarker`, deliberately: a plain getter that the host reads
     /// beside the processing figures. The SDK annotates both this and
     /// `getTailSamples` `[UI-thread & Setup Done]`, so every caller in the host
     /// crate holds a token anyway; the FFI signature leaves them tokenless.
@@ -242,7 +251,7 @@ impl Parts {
     /// `IPrefetchableSupport::getPrefetchableSupport`, if the processor has the
     /// interface and answers.
     #[must_use]
-    pub fn prefetchable_support(&self, main: &MainThread) -> Option<crate::PrefetchSupport> {
+    pub fn prefetchable_support(&self, main: MainThreadMarker) -> Option<crate::PrefetchSupport> {
         let _scope = self.scoped(main);
         let proc = self.ext.prefetchable_support.as_ref()?;
         let mut support: u32 = 0;
@@ -254,7 +263,7 @@ impl Parts {
     /// `IAudioPresentationLatency`, if the processor has it. `false` without.
     pub fn set_audio_presentation_latency(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         direction: BusDirection,
         bus_index: i32,
         latency_samples: u32,
@@ -286,7 +295,7 @@ impl Parts {
     /// # Errors
     ///
     /// The plugin's refusal.
-    pub fn component_state(&self, main: &MainThread) -> Result<Vec<u8>, Vst3Error> {
+    pub fn component_state(&self, main: MainThreadMarker) -> Result<Vec<u8>, Vst3Error> {
         let _scope = self.scoped(main);
         let stream = BStream::new();
         let stream_ptr = stream
@@ -303,7 +312,11 @@ impl Parts {
     /// # Errors
     ///
     /// The plugin's refusal (`kNotImplemented` is not one).
-    pub fn set_component_state(&self, main: &MainThread, data: &[u8]) -> Result<(), Vst3Error> {
+    pub fn set_component_state(
+        &self,
+        main: MainThreadMarker,
+        data: &[u8],
+    ) -> Result<(), Vst3Error> {
         let _scope = self.scoped(main);
         let stream = BStream::from_data(data.to_vec());
         let stream_ptr = stream
@@ -317,7 +330,7 @@ impl Parts {
     /// The controller's own saved state, `None` for a plugin without a
     /// controller, a refusal or an empty state.
     #[must_use]
-    pub fn controller_state(&self, main: &MainThread) -> Option<Vec<u8>> {
+    pub fn controller_state(&self, main: MainThreadMarker) -> Option<Vec<u8>> {
         let _scope = self.scoped(main);
         let ctrl = self.controller.get()?;
         let stream = BStream::new();
@@ -331,7 +344,7 @@ impl Parts {
     /// Syncs the controller with the component's state
     /// (`IEditController::setComponentState`); the answer is ignored, as the
     /// SDK's own hosts do.
-    pub fn sync_controller_to_component_state(&self, main: &MainThread, data: &[u8]) {
+    pub fn sync_controller_to_component_state(&self, main: MainThreadMarker, data: &[u8]) {
         let _scope = self.scoped(main);
         if data.is_empty() {
             return;
@@ -349,7 +362,7 @@ impl Parts {
     }
 
     /// Restores the controller's own state; the answer is ignored.
-    pub fn set_controller_state(&self, main: &MainThread, data: &[u8]) {
+    pub fn set_controller_state(&self, main: MainThreadMarker, data: &[u8]) {
         let _scope = self.scoped(main);
         let Some(ctrl) = self.controller.get() else {
             return;

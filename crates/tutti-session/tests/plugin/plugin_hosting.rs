@@ -8,7 +8,7 @@ use tutti_plugin_types::BridgeError;
 use tutti_session::{PluginLoadRequest, Session};
 use tutti_types::{MaxBlock, Samples};
 
-fn main_thread() -> tutti_plugin_types::MainThread {
+fn main_thread() -> tutti_plugin_types::MainThreadMarker {
     tutti_fixtures::main_thread()
 }
 
@@ -52,7 +52,7 @@ fn a_blacklisted_plugin_is_refused_at_load() {
     let load = s
         .plugin_load(PluginLoadRequest::new(plugin.clone()))
         .with_catalog(&catalog);
-    match s.add_plugin(&main, load.run()) {
+    match s.add_plugin(main, load.run()) {
         Err(BridgeError::Blacklisted {
             path: refused,
             reason,
@@ -65,7 +65,7 @@ fn a_blacklisted_plugin_is_refused_at_load() {
 
     // No catalog named: no blacklist consulted, and the plugin loads.
     set_server(plugin_server());
-    s.add_plugin_blocking(&main, PluginLoadRequest::new(plugin.clone()))
+    s.add_plugin_blocking(main, PluginLoadRequest::new(plugin.clone()))
         .expect("a load that names no catalog consults no blacklist");
 
     // The user unblacklists it: the same catalog now admits it.
@@ -73,7 +73,7 @@ fn a_blacklisted_plugin_is_refused_at_load() {
     let load = s
         .plugin_load(PluginLoadRequest::new(plugin))
         .with_catalog(&catalog);
-    s.add_plugin(&main, load.run())
+    s.add_plugin(main, load.run())
         .expect("an unblacklisted plugin loads");
 }
 
@@ -93,7 +93,7 @@ fn a_plugin_blacklisted_after_the_load_is_made_is_refused_when_it_runs() {
         .plugin_load(PluginLoadRequest::new(plugin.clone()))
         .with_catalog(&catalog);
     catalog.blacklist(&path, "hung in its load");
-    match s.add_plugin(&main, load.run()) {
+    match s.add_plugin(main, load.run()) {
         Err(BridgeError::Blacklisted { reason, .. }) => assert_eq!(reason, "hung in its load"),
         other => panic!("expected a Blacklisted refusal at run, got {other:?}"),
     }
@@ -102,7 +102,7 @@ fn a_plugin_blacklisted_after_the_load_is_made_is_refused_when_it_runs() {
         .plugin_load(PluginLoadRequest::new(plugin))
         .with_catalog(&catalog);
     assert!(catalog.unblacklist(&path));
-    let loaded = s.add_plugin(&main, load.run());
+    let loaded = s.add_plugin(main, load.run());
     assert!(
         !matches!(loaded, Err(BridgeError::Blacklisted { .. })),
         "an unblacklisted plugin was refused"
@@ -123,7 +123,7 @@ fn vst2_asked_for_out_of_process_is_refused_at_load() {
         !load.opens_in_process(),
         "nothing is left for the main thread"
     );
-    match s.add_plugin(&main_thread(), load.run()) {
+    match s.add_plugin(main_thread(), load.run()) {
         Err(BridgeError::NotOutOfProcess { format, .. }) => assert_eq!(format, "VST2"),
         other => panic!("expected NotOutOfProcess, got {other:?}"),
     }
@@ -144,7 +144,7 @@ fn a_clap_plugin_asked_in_process_is_hosted_here() {
     assert!(load.opens_in_process());
 
     let node = s
-        .add_plugin(&main_thread(), load.run())
+        .add_plugin(main_thread(), load.run())
         .expect("the reference plugin loads in this process");
     let hosted = s.plugin(node).expect("it is hosted");
     assert_eq!(hosted.diagnostics().server_pid(), None);

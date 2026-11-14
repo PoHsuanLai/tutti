@@ -125,7 +125,7 @@ fn host_loads_probe_and_reports_declared_metadata() {
     assert_eq!(instance.loaded().pins().1.count(), 2);
     assert_eq!(instance.loaded().parameter_count(), 4);
     assert_eq!(
-        instance.wiring(&main_thread()).latency_samples,
+        instance.wiring(main_thread()).latency_samples,
         Samples::ZERO
     );
 }

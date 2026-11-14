@@ -9,7 +9,7 @@
 
 use std::time::Instant;
 
-use tutti_plugin_types::{EditorWindow, MainThread, Ready, Wakeups};
+use tutti_plugin_types::{EditorWindow, MainThreadMarker, Ready, Wakeups};
 
 #[cfg(unix)]
 #[path = "wakeups/unix.rs"]
@@ -31,7 +31,7 @@ thread_local! {
 ///
 /// The handle's `editor_idle` calls it each frame. Cheap when the plugin has
 /// nothing registered: one empty description and no clock read.
-pub fn service_now(plugin: &mut dyn EditorWindow, main: &MainThread) {
+pub fn service_now(plugin: &mut dyn EditorWindow, main: MainThreadMarker) {
     // Taken out for the pass, so a handler that re-enters finds it empty and
     // works on a fresh pair.
     let mut scratch = SCRATCH.take().unwrap_or_default();
@@ -66,40 +66,40 @@ mod tests {
         }
 
         impl EditorWindow for Asks {
-            fn has_editor(&self, _: &MainThread) -> bool {
+            fn has_editor(&self, _: MainThreadMarker) -> bool {
                 false
             }
             fn open_editor(
                 &mut self,
-                _: &MainThread,
+                _: MainThreadMarker,
                 _: tutti_plugin_types::WindowHandle,
                 _: tutti_plugin_types::ContentScale,
             ) -> tutti_plugin_types::PluginResult<dpi::Size> {
                 unreachable!("no editor")
             }
-            fn close_editor(&mut self, _: &MainThread) {}
-            fn editor_idle(&mut self, _: &MainThread) {}
+            fn close_editor(&mut self, _: MainThreadMarker) {}
+            fn editor_idle(&mut self, _: MainThreadMarker) {}
             fn editor_capabilities(
                 &mut self,
-                _: &MainThread,
+                _: MainThreadMarker,
             ) -> tutti_plugin_types::EditorCapabilities {
                 tutti_plugin_types::EditorCapabilities::default()
             }
             fn set_editor_size(
                 &mut self,
-                _: &MainThread,
+                _: MainThreadMarker,
                 _: dpi::Size,
             ) -> tutti_plugin_types::PluginResult<dpi::Size> {
                 unreachable!("no editor")
             }
-            fn poll_editor_resize_request(&mut self, _: &MainThread) -> Option<dpi::Size> {
+            fn poll_editor_resize_request(&mut self, _: MainThreadMarker) -> Option<dpi::Size> {
                 None
             }
-            fn wakeups(&mut self, _: &MainThread, out: &mut Wakeups) {
+            fn wakeups(&mut self, _: MainThreadMarker, out: &mut Wakeups) {
                 out.watch(self.fd, Interest::READ);
                 out.due_at(self.deadline);
             }
-            fn wake(&mut self, _: &MainThread, ready: &[Ready], now: Instant) {
+            fn wake(&mut self, _: MainThreadMarker, ready: &[Ready], now: Instant) {
                 self.woken.push((ready.to_vec(), now));
             }
         }
@@ -117,10 +117,10 @@ mod tests {
                 deadline: Instant::now() + Duration::from_secs(3600),
                 woken: Vec::new(),
             };
-            service_now(&mut plugin, &main);
+            service_now(&mut plugin, main);
             assert!(plugin.woken.is_empty(), "nothing readable, nothing due");
             writer.write_all(b"x").unwrap();
-            service_now(&mut plugin, &main);
+            service_now(&mut plugin, main);
             let (ready, _) = &plugin.woken[0];
             assert_eq!(
                 ready,
@@ -132,10 +132,10 @@ mod tests {
             // Drained, and its timer due: it is woken with nothing ready.
             let mut byte = [0u8; 1];
             std::io::Read::read_exact(&mut &reader, &mut byte).unwrap();
-            service_now(&mut plugin, &main);
+            service_now(&mut plugin, main);
             assert_eq!(plugin.woken.len(), 1, "drained and not due");
             plugin.deadline = Instant::now();
-            service_now(&mut plugin, &main);
+            service_now(&mut plugin, main);
             assert_eq!(plugin.woken.len(), 2, "a due timer wakes it too");
             assert!(plugin.woken[1].0.is_empty());
         }

@@ -10,7 +10,7 @@ use tutti_vst3_host::{LoadOptions, Vst3Loaded};
 fn load() -> Vst3Loaded {
     let path = tutti_fixtures::cdylib("tutti_shared_plugin", "tutti-shared-plugin");
     Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),
@@ -29,7 +29,7 @@ fn the_controllers_map_holds_the_mapping_laws() {
     let loaded = load();
     for id in [LEVEL, TONE] {
         let map = loaded
-            .mapping(&main, ParamId::new(id))
+            .mapping(main, ParamId::new(id))
             .expect("the plugin lists the parameter");
         contract::check(&map, &[]).unwrap_or_else(|e| panic!("parameter {id}: {e}"));
     }
@@ -42,7 +42,7 @@ fn the_controllers_map_is_the_plugins_own_not_a_line() {
     let main = main_thread();
     let loaded = load();
     let map = loaded
-        .mapping(&main, ParamId::new(TONE))
+        .mapping(main, ParamId::new(TONE))
         .expect("the plugin lists tone");
     let half = map.plain(Normalized::of(0.5));
     assert!((half - tone_plain(0.5)).abs() < 1e-6 * half, "{half}");
@@ -55,5 +55,5 @@ fn the_controllers_map_is_the_plugins_own_not_a_line() {
 fn an_unlisted_id_has_no_mapping() {
     let main = main_thread();
     let loaded = load();
-    assert!(loaded.mapping(&main, ParamId::new(9_999)).is_none());
+    assert!(loaded.mapping(main, ParamId::new(9_999)).is_none());
 }

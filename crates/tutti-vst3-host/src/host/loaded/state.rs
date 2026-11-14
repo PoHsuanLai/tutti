@@ -1,7 +1,7 @@
 //! Programs and units, the compatibility JSON, and the state container.
 
 use std::collections::HashSet;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 
 use super::*;
 use crate::host::controller::latest_per_parameter;
@@ -13,7 +13,7 @@ impl Vst3Loaded {
     /// Read before [`units`](Self::units), which needs the list ids to tell a
     /// unit's real program list from one it names but the plugin never
     /// publishes. Main/UI thread.
-    pub fn program_lists(&self, main: &MainThread) -> Vec<Vst3ProgramListInfo> {
+    pub fn program_lists(&self, main: MainThreadMarker) -> Vec<Vst3ProgramListInfo> {
         self.plugin.program_lists(main)
     }
 
@@ -31,7 +31,7 @@ impl Vst3Loaded {
     /// `program_list: None` — see [`Vst3UnitInfo::program_list`] for why, and
     /// [`Vst3UnitInfo::has_dangling_program_list`] to detect it. Main/UI
     /// thread.
-    pub fn units(&self, main: &MainThread) -> Vec<Vst3UnitInfo> {
+    pub fn units(&self, main: MainThreadMarker) -> Vec<Vst3UnitInfo> {
         self.plugin.units(main)
     }
 
@@ -43,7 +43,7 @@ impl Vst3Loaded {
     /// plugin is free to number its lists however it likes. Main/UI thread.
     pub fn program_name(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         list_id: i32,
         program_index: u32,
     ) -> Option<String> {
@@ -57,7 +57,7 @@ impl Vst3Loaded {
     /// Unlike the other accessors here this cannot fail: `getSelectedUnit`
     /// returns the id directly with no result code, so a plugin that
     /// implements the interface always answers. Main/UI thread.
-    pub fn selected_unit(&self, main: &MainThread) -> Option<crate::UnitId> {
+    pub fn selected_unit(&self, main: MainThreadMarker) -> Option<crate::UnitId> {
         self.plugin.selected_unit(main)
     }
 
@@ -69,7 +69,7 @@ impl Vst3Loaded {
     /// [`UnitId::ROOT`](crate::UnitId::ROOT) to select the implicit
     /// top-level unit. Main/UI thread.
     #[must_use]
-    pub fn select_unit(&mut self, main: &MainThread, unit_id: crate::UnitId) -> bool {
+    pub fn select_unit(&mut self, main: MainThreadMarker, unit_id: crate::UnitId) -> bool {
         self.plugin.select_unit(main, unit_id)
     }
 
@@ -79,7 +79,7 @@ impl Vst3Loaded {
     /// Main/UI thread.
     pub fn unit_by_bus(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         media_type: crate::MediaType,
         direction: crate::BusDirection,
         bus_index: i32,
@@ -100,7 +100,7 @@ impl Vst3Loaded {
     /// finds the one in the "Plugin Compatibility Class" category, instantiates
     /// it, and reads its JSON. Returns `None` if the bundle ships no such class.
     /// Main/UI thread.
-    pub fn compatibility_json(&self, _main: &MainThread) -> Option<String> {
+    pub fn compatibility_json(&self, _main: MainThreadMarker) -> Option<String> {
         self._library.module().compatibility_json()
     }
 
@@ -146,7 +146,7 @@ impl Vst3Loaded {
     /// empty and the component half is still returned.
     pub(in crate::host) fn read_state(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         undrained: &[(ParamId, Normalized)],
     ) -> Result<Vec<u8>> {
         let component = self.read_component_state(main)?;
@@ -167,7 +167,7 @@ impl Vst3Loaded {
     /// Failure is folded into `None` rather than surfaced: see
     /// [`save_state`](tutti_plugin_types::Control::save_state) for why a controller's UI state is best-effort
     /// while the component's is not.
-    pub(super) fn read_controller_state(&self, main: &MainThread) -> Option<Vec<u8>> {
+    pub(super) fn read_controller_state(&self, main: MainThreadMarker) -> Option<Vec<u8>> {
         self.plugin.controller_state(main)
     }
 
@@ -177,7 +177,7 @@ impl Vst3Loaded {
     ///
     /// A `kResultFalse` return (plugin has no state) yields an empty blob;
     /// only a genuine error tresult is surfaced as [`Vst3Error::PluginError`].
-    pub(super) fn read_component_state(&self, main: &MainThread) -> Result<Vec<u8>> {
+    pub(super) fn read_component_state(&self, main: MainThreadMarker) -> Result<Vec<u8>> {
         self.plugin
             .component_state(main)
             .map_err(|e| Vst3Error::PluginError {
@@ -193,7 +193,7 @@ impl Vst3Loaded {
     /// return `kResultFalse` when they have no controller state to load) —
     /// this is best-effort synchronisation, shared by
     /// [`load_state`](tutti_plugin_types::Control::load_state) and [`initialize`](Self::initialize).
-    pub(super) fn push_controller_state(&self, main: &MainThread, data: &[u8]) {
+    pub(super) fn push_controller_state(&self, main: MainThreadMarker, data: &[u8]) {
         self.plugin.sync_controller_to_component_state(main, data);
     }
 
@@ -221,7 +221,7 @@ impl Vst3Loaded {
     /// own stream is tolerated, matching [`save_state`](tutti_plugin_types::Control::save_state).
     pub(in crate::host) fn write_state(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         data: &[u8],
     ) -> Result<Vec<(ParamId, Normalized)>> {
         if data.is_empty() {
@@ -273,7 +273,7 @@ impl Vst3Loaded {
     /// [`read_controller_state`](Self::read_controller_state): losing the UI's
     /// scroll position must not fail a project load whose audio state restored
     /// perfectly.
-    pub(super) fn push_controller_own_state(&self, main: &MainThread, data: &[u8]) {
+    pub(super) fn push_controller_own_state(&self, main: MainThreadMarker, data: &[u8]) {
         self.plugin.set_controller_state(main, data);
     }
 }

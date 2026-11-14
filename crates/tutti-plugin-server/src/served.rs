@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use tutti_plugin_ipc::BridgeMessage;
 use tutti_plugin_types::{
     AudioBuffer, AudioBufferMut, AutomationMode, Control, Effect, Event, Features, Hand, HostOp,
-    Lifecycle, Load, LoadStage, LoadedPlugin, MAX_BLOCK_CHANNELS, MainThread, MainWorkHandle,
+    Lifecycle, Load, LoadStage, LoadedPlugin, MAX_BLOCK_CHANNELS, MainThreadMarker, MainWorkHandle,
     MaxBlock, Normalized, Notice, OutOfProcess, ParamEdit, ParamId, ParameterInfo,
     PluginDescriptor, PluginError, PluginIo, PluginResult, Prepare, Preset, PresetId,
     ProcessContext, ProcessOutput, ProcessWake, Processor, RenderMode, RenderModeSupport, Request,
@@ -91,63 +91,73 @@ pub(crate) trait ServedPlugin: Render {
     /// Acts on what the plugin asked of the host since the last call, and
     /// returns what the host should be told. Between blocks, on the thread
     /// that loaded the plugin.
-    fn poll(&mut self, main: &MainThread) -> Vec<BridgeMessage>;
+    fn poll(&mut self, main: MainThreadMarker) -> Vec<BridgeMessage>;
     /// Brings the Processor home from the render thread and deactivates the
     /// plugin, so it can be dropped. `false` when the Processor did not come
     /// (a render thread stuck inside the plugin): dropping the plugin then
     /// leaks it.
-    fn quiesce(&mut self, main: &MainThread) -> bool;
+    fn quiesce(&mut self, main: MainThreadMarker) -> bool;
     /// Follows the host's rate.
     ///
     /// # Errors
     ///
     /// The plugin is not running at `rate`: it keeps the rate it already
     /// accepted, or renders silence until a rate it takes.
-    fn set_sample_rate(&mut self, main: &MainThread, rate: SampleRate) -> PluginResult<()>;
+    fn set_sample_rate(&mut self, main: MainThreadMarker, rate: SampleRate) -> PluginResult<()>;
     /// Tells the plugin its render mode; whether it now runs in it.
-    fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool;
+    fn set_render_mode(&mut self, main: MainThreadMarker, mode: RenderMode) -> bool;
     /// How many parameters the plugin has.
-    fn parameter_count(&self, main: &MainThread) -> usize;
+    fn parameter_count(&self, main: MainThreadMarker) -> usize;
     /// Every parameter.
-    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo>;
+    fn parameters(&self, main: MainThreadMarker) -> Vec<ParameterInfo>;
     /// A parameter's value, normalized.
-    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized>;
+    fn parameter(&self, main: MainThreadMarker, id: ParamId) -> Option<Normalized>;
     /// Sets a parameter.
-    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized);
+    fn set_parameter(&mut self, main: MainThreadMarker, id: ParamId, value: Normalized);
     /// The host's automation mode.
-    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode);
+    fn set_automation_state(&mut self, main: MainThreadMarker, mode: AutomationMode);
     /// What the host says of the plugin's track.
-    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo);
+    fn set_track_info(&mut self, main: MainThreadMarker, info: &TrackInfo);
     /// The plain value of `value`, by the plugin's format.
-    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64>;
+    fn parameter_plain(
+        &self,
+        main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<f64>;
     /// The normalized value of a plain one, by the plugin's format.
     fn parameter_normalized(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         id: ParamId,
         plain: f64,
     ) -> Option<Normalized>;
     /// The plugin's own text for `value`.
-    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String>;
+    fn parameter_text(
+        &self,
+        main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<String>;
     /// The value the plugin parses from `text`.
     fn parameter_value_from_text(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         id: ParamId,
         text: &str,
     ) -> Option<Normalized>;
     /// The plugin's presets.
-    fn presets(&mut self, main: &MainThread) -> Vec<Preset>;
+    fn presets(&mut self, main: MainThreadMarker) -> Vec<Preset>;
     /// Loads a preset; whether the plugin took it.
-    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool;
+    fn load_preset(&mut self, main: MainThreadMarker, id: &PresetId) -> bool;
     /// The preset the plugin is on.
-    fn current_preset(&mut self, main: &MainThread) -> Option<PresetId>;
+    fn current_preset(&mut self, main: MainThreadMarker) -> Option<PresetId>;
     /// The plugin's state, with the writes no block has taken delivered.
     ///
     /// # Errors
     ///
     /// The plugin cannot save, or is lost.
-    fn save_state(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>>;
+    fn save_state(&mut self, main: MainThreadMarker, state_use: StateUse) -> PluginResult<Vec<u8>>;
     /// The plugin's state as it is, with no Processor brought home: for a
     /// caller that knows no write is waiting for a block (the session's
     /// barrier, `Session::handle_save_state`), so a save never silences one.
@@ -155,7 +165,11 @@ pub(crate) trait ServedPlugin: Render {
     /// # Errors
     ///
     /// The plugin cannot save, or is lost.
-    fn save_state_live(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>>;
+    fn save_state_live(
+        &mut self,
+        main: MainThreadMarker,
+        state_use: StateUse,
+    ) -> PluginResult<Vec<u8>>;
     /// Restores a saved state.
     ///
     /// # Errors
@@ -163,7 +177,7 @@ pub(crate) trait ServedPlugin: Render {
     /// The plugin rejects the bytes, or is lost.
     fn load_state(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         data: &[u8],
         state_use: StateUse,
     ) -> PluginResult<()>;
@@ -233,7 +247,7 @@ impl<F: ServerSide> Served<F> {
     ///
     /// [`PluginError::Load`], with how far the load got.
     pub(crate) fn open(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,
@@ -250,7 +264,7 @@ impl<F: ServerSide> Served<F> {
     /// As those.
     #[allow(clippy::too_many_arguments)] // one load's parameters, as the wire carries them
     pub(crate) fn load(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,
@@ -294,7 +308,7 @@ impl<F: ServerSide> Served<F> {
     /// [`PluginError::Load`] at [`LoadStage::Activation`] when no activation
     /// took.
     pub(crate) fn activate(
-        main: &MainThread,
+        main: MainThreadMarker,
         loaded: F,
         sample_rate: SampleRate,
         block_size: usize,
@@ -374,7 +388,7 @@ impl<F: ServerSide> Served<F> {
 
     /// Steps one event through the core, applying its effects. Returns the
     /// reason of a refusal it told, if any.
-    fn drive(&mut self, main: &MainThread, event: Event) -> Option<PluginError> {
+    fn drive(&mut self, main: MainThreadMarker, event: Event) -> Option<PluginError> {
         let mut told = Vec::new();
         // Taken, not cloned: a clone copies the layout's `Vec`s. The state put
         // in its place is built without allocating and is replaced below.
@@ -395,7 +409,7 @@ impl<F: ServerSide> Served<F> {
     /// to come home from the render thread, ticks until it has: the render
     /// thread returns it at its next poll. Bounded: a render thread stuck
     /// inside the plugin leaves the plan parked and the refusal says so.
-    fn drive_settled(&mut self, main: &MainThread, event: Event) -> Option<PluginError> {
+    fn drive_settled(&mut self, main: MainThreadMarker, event: Event) -> Option<PluginError> {
         let mut refusal = self.drive(main, event);
         let giving_up = Instant::now() + HOME_PATIENCE;
         while self.state.is_parked() {
@@ -416,7 +430,7 @@ impl<F: ServerSide> Served<F> {
     /// Brings the Processor home from the render thread without deactivating:
     /// `true` once it is held here (also when it never left), `false` when the
     /// render thread did not return it in time.
-    fn bring_home(&mut self, main: &MainThread) -> bool {
+    fn bring_home(&mut self, main: MainThreadMarker) -> bool {
         if self.lifecycle.processor().is_some() {
             return true;
         }
@@ -444,7 +458,7 @@ impl<F: ServerSide> Served<F> {
 
     /// Turns a notice into what the host hears, keeping the cached wiring in
     /// step. Returns the reason when the notice is a refusal.
-    fn absorb(&mut self, main: &MainThread, notice: Notice) -> Option<PluginError> {
+    fn absorb(&mut self, main: MainThreadMarker, notice: Notice) -> Option<PluginError> {
         match notice {
             Notice::LatencyChanged(samples) => {
                 self.wiring.latency_samples = samples;
@@ -504,7 +518,7 @@ impl<F: ServerSide> Served<F> {
     }
 
     /// Reads the plugin's wiring again into what the host is given.
-    fn refresh_wiring(&mut self, main: &MainThread) {
+    fn refresh_wiring(&mut self, main: MainThreadMarker) {
         if let Some(control) = self.lifecycle.control() {
             self.descriptor = control.info().clone();
             self.wiring = control.wiring(main);
@@ -528,7 +542,7 @@ impl<F: ServerSide> Served<F> {
     /// nothing was asked and the core has nothing pending (the idle pass every
     /// dispatch takes) does not enter the lifecycle and allocates nothing; a
     /// pass with work allocates, as a rate change does.
-    fn serve(&mut self, main: &MainThread) {
+    fn serve(&mut self, main: MainThreadMarker) {
         // What a pass does may itself make the plugin ask for more (an
         // activation that raises an I/O change), so the word is taken again
         // until a pass finds it empty. Bounded, so a plugin that asks from
@@ -574,7 +588,7 @@ impl<F: ServerSide> Served<F> {
     /// the plugin made them: a gesture's `Begin`, its changes and its `End`
     /// reach the host in that order, since the wire and the host's inbox keep
     /// the order they were queued in.
-    fn forward_edits(&mut self, main: &MainThread) {
+    fn forward_edits(&mut self, main: MainThreadMarker) {
         let mut edits = std::mem::take(&mut self.edits);
         edits.clear();
         F::take_edits(&mut self.lifecycle, main, &mut edits);
@@ -592,7 +606,7 @@ impl<F: ServerSide> Served<F> {
     /// rollback took, or `Ok` when `wanted` did.
     fn reconfigure(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         previous: Prepare,
         wanted: Prepare,
     ) -> Result<(), (PluginError, bool)> {
@@ -699,7 +713,7 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
         self.lifecycle.control()
     }
 
-    fn poll(&mut self, main: &MainThread) -> Vec<BridgeMessage> {
+    fn poll(&mut self, main: MainThreadMarker) -> Vec<BridgeMessage> {
         self.serve(main);
         self.forward_edits(main);
         if self.process_requested.swap(false, Ordering::Acquire) {
@@ -708,7 +722,7 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
         std::mem::take(&mut self.events)
     }
 
-    fn quiesce(&mut self, main: &MainThread) -> bool {
+    fn quiesce(&mut self, main: MainThreadMarker) -> bool {
         self.drive_settled(main, Event::Op(HostOp::Deactivate));
         !matches!(
             self.lifecycle,
@@ -728,7 +742,7 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
     /// clock follows the rate the host asked for.) When the rollback is refused
     /// too the plugin is left loaded and silent, and the host is told with an
     /// I/O change; the next rate revives it.
-    fn set_sample_rate(&mut self, main: &MainThread, rate: SampleRate) -> PluginResult<()> {
+    fn set_sample_rate(&mut self, main: MainThreadMarker, rate: SampleRate) -> PluginResult<()> {
         let Some(previous) = self.state.prepare() else {
             return Err(PluginError::Other(
                 "the plugin has no configuration to change".to_string(),
@@ -760,7 +774,7 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
     /// running in; an `Unsupported` one is left running and answers `false`.
     /// The mode is kept for every later activation (a restart, a rate change)
     /// either way.
-    fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
+    fn set_render_mode(&mut self, main: MainThreadMarker, mode: RenderMode) -> bool {
         let Some(previous) = self.state.prepare() else {
             return false;
         };
@@ -788,32 +802,32 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
         }
     }
 
-    fn parameter_count(&self, main: &MainThread) -> usize {
+    fn parameter_count(&self, main: MainThreadMarker) -> usize {
         self.lifecycle
             .control_ref()
             .map_or(0, |control| control.parameter_count(main))
     }
 
-    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
+    fn parameters(&self, main: MainThreadMarker) -> Vec<ParameterInfo> {
         self.lifecycle
             .control_ref()
             .map(|control| control.parameters(main))
             .unwrap_or_default()
     }
 
-    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
+    fn parameter(&self, main: MainThreadMarker, id: ParamId) -> Option<Normalized> {
         self.lifecycle.control_ref()?.parameter(main, id)
     }
 
     /// Normalized `0..=1`. On an active plugin the write is queued to the
     /// Processor and reaches the plugin at the head of the next block.
-    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, main: MainThreadMarker, id: ParamId, value: Normalized) {
         if let Some(control) = self.lifecycle.control() {
             control.set_parameter(main, id, value);
         }
     }
 
-    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
+    fn set_automation_state(&mut self, main: MainThreadMarker, mode: AutomationMode) {
         if let Some(control) = self.lifecycle.control() {
             control.set_automation_state(main, mode);
         }
@@ -821,13 +835,18 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
 
     /// The wire has no reply to this, so what the plugin's `Control` answers
     /// is not sent back; the host's own queue already said whether it went.
-    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) {
+    fn set_track_info(&mut self, main: MainThreadMarker, info: &TrackInfo) {
         if let Some(control) = self.lifecycle.control() {
             let _ = control.set_track_info(main, info);
         }
     }
 
-    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
+    fn parameter_plain(
+        &self,
+        main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<f64> {
         self.lifecycle
             .control_ref()?
             .parameter_plain(main, id, value)
@@ -835,7 +854,7 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
 
     fn parameter_normalized(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         id: ParamId,
         plain: f64,
     ) -> Option<Normalized> {
@@ -844,7 +863,12 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
             .parameter_normalized(main, id, plain)
     }
 
-    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+    fn parameter_text(
+        &self,
+        main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<String> {
         self.lifecycle
             .control_ref()?
             .parameter_text(main, id, value)
@@ -852,7 +876,7 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
 
     fn parameter_value_from_text(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         id: ParamId,
         text: &str,
     ) -> Option<Normalized> {
@@ -861,24 +885,24 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
             .parameter_value_from_text(main, id, text)
     }
 
-    fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
+    fn presets(&mut self, main: MainThreadMarker) -> Vec<Preset> {
         self.lifecycle
             .control()
             .map(|control| control.presets(main))
             .unwrap_or_default()
     }
 
-    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
+    fn load_preset(&mut self, main: MainThreadMarker, id: &PresetId) -> bool {
         self.lifecycle
             .control()
             .is_some_and(|control| control.load_preset(main, id))
     }
 
-    fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
+    fn current_preset(&mut self, main: MainThreadMarker) -> Option<PresetId> {
         self.lifecycle.control()?.current_preset(main)
     }
 
-    fn save_state(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, main: MainThreadMarker, state_use: StateUse) -> PluginResult<Vec<u8>> {
         // A write waits in the Processor's ring until a block drains it, so a
         // save right after one would read the old value. Only the Processor
         // can deliver it, so it is brought home for the settle (the render
@@ -901,7 +925,11 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
         saved
     }
 
-    fn save_state_live(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>> {
+    fn save_state_live(
+        &mut self,
+        main: MainThreadMarker,
+        state_use: StateUse,
+    ) -> PluginResult<Vec<u8>> {
         self.lifecycle
             .control()
             .ok_or_else(lost)?
@@ -910,7 +938,7 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
 
     fn load_state(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         data: &[u8],
         state_use: StateUse,
     ) -> PluginResult<()> {

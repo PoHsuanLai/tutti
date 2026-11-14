@@ -43,14 +43,14 @@ fn served_a_request_the_editor_instance_makes_reaches_subscribers_in_order() {
     });
     loaded
         .handle
-        .open_editor(&main, StandInWindow.handle(), ContentScale::IDENTITY)
+        .open_editor(main, StandInWindow.handle(), ContentScale::IDENTITY)
         .expect("the editor instance opens");
 
     for cmd in [HOSTEXT_CMD_START, HOSTEXT_CMD_STOP] {
         probe.hostext_command_via_callback(cmd, 0, 0);
         // The first idle serves the callback, the second takes what it raised.
-        loaded.handle.editor_idle(&main);
-        loaded.handle.editor_idle(&main);
+        loaded.handle.editor_idle(main);
+        loaded.handle.editor_idle(main);
     }
 
     assert_eq!(
@@ -76,7 +76,7 @@ fn in_process_a_request_the_plugin_makes_reaches_subscribers() {
     );
     let main = main_thread();
     let (_client, handle) = tutti_plugin_host::load_client::<ClapLoaded>(
-        &main,
+        main,
         &tutti_fixtures::detached_work(),
         tutti_fixtures::clap_probe(),
         &Load::new(),
@@ -95,8 +95,8 @@ fn in_process_a_request_the_plugin_makes_reaches_subscribers() {
 
     probe.hostext_command_via_callback(HOSTEXT_CMD_START, 0, 0);
     // The first pass serves the callback, the second takes what it raised.
-    handle.editor_idle(&main);
-    handle.editor_idle(&main);
+    handle.editor_idle(main);
+    handle.editor_idle(main);
 
     assert_eq!(*heard.lock().expect("the list"), [TransportRequest::Start]);
 }

@@ -2,7 +2,7 @@
 
 use super::*;
 use dpi::Size;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 
 impl Vst3Loaded {
     /// Creates the plugin editor, attach it to `parent`, and return its initial
@@ -25,7 +25,7 @@ impl Vst3Loaded {
     /// `IPlugView::attached` fails.
     pub(crate) fn embed_editor(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         parent: WindowHandle,
         scale: ContentScale,
     ) -> Result<Size> {
@@ -59,7 +59,7 @@ impl Vst3Loaded {
     ///
     /// Returns the all-`false` default when no editor is open — a closed editor
     /// reports no capabilities rather than the ones it had while open.
-    pub fn editor_capabilities(&self, main: &MainThread) -> EditorCapabilities {
+    pub fn editor_capabilities(&self, main: MainThreadMarker) -> EditorCapabilities {
         self.plugin.editor_capabilities(main)
     }
 
@@ -77,7 +77,7 @@ impl Vst3Loaded {
     /// The latest `IPlugFrame::resizeView` request since the last poll, if
     /// any. Earlier requests in between are superseded, not queued: only the
     /// size the plugin wants now matters.
-    pub fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<Size> {
+    pub fn poll_editor_resize_request(&mut self, main: MainThreadMarker) -> Option<Size> {
         self.plugin.take_editor_resize_request(main)
     }
 
@@ -88,7 +88,7 @@ impl Vst3Loaded {
     /// # Errors
     ///
     /// [`Vst3Error::EditorError`] if no editor is open.
-    pub fn rescale_editor(&mut self, main: &MainThread, scale: ContentScale) -> Result<bool> {
+    pub fn rescale_editor(&mut self, main: MainThreadMarker, scale: ContentScale) -> Result<bool> {
         self.plugin
             .set_editor_scale(main, scale)
             .map_err(|_| Vst3Error::EditorError("editor not open".to_string()))
@@ -104,7 +104,11 @@ impl Vst3Loaded {
     /// Exposed for the conformance suite, which uses it to check that a size
     /// the host granted is genuinely one the plugin accepts.
     #[cfg(feature = "conformance")]
-    pub fn check_editor_size_constraint(&self, main: &MainThread, requested: Size) -> Option<Size> {
+    pub fn check_editor_size_constraint(
+        &self,
+        main: MainThreadMarker,
+        requested: Size,
+    ) -> Option<Size> {
         self.plugin.editor_size_constraint(main, requested)
     }
 
@@ -115,7 +119,7 @@ impl Vst3Loaded {
     /// modifier-qualified scroll have nowhere to go — a caller with either must
     /// handle it host-side. Main/UI thread.
     #[must_use]
-    pub fn send_wheel(&self, main: &MainThread, distance: f32) -> bool {
+    pub fn send_wheel(&self, main: MainThreadMarker, distance: f32) -> bool {
         self.plugin.editor_wheel(main, distance)
     }
 
@@ -125,7 +129,7 @@ impl Vst3Loaded {
     /// handling; one that never hears it may ignore keys the host forwards.
     /// A notification, not a request — there is no consumed/refused answer.
     /// No-op if no editor is open. Main/UI thread.
-    pub fn set_editor_focus(&self, main: &MainThread, focused: bool) {
+    pub fn set_editor_focus(&self, main: MainThreadMarker, focused: bool) {
         self.plugin.set_editor_focus(main, focused);
     }
 
@@ -139,7 +143,7 @@ impl Vst3Loaded {
     ///
     /// Returns [`Vst3Error::EditorError`] if no editor is open, or
     /// [`Vst3Error::PluginError`] if the view rejects `onSize`.
-    pub fn resize_editor(&mut self, main: &MainThread, requested: Size) -> Result<Size> {
+    pub fn resize_editor(&mut self, main: MainThreadMarker, requested: Size) -> Result<Size> {
         if !self.plugin.editor_open() {
             return Err(Vst3Error::EditorError("editor not open".to_string()));
         }

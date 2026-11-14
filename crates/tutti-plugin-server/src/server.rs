@@ -9,7 +9,7 @@ use crate::render::{RenderSide, RenderThread};
 use crate::session::{Reaction, Session};
 use crate::transport::{Transport, TransportListener};
 use tutti_plugin_ipc::{BridgeConfig, BridgeMessage, PROTOCOL_VERSION};
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 use tutti_plugin_types::{BridgeError, BridgeResult};
 
 /// Ask the OS for the highest priority it grants this thread, now that it is
@@ -56,7 +56,7 @@ pub struct PluginServer {
     render: Option<RenderSide>,
     /// The thread that built the server: the one the plugin's main-thread
     /// calls run on, claimed once at startup.
-    main: MainThread,
+    main: MainThreadMarker,
 }
 
 impl std::fmt::Debug for PluginServer {
@@ -82,7 +82,7 @@ impl PluginServer {
         // recorded here, and recording it later would sample a reaper instead
         // of the real spawner. See `main_loop::record_parent_pid`.
         crate::main_loop::record_parent_pid();
-        let main = MainThread::new().ok_or_else(|| {
+        let main = MainThreadMarker::new().ok_or_else(|| {
             BridgeError::ProtocolError(
                 "the plugin server must be built on the process's main thread".into(),
             )
@@ -156,7 +156,7 @@ impl PluginServer {
         // The plugin goes home before the render thread stops: its Processor
         // is returned by that thread's poll, and the plugin is destroyed only
         // once it has it back.
-        self.session.drop_plugin(&self.main);
+        self.session.drop_plugin(self.main);
         drop(render.stop());
         served
     }
@@ -169,7 +169,7 @@ impl PluginServer {
             };
             // A load says it is restoring a state before it does (the host's wait
             // changes with it); the transport is the interim sink.
-            let reaction = self.session.handle_with(&self.main, msg, &mut |m| {
+            let reaction = self.session.handle_with(self.main, msg, &mut |m| {
                 let _ = transport.send(&m);
             })?;
             match reaction {
@@ -200,7 +200,7 @@ impl PluginServer {
         render: &RenderThread,
     ) -> BridgeResult<()> {
         let main = self.main;
-        crate::main_loop::serve(&mut self.session, transport, &main, render)
+        crate::main_loop::serve(&mut self.session, transport, main, render)
     }
 }
 

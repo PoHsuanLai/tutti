@@ -86,7 +86,7 @@ impl Probe {
         // Bare dylib: pass it as both bundle and library so the host dlopens it
         // directly, no `.clap` bundle structure needed.
         ClapLoaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             path,
             LoadOptions::new().library(path),
@@ -230,12 +230,12 @@ fn host_enumerates_parameters_with_plugin_ids_in_index_order() {
     let loaded = probe.load();
 
     assert_eq!(
-        loaded.parameter_count(&main_thread()),
+        loaded.parameter_count(main_thread()),
         probe_params().len(),
         "host must report the plugin's parameter count"
     );
 
-    let listed = loaded.parameter_list(&main_thread());
+    let listed = loaded.parameter_list(main_thread());
     let got_ids: Vec<ParamId> = listed.iter().map(|p| p.id()).collect();
     let want_ids: Vec<ParamId> = probe_params().iter().map(|p| p.id.into()).collect();
     assert_eq!(
@@ -252,7 +252,7 @@ fn host_enumerates_parameters_with_plugin_ids_in_index_order() {
 fn host_projects_parameter_metadata_exactly() {
     let probe = Probe::acquire();
     let loaded = probe.load();
-    let listed = loaded.parameter_list(&main_thread());
+    let listed = loaded.parameter_list(main_thread());
 
     for (i, want) in probe_params().iter().enumerate() {
         let got = &listed[i];
@@ -297,7 +297,7 @@ fn host_projects_parameter_metadata_exactly() {
 fn host_derives_step_count_from_the_stepped_flag() {
     let probe = Probe::acquire();
     let loaded = probe.load();
-    let listed = loaded.parameter_list(&main_thread());
+    let listed = loaded.parameter_list(main_thread());
 
     // `CLAP_PARAM_IS_STEPPED` is bit 0.
     const STEPPED: u32 = 1 << 0;
@@ -347,7 +347,7 @@ fn host_projects_parameter_flags() {
     let probe = Probe::acquire();
     let loaded = probe.load();
 
-    for p in loaded.parameter_list(&main_thread()) {
+    for p in loaded.parameter_list(main_thread()) {
         let declared = probe_params()
             .iter()
             .find(|d| d.id == p.id().get())
@@ -405,7 +405,7 @@ fn host_reads_parameter_values_by_id_not_index() {
 
     for want in probe_params() {
         assert_eq!(
-            loaded.plain_value(&main_thread(), want.id),
+            loaded.plain_value(main_thread(), want.id),
             Some(want.default),
             "host must read param id {} by its id",
             want.id
@@ -416,7 +416,7 @@ fn host_reads_parameter_values_by_id_not_index() {
     // rejected — that is what makes the assertion above load-bearing.
     for index in 0..probe_params().len() as u32 {
         assert_eq!(
-            loaded.plain_value(&main_thread(), index),
+            loaded.plain_value(main_thread(), index),
             None,
             "index {index} is not a param id in this plugin; a host that reads \
              it as one is confusing index with id"
@@ -439,7 +439,7 @@ fn parameter_range_is_keyed_by_id_and_refuses_unknown_ids() {
 
     for want in probe_params() {
         assert_eq!(
-            loaded.parameter_range(&main_thread(), want.id),
+            loaded.parameter_range(main_thread(), want.id),
             Some((want.min, want.max)),
             "range for param id {} must be the plugin's declared bounds",
             want.id
@@ -450,7 +450,7 @@ fn parameter_range_is_keyed_by_id_and_refuses_unknown_ids() {
     // id, so answering for one would mean a host had confused the two.
     for index in 0..probe_params().len() as u32 {
         assert_eq!(
-            loaded.parameter_range(&main_thread(), index),
+            loaded.parameter_range(main_thread(), index),
             None,
             "index {index} is not a param id in this plugin"
         );
@@ -471,7 +471,7 @@ fn host_sets_parameter_through_flush_on_an_inactive_instance() {
         "the test value must actually change it"
     );
 
-    loaded.set_plain_value(&main_thread(), p.id, new_value);
+    loaded.set_plain_value(main_thread(), p.id, new_value);
 
     // Both oracles: the plugin's own table, and the host's read-back.
     assert_eq!(
@@ -480,7 +480,7 @@ fn host_sets_parameter_through_flush_on_an_inactive_instance() {
         "the change must land in the plugin's value table"
     );
     assert_eq!(
-        loaded.plain_value(&main_thread(), p.id),
+        loaded.plain_value(main_thread(), p.id),
         Some(new_value),
         "the host must read back what it set"
     );
@@ -510,7 +510,7 @@ fn set_parameter_emits_one_param_value_event_with_id_and_value_intact() {
     let mut loaded = probe.load();
     let p = param(1);
 
-    loaded.set_plain_value(&main_thread(), p.id, -3.25);
+    loaded.set_plain_value(main_thread(), p.id, -3.25);
 
     let cap = probe.capture();
     assert_eq!(cap.flush_calls, 1, "set_parameter must flush exactly once");
@@ -652,7 +652,7 @@ fn a_stepped_parameter_set_from_the_control_thread_reaches_that_position() {
     for k in 0..=22u32 {
         param_reset();
         let n = Normalized::new(f64::from(k) / 22.0).expect("on 0..=1");
-        Control::set_parameter(&mut loaded, &main_thread(), mode.id.into(), n);
+        Control::set_parameter(&mut loaded, main_thread(), mode.id.into(), n);
         let cap = probe.capture();
         assert_eq!(cap.flush_event_count, 1, "position {k}");
         assert_eq!(
@@ -716,10 +716,10 @@ fn set_parameter_does_not_write_a_read_only_parameter() {
     set_readonly_param(param(0).id);
     let n = Normalized::new(0.5).expect("on 0..=1");
 
-    Control::set_parameter(&mut loaded, &main_thread(), param(0).id.into(), n);
+    Control::set_parameter(&mut loaded, main_thread(), param(0).id.into(), n);
     assert_eq!(probe.capture().flush_event_count, 0, "a read-only value");
 
-    Control::set_parameter(&mut loaded, &main_thread(), param(1).id.into(), n);
+    Control::set_parameter(&mut loaded, main_thread(), param(1).id.into(), n);
     assert_eq!(probe.capture().flush_event_count, 1, "a writable one");
     set_readonly_param(u32::MAX);
 }
@@ -744,7 +744,7 @@ fn host_decodes_plugin_emitted_param_values() {
 
     // The probe drains its output queue in `params.flush`, which is where
     // `flush_params` will pick it up.
-    let out = inst.loaded_mut().flush_params(&main_thread(), Vec::new());
+    let out = inst.loaded_mut().flush_params(main_thread(), Vec::new());
 
     assert_eq!(out.len(), 1, "the plugin's one output event must survive");
     let hdr = out[0].header();
@@ -770,7 +770,7 @@ fn host_preserves_gesture_and_modulation_events_from_the_plugin() {
     probe.queue_output(OUT_GESTURE_END, p.id, 0.0);
     probe.queue_output(OUT_PARAM_MOD, p.id, 0.125);
 
-    let out = inst.loaded_mut().flush_params(&main_thread(), Vec::new());
+    let out = inst.loaded_mut().flush_params(main_thread(), Vec::new());
 
     let types: Vec<u16> = out.iter().map(|e| e.header().type_).collect();
     assert_eq!(
@@ -794,7 +794,7 @@ fn host_preserves_gesture_and_modulation_events_from_the_plugin() {
 /// core's requests.
 fn requests(inst: &mut ClapLoaded) -> Vec<Request> {
     let mut out = Vec::new();
-    inst.take_requests(&main_thread(), &mut out);
+    inst.take_requests(main_thread(), &mut out);
     out
 }
 
@@ -812,7 +812,7 @@ fn host_records_a_values_rescan_as_not_needing_deactivation() {
 
     probe.command(PARAM_CMD_RESCAN_VALUES);
     // The probe runs `[main-thread]` host-params calls from `on_main_thread`.
-    inst.loaded_mut().on_main_thread(&main_thread());
+    inst.loaded_mut().on_main_thread(main_thread());
 
     assert_eq!(
         requests(inst.loaded_mut()),
@@ -836,7 +836,7 @@ fn host_records_a_full_rescan_as_needing_deactivation() {
     let _ = requests(inst.loaded_mut());
 
     probe.command(PARAM_CMD_RESCAN_ALL);
-    inst.loaded_mut().on_main_thread(&main_thread());
+    inst.loaded_mut().on_main_thread(main_thread());
 
     assert_eq!(
         requests(inst.loaded_mut()),
@@ -857,7 +857,7 @@ fn a_rescan_raised_while_only_loaded_is_answered_by_the_lifecycle() {
     let _ = requests(&mut loaded);
 
     probe.command(PARAM_CMD_RESCAN_ALL);
-    loaded.on_main_thread(&main_thread());
+    loaded.on_main_thread(main_thread());
     let raised = requests(&mut loaded);
     assert_eq!(raised, [Request::RescanParams(RescanScope::All)]);
 
@@ -884,7 +884,7 @@ fn taking_a_rescan_consumes_it() {
     let _ = requests(inst.loaded_mut());
 
     probe.command(PARAM_CMD_RESCAN_VALUES);
-    inst.loaded_mut().on_main_thread(&main_thread());
+    inst.loaded_mut().on_main_thread(main_thread());
     assert_eq!(requests(inst.loaded_mut()).len(), 1);
 
     let second = requests(inst.loaded_mut());
@@ -905,7 +905,7 @@ fn request_flush_round_trips_into_a_real_out_of_band_flush() {
     let p = param(1);
 
     probe.command(PARAM_CMD_REQUEST_FLUSH);
-    inst.loaded_mut().on_main_thread(&main_thread());
+    inst.loaded_mut().on_main_thread(main_thread());
 
     assert!(
         inst.loaded().take_params_flush_requested(),
@@ -918,7 +918,7 @@ fn request_flush_round_trips_into_a_real_out_of_band_flush() {
 
     // Honour the request: deliver a value with no `process` block in sight.
     let before = probe.capture().flush_calls;
-    inst.loaded_mut().set_plain_value(&main_thread(), p.id, 6.5);
+    inst.loaded_mut().set_plain_value(main_thread(), p.id, 6.5);
     let after = probe.capture();
 
     assert_eq!(
@@ -950,9 +950,9 @@ fn host_round_trips_plugin_state_through_its_streams() {
     let mut loaded = probe.load();
     let p = param(0);
 
-    loaded.set_plain_value(&main_thread(), p.id, 999.0);
+    loaded.set_plain_value(main_thread(), p.id, 999.0);
     let saved = loaded
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("state save should succeed");
 
     // The payload must be the plugin's, not an empty or truncated stand-in.
@@ -977,15 +977,11 @@ fn host_round_trips_plugin_state_through_its_streams() {
     );
 
     // Move the value away, then restore.
-    loaded.set_plain_value(&main_thread(), p.id, 101.0);
+    loaded.set_plain_value(main_thread(), p.id, 101.0);
     assert_eq!(probe.peek(p.id), Some(101.0));
 
     loaded
-        .load_state(
-            &main_thread(),
-            &saved,
-            tutti_plugin_types::StateUse::Project,
-        )
+        .load_state(main_thread(), &saved, tutti_plugin_types::StateUse::Project)
         .expect("state load should succeed");
     assert_eq!(
         probe.peek(p.id),
@@ -1009,22 +1005,18 @@ fn state_load_restores_every_parameter_to_its_own_value() {
         .map(|(i, p)| (p.id, p.min + (i as f64 + 1.0)))
         .collect();
     for &(id, v) in &marks {
-        loaded.set_plain_value(&main_thread(), id, v);
+        loaded.set_plain_value(main_thread(), id, v);
     }
     let saved = loaded
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("save");
 
     // Scramble them all, then restore.
     for &(id, _) in &marks {
-        loaded.set_plain_value(&main_thread(), id, 0.0);
+        loaded.set_plain_value(main_thread(), id, 0.0);
     }
     loaded
-        .load_state(
-            &main_thread(),
-            &saved,
-            tutti_plugin_types::StateUse::Project,
-        )
+        .load_state(main_thread(), &saved, tutti_plugin_types::StateUse::Project)
         .expect("load");
 
     for &(id, v) in &marks {
@@ -1045,15 +1037,11 @@ fn host_input_stream_delivers_the_whole_payload_then_clean_eof() {
     let probe = Probe::acquire();
     let mut loaded = probe.load();
     let saved = loaded
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("save");
 
     loaded
-        .load_state(
-            &main_thread(),
-            &saved,
-            tutti_plugin_types::StateUse::Project,
-        )
+        .load_state(main_thread(), &saved, tutti_plugin_types::StateUse::Project)
         .expect("load");
 
     let cap = probe.capture();
@@ -1084,17 +1072,13 @@ fn host_reports_a_load_failure_when_the_payload_is_corrupt() {
     let probe = Probe::acquire();
     let mut loaded = probe.load();
     let mut saved = loaded
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("save");
 
     // Flip one byte of the magic.
     saved[0] ^= 0xFF;
 
-    let result = loaded.load_state(
-        &main_thread(),
-        &saved,
-        tutti_plugin_types::StateUse::Project,
-    );
+    let result = loaded.load_state(main_thread(), &saved, tutti_plugin_types::StateUse::Project);
     assert!(
         result.is_err(),
         "a payload the plugin rejects must surface as an error, not a silent \
@@ -1110,7 +1094,7 @@ fn empty_state_is_a_no_op() {
     let mut loaded = probe.load();
 
     loaded
-        .load_state(&main_thread(), &[], tutti_plugin_types::StateUse::Project)
+        .load_state(main_thread(), &[], tutti_plugin_types::StateUse::Project)
         .expect("empty state is not an error");
 
     assert_eq!(
@@ -1148,7 +1132,7 @@ fn host_passes_the_state_context_through_to_the_plugin() {
     ];
     for (ctx, wire) in cases {
         let saved = loaded
-            .state_with_context(&main_thread(), ctx)
+            .state_with_context(main_thread(), ctx)
             .unwrap_or_else(|e| panic!("save for {ctx:?} should succeed: {e}"));
         assert_eq!(
             probe.capture().last_save_context,
@@ -1173,14 +1157,14 @@ fn host_loads_state_with_the_requested_context() {
     let mut loaded = probe.load();
     let p = param(2);
 
-    loaded.set_plain_value(&main_thread(), p.id, 3.0);
+    loaded.set_plain_value(main_thread(), p.id, 3.0);
     let saved = loaded
-        .state_with_context(&main_thread(), StateContext::ForProject)
+        .state_with_context(main_thread(), StateContext::ForProject)
         .expect("save");
 
-    loaded.set_plain_value(&main_thread(), p.id, 0.0);
+    loaded.set_plain_value(main_thread(), p.id, 0.0);
     loaded
-        .set_state_with_context(&main_thread(), &saved, StateContext::ForProject)
+        .set_state_with_context(main_thread(), &saved, StateContext::ForProject)
         .expect("load");
 
     assert_eq!(
@@ -1221,7 +1205,7 @@ fn the_automation_mode_reaches_every_automatable_parameter_as_its_indication() {
     ];
     for (mode, raw) in cases {
         param_reset();
-        Control::set_automation_state(&mut loaded, &main_thread(), mode);
+        Control::set_automation_state(&mut loaded, main_thread(), mode);
         let cap = probe.capture();
         let got: Vec<(u32, u32)> = cap.indications[..cap.indication_calls as usize]
             .iter()
@@ -1246,7 +1230,7 @@ fn the_shared_layer_saves_a_project_and_duplicates_in_their_own_contexts() {
 
     let project = Control::save_state(
         &mut loaded,
-        &main_thread(),
+        main_thread(),
         tutti_plugin_types::StateUse::Project,
     )
     .expect("project save");
@@ -1257,7 +1241,7 @@ fn the_shared_layer_saves_a_project_and_duplicates_in_their_own_contexts() {
     );
     assert_eq!(project[STATE_MAGIC.len()], 3);
 
-    let copy = Control::save_state(&mut loaded, &main_thread(), StateUse::Duplicate)
+    let copy = Control::save_state(&mut loaded, main_thread(), StateUse::Duplicate)
         .expect("duplicate save");
     assert_eq!(
         probe.capture().last_save_context,
@@ -1268,7 +1252,7 @@ fn the_shared_layer_saves_a_project_and_duplicates_in_their_own_contexts() {
 
     Control::load_state(
         &mut loaded,
-        &main_thread(),
+        main_thread(),
         &project,
         tutti_plugin_types::StateUse::Project,
     )
@@ -1278,7 +1262,7 @@ fn the_shared_layer_saves_a_project_and_duplicates_in_their_own_contexts() {
         3,
         "load_state is FOR_PROJECT"
     );
-    Control::load_state(&mut loaded, &main_thread(), &copy, StateUse::Duplicate)
+    Control::load_state(&mut loaded, main_thread(), &copy, StateUse::Duplicate)
         .expect("duplicate load");
     assert_eq!(
         probe.capture().last_load_context,

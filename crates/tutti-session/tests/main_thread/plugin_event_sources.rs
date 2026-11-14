@@ -32,7 +32,7 @@ fn probe() -> &'static ClapProbe {
     })
 }
 
-fn main_thread() -> tutti_plugin_types::MainThread {
+fn main_thread() -> tutti_plugin_types::MainThreadMarker {
     tutti_fixtures::main_thread()
 }
 
@@ -52,7 +52,7 @@ fn session_with_open_editor(command: u32) -> Session {
         .with_hosting(Hosting::InProcess);
     let load = s.plugin_load(PluginLoadRequest::new(plugin));
     let node = s
-        .add_plugin(&main_thread(), load.run())
+        .add_plugin(main_thread(), load.run())
         .expect("the reference plugin loads in this process");
     s.main(main_thread())
         .plugin(node)

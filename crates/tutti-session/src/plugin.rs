@@ -110,7 +110,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
-use tutti_plugin::MainThread;
+use tutti_plugin::MainThreadMarker;
 
 use dpi::Size;
 use tutti_graph::NodeKey;
@@ -295,7 +295,7 @@ impl PluginLoad {
 
     /// [`run`](Self::run)'s open, on this thread. `main` is the proof that it is
     /// the main thread, which a plugin hosted in process needs.
-    fn open(self, main: Option<&MainThread>) -> Open {
+    fn open(self, main: Option<MainThreadMarker>) -> Open {
         // The state goes in **before the plugin is activated** (`open_with_state`):
         // a plugin may take its mode from the state at activation. A refusal
         // does not abort the load: a plugin at its defaults beats no plugin. But
@@ -732,7 +732,7 @@ impl Graveyard {
     }
 
     /// Drops everything in the yard, on the main thread. Returns how many.
-    pub(crate) fn exhume(&mut self, main: &MainThread) -> usize {
+    pub(crate) fn exhume(&mut self, main: MainThreadMarker) -> usize {
         for handle in self.editors.drain(..) {
             handle.close_editor(main);
         }
@@ -1239,7 +1239,7 @@ impl<'a> StateView<'a> {
     /// [`StateError::OtherPlugin`] when `state` was saved from another plugin
     /// (nothing is sent to the plugin); otherwise the plugin's own
     /// [`StateError`].
-    pub fn restore(&self, main: &MainThread, state: &PluginState) -> Result<(), StateError> {
+    pub fn restore(&self, main: MainThreadMarker, state: &PluginState) -> Result<(), StateError> {
         state.check_for(&self.hosted.plugin)?;
         self.hosted.handle.load_state(main, state.bytes())?;
         self.hosted.refresh_values();
@@ -1284,7 +1284,7 @@ impl Session {
     /// As [`add_plugin`](Self::add_plugin).
     pub fn add_plugin_blocking(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         request: PluginLoadRequest,
     ) -> Result<Key<PluginNode>, BridgeError> {
         let done = self.plugin_load(request).run();
@@ -1309,7 +1309,7 @@ impl Session {
     /// Why the load failed.
     pub fn add_plugin(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         loaded: PluginLoaded,
     ) -> Result<Key<PluginNode>, BridgeError> {
         let requested = loaded.plugin;
@@ -2576,7 +2576,7 @@ mod tests {
                 !fake.calls().contains(&Call::CloseEditor),
                 "not before the main thread"
             );
-            yard.exhume(&main);
+            yard.exhume(main);
             assert_eq!(
                 fake.calls().contains(&Call::CloseEditor),
                 open,
@@ -2835,7 +2835,7 @@ mod tests {
     #[cfg(feature = "clap")]
     #[test]
     fn a_reload_that_resolves_in_process_is_refused_unopened() {
-        assert!(MainThread::new().is_none(), "nobody claimed");
+        assert!(MainThreadMarker::new().is_none(), "nobody claimed");
         let mut rig = rig(None);
         rig.recovering_in_process();
         let job = rig.plugins_at(0).pop().expect("the reload is submitted");
@@ -2856,7 +2856,7 @@ mod tests {
             ),
             "{cause:?}"
         );
-        assert!(MainThread::new().is_none(), "still nobody claimed");
+        assert!(MainThreadMarker::new().is_none(), "still nobody claimed");
     }
 
     /// **A reload job that outlives its node lands nowhere, silently.** The

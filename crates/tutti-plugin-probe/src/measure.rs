@@ -32,10 +32,10 @@ use std::path::Path;
 
 use tutti_graph::{MAX_NODE_TAIL, Offset, UmpAt};
 use tutti_plugin_types::{
-    AudioBuffer, AudioBufferMut, Controller, InProcess, LatencyVerdict, Load, MainThread, MaxBlock,
-    Measured, NotChecked, PROBE_FLOOR, PluginDescriptor, PluginError, PluginIo, PluginTail,
-    Prepare, ProbeConfig, ProcessContext, ProcessOutput, Processor, StateHash, TailVerdict,
-    Verdict,
+    AudioBuffer, AudioBufferMut, Controller, InProcess, LatencyVerdict, Load, MainThreadMarker,
+    MaxBlock, Measured, NotChecked, PROBE_FLOOR, PluginDescriptor, PluginError, PluginIo,
+    PluginTail, Prepare, ProbeConfig, ProcessContext, ProcessOutput, Processor, StateHash,
+    TailVerdict, Verdict,
 };
 use tutti_types::{Amplitude, Db, SampleRate, Samples, Seconds};
 use tutti_ump::{
@@ -367,7 +367,7 @@ fn judge(
 /// The plugin refused `state`: a measurement of a state it would not take is no
 /// measurement, and the caller asked for that state.
 pub fn measure<L: InProcess>(
-    main: &MainThread,
+    main: MainThreadMarker,
     path: &Path,
     descriptor: &PluginDescriptor,
     state: Option<&[u8]>,

@@ -62,7 +62,7 @@ impl Probe {
 
     fn load(&self) -> Vst2Loaded {
         let loaded = Vst2Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             tutti_fixtures::vst2_probe(),
         )
@@ -74,7 +74,7 @@ impl Probe {
     }
 
     fn activate(&self) -> (Vst2Processor, Vst2Controller) {
-        match self.load().activate(&main_thread(), prepare()) {
+        match self.load().activate(main_thread(), prepare()) {
             Ok(pair) => pair,
             Err(refused) => panic!("the plugin refused: {}", refused.reason),
         }
@@ -197,7 +197,7 @@ fn render_f32(processor: &mut Vst2Processor, ctx: &ProcessContext<'_>) -> Vec<Ve
 }
 
 fn rejoin(processor: Vst2Processor, controller: Vst2Controller) -> Vst2Loaded {
-    match Vst2Loaded::deactivate(&main_thread(), processor, controller) {
+    match Vst2Loaded::deactivate(main_thread(), processor, controller) {
         Ok(loaded) => loaded,
         Err(stuck) => panic!("the halves would not rejoin: {}", stuck.reason),
     }
@@ -227,7 +227,7 @@ fn a_64_bit_activation_is_entered_at_64_and_refuses_a_32_bit_block() {
     let wanted = prepare().with_format(SampleFormat::Float64);
     let (mut processor, controller) = probe
         .load()
-        .activate(&main_thread(), wanted)
+        .activate(main_thread(), wanted)
         .expect("activates");
     assert_eq!(capture().set_precision_value, 1, "told 64-bit");
 
@@ -275,7 +275,7 @@ fn no_prepare_holds_a_block_that_is_none() {
     let loaded = probe.load();
     assert!(MaxBlock::new(Samples(0)).is_none());
     let (processor, controller) = loaded
-        .activate(&main_thread(), prepare())
+        .activate(main_thread(), prepare())
         .expect("a valid rate");
     assert_eq!(capture().resume_count, 1, "the first resume");
     drop(rejoin(processor, controller));
@@ -287,7 +287,7 @@ fn halves_of_two_activations_are_stuck_and_returned() {
     let probe = Probe::acquire();
     let (p1, c1) = probe.activate();
     let (p2, c2) = probe.activate();
-    let stuck = match Vst2Loaded::deactivate(&main_thread(), p1, c2) {
+    let stuck = match Vst2Loaded::deactivate(main_thread(), p1, c2) {
         Ok(_) => panic!("halves of two activations must not rejoin"),
         Err(stuck) => stuck,
     };
@@ -305,9 +305,9 @@ fn a_controller_write_is_direct_and_automation_lands_at_the_block_head() {
     let probe = Probe::acquire();
     let (mut processor, mut controller) = probe.activate();
     let id = ParamId::new(1);
-    controller.set_parameter(&main_thread(), id, Normalized::of(0.5));
+    controller.set_parameter(main_thread(), id, Normalized::of(0.5));
     assert_eq!(
-        Control::parameter(&controller, &main_thread(), id),
+        Control::parameter(&controller, main_thread(), id),
         Some(Normalized::of(0.5))
     );
 
@@ -317,7 +317,7 @@ fn a_controller_write_is_direct_and_automation_lands_at_the_block_head() {
     changes.add_change(ParamId::new(u32::MAX), 0, 0.5);
     render_f32(&mut processor, &ProcessContext::new().params(&changes));
     assert_eq!(
-        Control::parameter(&controller, &main_thread(), id),
+        Control::parameter(&controller, main_thread(), id),
         Some(Normalized::of(0.75))
     );
     drop(rejoin(processor, controller));
@@ -336,7 +336,7 @@ fn automation_is_a_host_write_and_its_echo_is_not_reported() {
     render_f32(&mut processor, &ProcessContext::new().params(&changes));
     set_flag("tutti_vst2_probe_set_echo_set_parameter", false);
     let mut edits = Vec::new();
-    controller.take_reported_edits(&main_thread(), &mut edits);
+    controller.take_reported_edits(main_thread(), &mut edits);
     assert_eq!(edits, Vec::new());
     assert_eq!(controller.loaded().dropped_param_changes(), 0);
     drop(rejoin(processor, controller));
@@ -474,27 +474,22 @@ fn the_controller_serves_the_surface_while_the_processor_renders() {
         }
         for round in 0..40 {
             let saved = controller
-                .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+                .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
                 .expect("saves");
             controller
-                .load_state(
-                    &main_thread(),
-                    &saved,
-                    tutti_plugin_types::StateUse::Project,
-                )
+                .load_state(main_thread(), &saved, tutti_plugin_types::StateUse::Project)
                 .expect("loads");
             controller.set_parameter(
-                &main_thread(),
+                main_thread(),
                 ParamId::new(0),
                 Normalized::clamped(f64::from(round) / 40.0),
             );
-            let _ = controller.parameter(&main_thread(), ParamId::new(0));
-            let _ = controller.wiring(&main_thread());
-            let _ = controller.presets(&main_thread());
-            let _ =
-                controller.load_preset(&main_thread(), &tutti_plugin_types::PresetId::Number(0));
-            let _ = Controller::latency(&controller, &main_thread());
-            let _ = Controller::tail(&controller, &main_thread());
+            let _ = controller.parameter(main_thread(), ParamId::new(0));
+            let _ = controller.wiring(main_thread());
+            let _ = controller.presets(main_thread());
+            let _ = controller.load_preset(main_thread(), &tutti_plugin_types::PresetId::Number(0));
+            let _ = Controller::latency(&controller, main_thread());
+            let _ = Controller::tail(&controller, main_thread());
         }
         // And leave it rendering after the last call.
         let seen = rendered.load(Ordering::Acquire);
@@ -580,13 +575,13 @@ fn the_render_mode_changes_live_without_a_restart() {
     let wanted = prepare().with_mode(RenderMode::Offline);
     let (mut processor, mut controller) = probe
         .load()
-        .activate(&main_thread(), wanted)
+        .activate(main_thread(), wanted)
         .expect("activates");
     render_f32(&mut processor, &ProcessContext::new());
     assert_eq!(capture().process_level, 4, "offline");
     assert!(controller.loaded().is_offline_render());
 
-    assert!(controller.set_render_mode(&main_thread(), RenderMode::Realtime));
+    assert!(controller.set_render_mode(main_thread(), RenderMode::Realtime));
     render_f32(&mut processor, &ProcessContext::new());
     assert_eq!(capture().process_level, 2, "realtime");
     let cap = capture();
@@ -618,7 +613,7 @@ fn the_automation_mode_reaches_the_plugin_as_state_and_time_info_flags() {
         (AutomationMode::ReadWriting, 4, true, true),
         (AutomationMode::Off, 1, false, false),
     ] {
-        controller.set_automation_state(&main_thread(), mode);
+        controller.set_automation_state(main_thread(), mode);
         render_f32(&mut processor, &ctx);
         let cap = capture();
         assert_eq!(cap.automation_state, state, "{mode:?} state");
@@ -689,7 +684,7 @@ fn a_rejoin_keeps_the_transport_the_plugin_reads() {
 
     let loaded = rejoin(processor, controller);
     let (mut processor, controller) = loaded
-        .activate(&main_thread(), prepare())
+        .activate(main_thread(), prepare())
         .expect("activates again");
     render_f32(&mut processor, &ctx(&playing));
     let cap = capture();
@@ -730,7 +725,7 @@ impl Driven {
         let notices = &mut self.notices;
         self.state = self
             .lifecycle
-            .drive(state, event, &mut self.hand, &main_thread(), |n| {
+            .drive(state, event, &mut self.hand, main_thread(), |n| {
                 notices.push(n)
             });
     }
@@ -740,7 +735,7 @@ impl Driven {
     fn pass(&mut self) {
         let mut asked = Vec::new();
         if let Lifecycle::Active { controller, .. } = &mut self.lifecycle {
-            controller.take_requests(&main_thread(), &mut asked);
+            controller.take_requests(main_thread(), &mut asked);
         }
         for request in asked {
             self.drive(Event::Request(request));
@@ -792,7 +787,7 @@ fn an_io_changed_callback_restarts_the_plugin_and_renders_its_new_pins() {
         .lifecycle
         .control()
         .expect("a plugin")
-        .wiring(&main_thread());
+        .wiring(main_thread());
     assert_eq!(
         wiring.inputs[0].channels.count(),
         4,
@@ -838,21 +833,21 @@ fn a_state_carries_the_program_and_a_restore_selects_it_first() {
     const SET_CHUNK: i32 = 24;
     let probe = Probe::acquire();
     let mut live = probe.load();
-    assert!(live.set_program(&main_thread(), 1));
+    assert!(live.set_program(main_thread(), 1));
     let saved = Control::save_state(
         &mut live,
-        &main_thread(),
+        main_thread(),
         tutti_plugin_types::StateUse::Project,
     )
     .expect("saves");
     drop(live);
 
     let mut fresh = probe.load();
-    assert_eq!(fresh.current_program(&main_thread()), 0, "a fresh instance");
+    assert_eq!(fresh.current_program(main_thread()), 0, "a fresh instance");
     clear_trace();
     Control::load_state(
         &mut fresh,
-        &main_thread(),
+        main_thread(),
         &saved,
         tutti_plugin_types::StateUse::Project,
     )
@@ -866,7 +861,7 @@ fn a_state_carries_the_program_and_a_restore_selects_it_first() {
         [(SET_PROGRAM, 1), (SET_CHUNK, 1)],
         "the program, then the program chunk"
     );
-    assert_eq!(fresh.current_program(&main_thread()), 1);
+    assert_eq!(fresh.current_program(main_thread()), 1);
 }
 
 /// **A plugin's `audioMasterSizeWindow` reaches the editor's resize slot**: the host answers 1
@@ -883,12 +878,12 @@ fn a_size_window_request_reaches_the_resize_slot() {
     });
     assert_eq!(answered, 1, "supported");
     assert_eq!(
-        EditorWindow::poll_editor_resize_request(&mut controller, &main_thread())
+        EditorWindow::poll_editor_resize_request(&mut controller, main_thread())
             .map(|s| s.to_physical::<u32>(1.0)),
         Some(dpi::PhysicalSize::new(900, 640))
     );
     assert_eq!(
-        EditorWindow::poll_editor_resize_request(&mut controller, &main_thread()),
+        EditorWindow::poll_editor_resize_request(&mut controller, main_thread()),
         None,
         "taken once"
     );

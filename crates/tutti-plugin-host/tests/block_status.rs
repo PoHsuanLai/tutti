@@ -34,10 +34,10 @@ fn node(ring: usize, tail: usize) -> (PluginNode<FakeLoaded>, FakePlugin) {
     fake.ring_out(ring);
     fake.set_tail(Samples(tail));
     let main = main_thread();
-    let wiring = loaded.wiring(&main);
+    let wiring = loaded.wiring(main);
     let descriptor = loaded.info().clone();
     let prepare = Prepare::new(SR, MaxBlock::new(Samples(BLOCK)).expect("a block"));
-    let Ok((processor, controller)) = loaded.activate(&main, prepare) else {
+    let Ok((processor, controller)) = loaded.activate(main, prepare) else {
         panic!("the fake activates");
     };
     let client = client_over::<FakeLoaded>(

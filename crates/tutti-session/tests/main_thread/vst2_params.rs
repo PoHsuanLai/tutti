@@ -13,7 +13,7 @@ use tutti_types::{ChannelLayout, Db, Hz, SampleRate};
 /// The probe's parameter that is labelled `Hz` and has an integer range.
 const HERTZ: ParamId = ParamId::new(1);
 
-fn main_thread() -> tutti_plugin_types::MainThread {
+fn main_thread() -> tutti_plugin_types::MainThreadMarker {
     tutti_fixtures::main_thread()
 }
 
@@ -43,7 +43,7 @@ fn session_with_probe() -> (Session, NodeKey, libloading::Library) {
         .expect("a detached session builds");
     let node = s
         .add_plugin_blocking(
-            &main_thread(),
+            main_thread(),
             PluginLoadRequest::new(PluginRef::file(probe).expect("a plugin file")),
         )
         .expect("the in-process VST2 loads");

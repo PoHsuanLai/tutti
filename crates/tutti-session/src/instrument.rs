@@ -327,7 +327,7 @@ impl Session {
     #[cfg(feature = "plugin")]
     pub fn instrument_plugin(
         &mut self,
-        main: &tutti_plugin::MainThread,
+        main: tutti_plugin::MainThreadMarker,
         loaded: crate::PluginLoaded,
     ) -> Result<InstrumentHandle, crate::Error> {
         let node = self.add_plugin(main, loaded).map_err(crate::Error::from)?;

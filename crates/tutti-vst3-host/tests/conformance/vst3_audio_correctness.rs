@@ -519,7 +519,7 @@ fn an_io_change_reactivates_the_plugin_rather_than_re_reading_it_live() {
     inst.set_parameter(PARAM_REQUEST_IO_CHANGED, 1.0);
     let restart = inst
         .loaded_mut()
-        .poll_plugin_notifications(&main_thread(), |_| {});
+        .poll_plugin_notifications(main_thread(), |_| {});
     assert!(
         restart.io_changed,
         "the probe requested restartComponent(kIoChanged) but it did not reach \
@@ -1037,7 +1037,7 @@ fn reported_latency_matches_the_plugins_actual_delay() {
 
     // The probe only reports latency while in latency mode, so this must be
     // read after the mode switch.
-    let reported = inst.loaded().latency_samples(&main_thread());
+    let reported = inst.loaded().latency_samples(main_thread());
     assert_eq!(
         reported, PROBE_LATENCY_SAMPLES,
         "host reported {reported} samples of latency; the plugin declares \
@@ -1314,7 +1314,7 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
 fn context_requirements_are_read_after_the_component_initializes() {
     let _guard = plugin_guard();
     let loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         probe_path(),
         LoadOptions::new(),
@@ -1351,7 +1351,7 @@ fn an_overflowing_plugin_is_reported_once_by_the_next_poll() {
     let mut inst = load_probe(512);
     let _ = inst
         .loaded_mut()
-        .poll_plugin_notifications(&main_thread(), |_| {});
+        .poll_plugin_notifications(main_thread(), |_| {});
 
     for i in 0..=NOTIFICATION_CAPACITY {
         plugin_perform_edit(inst.loaded(), 100, i as f64 / NOTIFICATION_CAPACITY as f64);
@@ -1361,7 +1361,7 @@ fn an_overflowing_plugin_is_reported_once_by_the_next_poll() {
     let mut edits = 0;
     let outcome = inst
         .loaded_mut()
-        .poll_plugin_notifications(&main_thread(), |n| {
+        .poll_plugin_notifications(main_thread(), |n| {
             if let PluginNotification::Edit(_) = n {
                 edits += 1;
             }
@@ -1375,7 +1375,7 @@ fn an_overflowing_plugin_is_reported_once_by_the_next_poll() {
     plugin_perform_edit(inst.loaded(), 100, 0.5);
     let outcome = inst
         .loaded_mut()
-        .poll_plugin_notifications(&main_thread(), |_| {});
+        .poll_plugin_notifications(main_thread(), |_| {});
     assert!(
         !outcome.notifications_overflowed,
         "reported once, not on every later poll"
@@ -1426,16 +1426,16 @@ fn a_sysex_open_across_a_stop_is_dropped() {
 #[test]
 fn the_listed_parameter_ids_are_the_plugins_own_in_order() {
     let loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         probe_path(),
         LoadOptions::new(),
     )
     .expect("audio-probe loads");
 
-    assert_eq!(loaded.parameter_count(&main_thread()), 7);
+    assert_eq!(loaded.parameter_count(main_thread()), 7);
     assert_eq!(
-        loaded.parameter_ids(&main_thread()),
+        loaded.parameter_ids(main_thread()),
         (100..=106).map(ParamId::new).collect::<Vec<_>>(),
         "the probe declares Mode, Ramp, Gain, RequestIoChanged, UiState, DelayMs and \
          ObservedProcessMode, in that order"
@@ -1455,21 +1455,21 @@ fn an_unlisted_parameter_id_is_reported_not_written() {
 
     let _guard = plugin_guard();
     let mut loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         probe_path(),
         LoadOptions::new(),
     )
     .expect("audio-probe loads");
 
-    let listed = loaded.parameter_ids(&main_thread());
+    let listed = loaded.parameter_ids(main_thread());
     let unlisted = (0..=u32::MAX)
         .map(ParamId::new)
         .find(|c| !listed.contains(c))
         .expect("some id is unlisted");
 
-    assert!(loaded.parameter_info(&main_thread(), unlisted).is_none());
-    assert_eq!(Control::parameter(&loaded, &main_thread(), unlisted), None);
+    assert!(loaded.parameter_info(main_thread(), unlisted).is_none());
+    assert_eq!(Control::parameter(&loaded, main_thread(), unlisted), None);
 
     let before: Vec<_> = listed
         .iter()
@@ -1477,12 +1477,12 @@ fn an_unlisted_parameter_id_is_reported_not_written() {
         .collect();
     let saved_before = Control::save_state(
         &mut loaded,
-        &main_thread(),
+        main_thread(),
         tutti_plugin_types::StateUse::Project,
     )
     .expect("the probe saves");
-    Control::set_parameter(&mut loaded, &main_thread(), unlisted, Normalized::of(0.25));
-    assert_eq!(Control::parameter(&loaded, &main_thread(), unlisted), None);
+    Control::set_parameter(&mut loaded, main_thread(), unlisted, Normalized::of(0.25));
+    assert_eq!(Control::parameter(&loaded, main_thread(), unlisted), None);
     let after: Vec<_> = listed
         .iter()
         .map(|i| loaded.get_parameter(i.get()))
@@ -1493,7 +1493,7 @@ fn an_unlisted_parameter_id_is_reported_not_written() {
     assert_eq!(
         Control::save_state(
             &mut loaded,
-            &main_thread(),
+            main_thread(),
             tutti_plugin_types::StateUse::Project
         )
         .expect("the probe saves"),
@@ -1516,7 +1516,7 @@ mod loaded_writes {
 
     fn load() -> Vst3Loaded {
         Vst3Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             probe_path(),
             LoadOptions::new(),
@@ -1527,7 +1527,7 @@ mod loaded_writes {
     fn write(loaded: &mut Vst3Loaded, id: u32, value: f64) {
         Control::set_parameter(
             loaded,
-            &main_thread(),
+            main_thread(),
             ParamId::new(id),
             Normalized::clamped(value),
         );
@@ -1535,7 +1535,7 @@ mod loaded_writes {
 
     fn read(plugin: &impl Control, id: u32) -> Option<f64> {
         plugin
-            .parameter(&main_thread(), ParamId::new(id))
+            .parameter(main_thread(), ParamId::new(id))
             .map(Normalized::get)
     }
 
@@ -1579,7 +1579,7 @@ mod loaded_writes {
         let mut source = written();
         let blob = Control::save_state(
             &mut source,
-            &main_thread(),
+            main_thread(),
             tutti_plugin_types::StateUse::Project,
         )
         .expect("the probe saves");
@@ -1588,7 +1588,7 @@ mod loaded_writes {
         assert_eq!(read(&restored, PARAM_RAMP), Some(0.0), "a fresh probe");
         Control::load_state(
             &mut restored,
-            &main_thread(),
+            main_thread(),
             &blob,
             tutti_plugin_types::StateUse::Project,
         )
@@ -1614,7 +1614,7 @@ mod loaded_writes {
         let mut loaded = load();
         let plain = Control::save_state(
             &mut loaded,
-            &main_thread(),
+            main_thread(),
             tutti_plugin_types::StateUse::Project,
         )
         .expect("the probe saves");
@@ -1623,7 +1623,7 @@ mod loaded_writes {
         write(&mut loaded, PARAM_RAMP, RAMP_LEVEL);
         let pending = Control::save_state(
             &mut loaded,
-            &main_thread(),
+            main_thread(),
             tutti_plugin_types::StateUse::Project,
         )
         .expect("the probe saves");
@@ -1632,7 +1632,7 @@ mod loaded_writes {
         let mut inst = activated(load());
         Control::set_parameter(
             inst.controller_mut(),
-            &main_thread(),
+            main_thread(),
             ParamId::new(PARAM_RAMP),
             Normalized::of(0.5),
         );
@@ -1641,7 +1641,7 @@ mod loaded_writes {
         }
         let blob = Control::save_state(
             inst.controller_mut(),
-            &main_thread(),
+            main_thread(),
             tutti_plugin_types::StateUse::Project,
         )
         .expect("the probe saves");
@@ -1664,7 +1664,7 @@ mod loaded_writes {
         let mut inst = activated(written());
         let blob = Control::save_state(
             inst.controller_mut(),
-            &main_thread(),
+            main_thread(),
             tutti_plugin_types::StateUse::Project,
         )
         .expect("the probe saves");
@@ -1672,7 +1672,7 @@ mod loaded_writes {
         let mut restored = load();
         Control::load_state(
             &mut restored,
-            &main_thread(),
+            main_thread(),
             &blob,
             tutti_plugin_types::StateUse::Project,
         )
@@ -1695,7 +1695,7 @@ mod loaded_writes {
         write_active(&mut source, PARAM_RAMP, RAMP_LEVEL);
         let blob = Control::save_state(
             source.controller_mut(),
-            &main_thread(),
+            main_thread(),
             tutti_plugin_types::StateUse::Project,
         )
         .expect("the probe saves");
@@ -1703,7 +1703,7 @@ mod loaded_writes {
         let mut restored = load();
         Control::load_state(
             &mut restored,
-            &main_thread(),
+            main_thread(),
             &blob,
             tutti_plugin_types::StateUse::Project,
         )
@@ -1719,7 +1719,7 @@ mod loaded_writes {
     fn write_active(inst: &mut Active, id: u32, value: f64) {
         Control::set_parameter(
             inst.controller_mut(),
-            &main_thread(),
+            main_thread(),
             ParamId::new(id),
             Normalized::clamped(value),
         );
@@ -1733,7 +1733,7 @@ mod loaded_writes {
         let _guard = plugin_guard();
         let blob = Control::save_state(
             &mut written(),
-            &main_thread(),
+            main_thread(),
             tutti_plugin_types::StateUse::Project,
         )
         .expect("the probe saves");
@@ -1744,7 +1744,7 @@ mod loaded_writes {
             .expect("the probe activates");
         Control::load_state(
             inst.controller_mut(),
-            &main_thread(),
+            main_thread(),
             &blob,
             tutti_plugin_types::StateUse::Project,
         )
@@ -1768,12 +1768,12 @@ mod loaded_writes {
         write(&mut source, PARAM_GAIN, 0.25);
         let blob = Control::save_state(
             &mut source,
-            &main_thread(),
+            main_thread(),
             tutti_plugin_types::StateUse::Project,
         )
         .expect("the probe saves");
 
-        let listed = source.parameter_ids(&main_thread());
+        let listed = source.parameter_ids(main_thread());
         let unlisted = (0..=u32::MAX)
             .find(|c| !listed.contains(&ParamId::new(*c)))
             .expect("some id is unlisted");
@@ -1787,7 +1787,7 @@ mod loaded_writes {
         let mut restored = load();
         Control::load_state(
             &mut restored,
-            &main_thread(),
+            main_thread(),
             &crafted,
             tutti_plugin_types::StateUse::Project,
         )
@@ -1795,7 +1795,7 @@ mod loaded_writes {
         assert_eq!(
             Control::save_state(
                 &mut restored,
-                &main_thread(),
+                main_thread(),
                 tutti_plugin_types::StateUse::Project
             )
             .expect("the probe saves"),
@@ -1836,7 +1836,7 @@ mod loaded_writes {
             let mut source = written();
             Control::save_state(
                 &mut source,
-                &main_thread(),
+                main_thread(),
                 tutti_plugin_types::StateUse::Project,
             )
             .expect("the probe saves")
@@ -1861,14 +1861,14 @@ mod loaded_writes {
         let mut restored = load();
         Control::load_state(
             &mut restored,
-            &main_thread(),
+            main_thread(),
             &blob,
             tutti_plugin_types::StateUse::Project,
         )
         .expect("the blob loads");
         let saved = Control::save_state(
             &mut restored,
-            &main_thread(),
+            main_thread(),
             tutti_plugin_types::StateUse::Project,
         )
         .expect("the probe saves");
@@ -1885,7 +1885,7 @@ mod loaded_writes {
         assert_eq!(read(&restored, PARAM_GAIN), Some(1.0), "the probe default");
         Control::load_state(
             &mut restored,
-            &main_thread(),
+            main_thread(),
             &blob,
             tutti_plugin_types::StateUse::Project,
         )
@@ -1907,7 +1907,7 @@ mod loaded_writes {
         let mut restored = load();
         Control::load_state(
             &mut restored,
-            &main_thread(),
+            main_thread(),
             &blob,
             tutti_plugin_types::StateUse::Project,
         )
@@ -1934,7 +1934,7 @@ mod loaded_writes {
         let mut restored = load();
         Control::load_state(
             &mut restored,
-            &main_thread(),
+            main_thread(),
             &blob,
             tutti_plugin_types::StateUse::Project,
         )

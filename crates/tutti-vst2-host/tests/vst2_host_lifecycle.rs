@@ -258,7 +258,7 @@ fn drop_stops_then_suspends_only_a_resumed_plugin() {
 
     clear_trace();
     let loaded = Vst2Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         tutti_fixtures::vst2_probe(),
     )
@@ -278,7 +278,7 @@ fn drop_stops_then_suspends_only_a_resumed_plugin() {
 /// The requests the plugin has raised since the last call.
 fn requests(instance: &mut Active) -> Vec<Request> {
     let mut asked = Vec::new();
-    instance.take_requests(&main_thread(), &mut asked);
+    instance.take_requests(main_thread(), &mut asked);
     asked
 }
 
@@ -309,7 +309,7 @@ fn an_io_change_is_answered_and_re_read() {
         "the plugin reported an I/O change"
     );
     assert_eq!(
-        instance.wiring(&main_thread()).latency_samples,
+        instance.wiring(main_thread()).latency_samples,
         Samples(2048)
     );
     assert_eq!(
@@ -333,18 +333,18 @@ fn a_rate_change_that_moves_latency_is_read() {
     set_late_latency(0);
     let mut instance = load(512);
     assert_eq!(
-        Controller::latency(instance.controller(), &main_thread()),
+        Controller::latency(instance.controller(), main_thread()),
         Samples(0)
     );
     set_late_latency(1537);
     instance.set_sample_rate(96_000.0);
 
     assert_eq!(
-        Controller::latency(instance.controller(), &main_thread()),
+        Controller::latency(instance.controller(), main_thread()),
         Samples(1537)
     );
     assert_eq!(
-        instance.wiring(&main_thread()).latency_samples,
+        instance.wiring(main_thread()).latency_samples,
         Samples(1537)
     );
     assert_eq!(
@@ -356,7 +356,7 @@ fn a_rate_change_that_moves_latency_is_read() {
     set_late_latency(0);
     instance.set_sample_rate(44_100.0);
     assert_eq!(
-        Controller::latency(instance.controller(), &main_thread()),
+        Controller::latency(instance.controller(), main_thread()),
         Samples(0)
     );
     set_late_latency(0);
@@ -521,7 +521,7 @@ fn an_editor_gesture_is_reported_in_order() {
     let mut drained = Vec::new();
     instance
         .loaded_mut()
-        .take_reported_edits(&main_thread(), &mut drained);
+        .take_reported_edits(main_thread(), &mut drained);
     drained.clear();
 
     probe_call(b"tutti_vst2_probe_fire_edit\0", |sym| {
@@ -532,7 +532,7 @@ fn an_editor_gesture_is_reported_in_order() {
 
     instance
         .loaded_mut()
-        .take_reported_edits(&main_thread(), &mut drained);
+        .take_reported_edits(main_thread(), &mut drained);
     let id = ParamId::new(2);
     assert_eq!(
         drained,
@@ -562,25 +562,25 @@ fn editor_idle_reaches_an_open_editor() {
     });
     let idles = || trace().iter().filter(|e| e.0 == EDIT_IDLE).count();
 
-    instance.loaded_mut().editor_idle(&main_thread());
+    instance.loaded_mut().editor_idle(main_thread());
     assert_eq!(idles(), 0, "no editor is open yet");
 
     // The probe's editor never touches the parent.
     let parent = tutti_fixtures::StandInWindow.handle();
     let size = instance
         .loaded_mut()
-        .open_editor(&main_thread(), parent, ContentScale::IDENTITY)
+        .open_editor(main_thread(), parent, ContentScale::IDENTITY)
         .expect("the probe opens");
     // `effEditGetRect` is the probe's 320 by 240, read before `effEditOpen`.
     let size = size.to_physical::<u32>(1.0);
     assert_eq!((size.width, size.height), (320, 240));
-    instance.loaded_mut().editor_idle(&main_thread());
-    instance.loaded_mut().editor_idle(&main_thread());
-    instance.loaded_mut().editor_idle(&main_thread());
+    instance.loaded_mut().editor_idle(main_thread());
+    instance.loaded_mut().editor_idle(main_thread());
+    instance.loaded_mut().editor_idle(main_thread());
     assert_eq!(idles(), 3, "one effEditIdle per call while open");
 
-    instance.loaded_mut().close_editor(&main_thread());
-    instance.loaded_mut().editor_idle(&main_thread());
+    instance.loaded_mut().close_editor(main_thread());
+    instance.loaded_mut().editor_idle(main_thread());
     assert_eq!(idles(), 3, "none once closed");
 }
 
@@ -625,18 +625,18 @@ fn editor_keys_reach_an_open_editor_and_its_answer_is_reported() {
 
     let closed = instance
         .loaded_mut()
-        .editor_key(&main_thread(), down_a.clone());
+        .editor_key(main_thread(), down_a.clone());
     assert_eq!(closed.ok(), Some(KeyUse::Ignored), "no editor is open");
     assert_eq!(read_capture().key_events, 0, "and the plugin heard nothing");
 
     let parent = tutti_fixtures::StandInWindow.handle();
     instance
         .loaded_mut()
-        .open_editor(&main_thread(), parent, ContentScale::IDENTITY)
+        .open_editor(main_thread(), parent, ContentScale::IDENTITY)
         .expect("the probe opens");
 
     set_key_consumed(true);
-    let used = instance.loaded_mut().editor_key(&main_thread(), down_a);
+    let used = instance.loaded_mut().editor_key(main_thread(), down_a);
     assert_eq!(used.ok(), Some(KeyUse::Used), "the plugin returned 1");
     let cap = read_capture();
     assert_eq!(cap.key_events, 1);
@@ -652,7 +652,7 @@ fn editor_keys_reach_an_open_editor_and_its_answer_is_reported() {
         Code::F1,
         Modifiers::CONTROL,
     );
-    let ignored = instance.loaded_mut().editor_key(&main_thread(), up_control);
+    let ignored = instance.loaded_mut().editor_key(main_thread(), up_control);
     assert_eq!(ignored.ok(), Some(KeyUse::Ignored), "the plugin returned 0");
     let cap = read_capture();
     assert_eq!(cap.key_events, 2);
@@ -673,7 +673,7 @@ fn editor_keys_reach_an_open_editor_and_its_answer_is_reported() {
         Code::KeyE,
         Modifiers::empty(),
     );
-    let unwritable = instance.loaded_mut().editor_key(&main_thread(), accented);
+    let unwritable = instance.loaded_mut().editor_key(main_thread(), accented);
     assert_eq!(unwritable.ok(), Some(KeyUse::Ignored), "ASCII only");
     assert_eq!(read_capture().key_events, 2, "and it was not sent");
 
@@ -683,14 +683,14 @@ fn editor_keys_reach_an_open_editor_and_its_answer_is_reported() {
         Code::ArrowLeft,
         Modifiers::empty(),
     );
-    let used = instance.loaded_mut().editor_key(&main_thread(), left);
+    let used = instance.loaded_mut().editor_key(main_thread(), left);
     assert_eq!(used.ok(), Some(KeyUse::Used), "the plugin returned 1");
     let cap = read_capture();
     assert_eq!(cap.key_events, 3);
     assert_eq!(cap.last_key.character, 0, "a named key types no character");
     assert_eq!(cap.last_key.key, 11, "VKEY_LEFT");
 
-    instance.loaded_mut().close_editor(&main_thread());
+    instance.loaded_mut().close_editor(main_thread());
     set_key_consumed(false);
 }
 

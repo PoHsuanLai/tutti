@@ -14,7 +14,7 @@
 //! # Threads
 //!
 //! Every [`Control`] entry is a main-thread call
-//! that takes a [`MainThread`]. [`MainThreadControl`] is lent to a caller that
+//! that takes a [`MainThreadMarker`]. [`MainThreadControl`] is lent to a caller that
 //! holds one; [`AnyThread`] takes none, because a served plugin answers those
 //! calls from any thread and the session calls them from pool jobs. Here they
 //! work from any thread too, through `on_main`: on the main thread the call runs
@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::sync_channel;
 use std::time::Duration;
-use tutti_plugin_types::{MainThread, MainWorkHandle};
+use tutti_plugin_types::{MainThreadMarker, MainWorkHandle};
 
 use parking_lot::Mutex;
 
@@ -89,10 +89,10 @@ where
     /// thread did not run the work within [`OFF_MAIN_DEADLINE`].
     fn on_main<R: Send + 'static>(
         &self,
-        work: impl FnOnce(&MainThread, &mut Instance<F>) -> R + Send + 'static,
+        work: impl FnOnce(MainThreadMarker, &mut Instance<F>) -> R + Send + 'static,
     ) -> Option<R> {
-        if let Some(main) = MainThread::new() {
-            return Some(work(&main, &mut self.inner.lock()));
+        if let Some(main) = MainThreadMarker::new() {
+            return Some(work(main, &mut self.inner.lock()));
         }
         let (answer, wait) = sync_channel(1);
         let inner = Arc::clone(&self.inner);
@@ -105,10 +105,10 @@ where
     /// `work` on the main thread without waiting: at once on it, posted to the
     /// owner's collector off it. Skipped when the instance is locked, as a write
     /// has always been.
-    fn post(&self, work: impl FnOnce(&MainThread, &mut Instance<F>) + Send + 'static) {
-        if let Some(main) = MainThread::new() {
+    fn post(&self, work: impl FnOnce(MainThreadMarker, &mut Instance<F>) + Send + 'static) {
+        if let Some(main) = MainThreadMarker::new() {
             if let Some(mut instance) = self.inner.try_lock() {
-                work(&main, &mut instance);
+                work(main, &mut instance);
             }
         } else {
             let inner = Arc::clone(&self.inner);
@@ -264,7 +264,7 @@ where
         }
     }
 
-    fn editor_idle(&self, main: &MainThread) {
+    fn editor_idle(&self, main: MainThreadMarker) {
         // Before the lock below, not inside it: the drain takes the same lock
         // and would deadlock under that guard. This runs on the main thread,
         // every editor frame, which is what makes it the delivery point for the
@@ -350,7 +350,7 @@ mod off_main_tests {
     /// work goes to `work`.
     fn load(work: &MainWorkHandle) -> (crate::InProcClient<Vst2Loaded>, PluginHandle) {
         let (client, handle) = crate::load_client::<Vst2Loaded>(
-            &main_thread(),
+            main_thread(),
             work,
             tutti_fixtures::vst2_probe(),
             &Load::new(),

@@ -6,7 +6,7 @@
 //!
 //! This crate names nothing of tutti's except `tutti-plugin-types` (`WindowHandle`,
 //! whose unsafe constructor carries the claim of a valid parent window, and
-//! `MainThread`, the proof of the main thread) and, for `GraphPool`, `tutti-graph`
+//! `MainThreadMarker`, the proof of the main thread) and, for `GraphPool`, `tutti-graph`
 //! and `tutti-rt`.
 //!
 //! ## What is here
@@ -27,7 +27,7 @@
 //!
 //! CLAP annotates every entry with the thread it may be called on. Here a
 //! `[main-thread]` entry is a method of `Plugin`, which is `Send` but not `Sync`
-//! and takes a `&MainThread`: holding one is the proof, and `ThreadRoles` (built
+//! and takes a `MainThreadMarker`: holding one is the proof, and `ThreadRoles` (built
 //! from one) is the single place the main thread is named. An `[audio-thread]`
 //! entry is a method of `AudioSide`, which takes the instance's `AudioClaim` for
 //! the whole call. A processor that holds an `AudioSide` therefore cannot make a

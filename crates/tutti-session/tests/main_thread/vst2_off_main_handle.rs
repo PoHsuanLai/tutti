@@ -27,7 +27,7 @@ fn a_pool_thread_is_answered_while_the_main_thread_updates_the_session() {
         .expect("a detached session builds");
     let node = session
         .add_plugin_blocking(
-            &main,
+            main,
             PluginLoadRequest::new(
                 PluginRef::file(tutti_fixtures::vst2_probe()).expect("a plugin file"),
             ),

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use tutti_clap_ffi::{AudioClaim, ThreadRoles};
-use tutti_plugin_types::{MainThread, ProcessWake, RequestWord, TrackInfo, TransportRequest};
+use tutti_plugin_types::{MainThreadMarker, ProcessWake, RequestWord, TrackInfo, TransportRequest};
 
 pub(crate) struct TimerEntry {
     pub id: u32,
@@ -385,7 +385,7 @@ impl HostState {
     /// the `[main-thread]` role for the instance's whole life; it is recorded
     /// once, in the instance's [`ThreadRoles`], which every answer reads.
     #[must_use]
-    pub fn new(main: &MainThread) -> Self {
+    pub fn new(main: MainThreadMarker) -> Self {
         Self {
             roles: Arc::new(ThreadRoles::new(main)),
             requests: RequestWord::new(),

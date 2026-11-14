@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use tutti_plugin_types::{
-    InProcess, Load, MainThread, MainWorkHandle, Origin, OutOfProcess, PluginResult,
+    InProcess, Load, MainThreadMarker, MainWorkHandle, Origin, OutOfProcess, PluginResult,
 };
 
 use crate::editor_instance::AuEditorInstance;
@@ -12,7 +12,7 @@ use crate::instance::AuLoaded;
 
 impl InProcess for AuLoaded {
     fn load_in_process(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,
@@ -33,7 +33,7 @@ impl OutOfProcess for AuLoaded {
     type Editor = AuEditorInstance;
 
     fn load_served(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,
@@ -42,7 +42,7 @@ impl OutOfProcess for AuLoaded {
     }
 
     fn load_editor(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,

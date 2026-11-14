@@ -19,7 +19,7 @@ fn a_timer_the_editor_registers_ticks_on_idle() {
     let path = tutti_fixtures::clap_probe();
     let main = main_thread();
     let mut editor =
-        ClapLoaded::load_editor(&main, &tutti_fixtures::detached_work(), path, &Load::new())
+        ClapLoaded::load_editor(main, &tutti_fixtures::detached_work(), path, &Load::new())
             .expect("loads");
 
     // The probe's switches are `extern "C"` symbols in the image this
@@ -43,20 +43,20 @@ fn a_timer_the_editor_registers_ticks_on_idle() {
     // `on_main_thread` is where the plugin registers it.
     // SAFETY: a plain integer command latched by the plugin.
     unsafe { command(CMD_REGISTER_TIMER) };
-    editor.loaded_mut().on_main_thread(&main);
+    editor.loaded_mut().on_main_thread(main);
     assert!(read().timer_registered);
     let tick = Site::OnTimer as usize;
     assert_eq!(read().sites[tick].visits, 0);
 
     // Before the floor has passed the loop is not woken for it, and the timer
     // is not latched.
-    EditorWindow::wake(&mut editor, &main, &[], std::time::Instant::now());
-    editor.editor_idle(&main);
+    EditorWindow::wake(&mut editor, main, &[], std::time::Instant::now());
+    editor.editor_idle(main);
     assert_eq!(read().sites[tick].visits, 0, "not before its wake-up");
 
     std::thread::sleep(std::time::Duration::from_millis(30));
-    EditorWindow::wake(&mut editor, &main, &[], std::time::Instant::now());
-    editor.editor_idle(&main);
+    EditorWindow::wake(&mut editor, main, &[], std::time::Instant::now());
+    editor.editor_idle(main);
     assert_eq!(read().sites[tick].visits, 1, "a period-0 timer is due");
 }
 
@@ -75,13 +75,13 @@ fn an_editors_state_is_the_plugins_state() {
     let path = tutti_fixtures::clap_probe();
     let main = main_thread();
     let mut editor =
-        ClapLoaded::load_editor(&main, &tutti_fixtures::detached_work(), path, &Load::new())
+        ClapLoaded::load_editor(main, &tutti_fixtures::detached_work(), path, &Load::new())
             .expect("loads");
 
-    let through_editor = editor.save_state(&main).expect("saves");
+    let through_editor = editor.save_state(main).expect("saves");
     let plugin = Control::save_state(
         editor.loaded_mut(),
-        &main,
+        main,
         tutti_plugin_types::StateUse::Project,
     )
     .expect("saves");
@@ -101,7 +101,7 @@ fn a_transport_request_the_editor_instance_makes_is_taken_from_it() {
     let path = tutti_fixtures::clap_probe();
     let main = main_thread();
     let mut editor =
-        ClapLoaded::load_editor(&main, &tutti_fixtures::detached_work(), path, &Load::new())
+        ClapLoaded::load_editor(main, &tutti_fixtures::detached_work(), path, &Load::new())
             .expect("loads");
     // SAFETY: the reference plugin's library, already loaded by the editor.
     let lib = unsafe { libloading::Library::new(path) }.expect("re-opens");
@@ -111,13 +111,13 @@ fn a_transport_request_the_editor_instance_makes_is_taken_from_it() {
 
     // SAFETY: plain integers latched by the plugin.
     unsafe { command(HOSTEXT_CMD_START, 0, 0) };
-    editor.loaded_mut().on_main_thread(&main);
-    editor.editor_idle(&main);
+    editor.loaded_mut().on_main_thread(main);
+    editor.editor_idle(main);
 
     let mut asked = Vec::new();
-    editor.take_requests(&main, &mut asked);
+    editor.take_requests(main, &mut asked);
     assert_eq!(asked, [Request::Transport(TransportRequest::Start)]);
-    editor.take_requests(&main, &mut asked);
+    editor.take_requests(main, &mut asked);
     assert_eq!(
         asked,
         [Request::Transport(TransportRequest::Start)],

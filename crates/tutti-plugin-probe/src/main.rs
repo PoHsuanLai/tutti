@@ -30,7 +30,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 use tutti_plugin_probe::{describe, describe_measured};
-use tutti_plugin_types::{MainThread, ProbeOutcome, write_result};
+use tutti_plugin_types::{MainThreadMarker, ProbeOutcome, write_result};
 
 fn main() -> ExitCode {
     const USAGE: &str =
@@ -61,14 +61,14 @@ fn main() -> ExitCode {
         }
     };
     // This process runs one probe on one thread, which is its main thread.
-    let Some(main) = MainThread::new() else {
+    let Some(main) = MainThreadMarker::new() else {
         eprintln!("plugin-probe: not running on the process's main thread");
         return ExitCode::from(3);
     };
     let described = if measure {
-        describe_measured(&main, Path::new(&path), state.as_deref())
+        describe_measured(main, Path::new(&path), state.as_deref())
     } else {
-        describe(&main, Path::new(&path))
+        describe(main, Path::new(&path))
     };
     let outcome = match described {
         Ok(plugins) if plugins.is_empty() => {

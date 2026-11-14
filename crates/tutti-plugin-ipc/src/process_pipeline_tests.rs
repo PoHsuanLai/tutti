@@ -42,7 +42,7 @@ use tutti_types::SampleRate;
 /// The bridge's editor loader: these peers never open an editor, and one that
 /// tried is refused (the suite loads no plugin format).
 fn no_editor(
-    _: &tutti_plugin_types::MainThread,
+    _: tutti_plugin_types::MainThreadMarker,
     _: &tutti_plugin_types::MainWorkHandle,
     path: &std::path::Path,
     _: &tutti_plugin_types::Load,

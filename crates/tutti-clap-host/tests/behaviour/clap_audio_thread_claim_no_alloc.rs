@@ -40,7 +40,7 @@ use tutti_fixtures::main_thread;
 /// itself rather than the cross-thread interleaving below.
 #[test]
 fn repeated_claims_from_one_thread_do_not_allocate() {
-    let state = HostState::new(&main_thread());
+    let state = HostState::new(main_thread());
 
     // Warm up outside the gate: the first claim on a thread may touch cold
     // thread-local storage, and that one-shot cost is not what is under test.
@@ -80,7 +80,7 @@ fn claims_interleaved_with_another_thread_do_not_allocate() {
     // construction rather than by signalling.
     const TOTAL: usize = WARMUP + ROUNDS;
 
-    let state = Arc::new(HostState::new(&main_thread()));
+    let state = Arc::new(HostState::new(main_thread()));
     // Two barriers so the threads strictly alternate. One would let both run
     // the same phase together, and the interleaving is the entire point.
     let before = Arc::new(Barrier::new(2));
@@ -132,7 +132,7 @@ fn claims_interleaved_with_another_thread_do_not_allocate() {
 /// a claim held by this thread, and a claim held by a different one.
 #[test]
 fn a_claim_names_exactly_the_claiming_thread() {
-    let state = Arc::new(HostState::new(&main_thread()));
+    let state = Arc::new(HostState::new(main_thread()));
 
     assert!(
         !state.is_audio_thread(),

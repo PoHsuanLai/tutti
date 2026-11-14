@@ -45,13 +45,13 @@ fn plugin() -> (Arc<Module>, Plugin) {
         .expect("the probe exports an audio class");
     let mut plugin = module
         .create_plugin(
-            &tutti_fixtures::main_thread(),
+            tutti_fixtures::main_thread(),
             &tutti_fixtures::detached_work(),
             &class.cid,
         )
         .expect("a plugin");
     plugin
-        .initialize_component(&main_thread())
+        .initialize_component(main_thread())
         .expect("initialize");
     (module, plugin)
 }
@@ -59,9 +59,9 @@ fn plugin() -> (Arc<Module>, Plugin) {
 /// Sets up and activates the plugin, as the host's activation does.
 fn activate(plugin: &mut Plugin) {
     plugin
-        .setup_processing(&main_thread(), setup())
+        .setup_processing(main_thread(), setup())
         .expect("setup");
-    plugin.set_active(&main_thread(), true).expect("activate");
+    plugin.set_active(main_thread(), true).expect("activate");
 }
 
 /// No audio half until the plugin is set up and active; one at a time after.
@@ -69,9 +69,9 @@ fn activate(plugin: &mut Plugin) {
 fn the_audio_half_needs_a_set_up_active_plugin_and_comes_once() {
     let (_module, mut plugin) = plugin();
     assert!(plugin.audio_side().is_none(), "not set up");
-    plugin.setup_processing(&main_thread(), setup()).unwrap();
+    plugin.setup_processing(main_thread(), setup()).unwrap();
     assert!(plugin.audio_side().is_none(), "set up, not active");
-    plugin.set_active(&main_thread(), true).unwrap();
+    plugin.set_active(main_thread(), true).unwrap();
     let side = plugin.audio_side().expect("set up and active");
     assert!(plugin.audio_side().is_none(), "a second half is refused");
     drop(side);
@@ -85,21 +85,21 @@ fn state_changes_are_refused_while_the_audio_half_is_out() {
     activate(&mut plugin);
     let side = plugin.audio_side().unwrap();
     assert_eq!(
-        plugin.set_active(&main_thread(), false),
+        plugin.set_active(main_thread(), false),
         Err(Vst3Error::Busy)
     );
     assert_eq!(plugin.set_processing(true), Err(Vst3Error::Busy));
     assert_eq!(
-        plugin.setup_processing(&main_thread(), setup()),
+        plugin.setup_processing(main_thread(), setup()),
         Err(Vst3Error::Busy)
     );
     assert_eq!(
-        plugin.set_bus_arrangements(&main_thread(), &mut [], &mut []),
+        plugin.set_bus_arrangements(main_thread(), &mut [], &mut []),
         Err(Vst3Error::Busy)
     );
     assert!(plugin.is_active(), "refused changes changed nothing");
     drop(side);
-    assert_eq!(plugin.set_active(&main_thread(), false), Ok(()));
+    assert_eq!(plugin.set_active(main_thread(), false), Ok(()));
 }
 
 /// A real block through the audio half; after the plugin is dropped the half
@@ -110,10 +110,9 @@ fn the_audio_half_answers_not_initialized_after_the_plugin_drops() {
     activate(&mut plugin);
     let mut side: AudioSide = plugin.audio_side().unwrap();
 
-    let channels = plugin.audio_bus_channels(&main_thread(), tutti_vst3_ffi::BusDirection::Output);
+    let channels = plugin.audio_bus_channels(main_thread(), tutti_vst3_ffi::BusDirection::Output);
     let out_width = channels.iter().sum::<usize>().max(2);
-    let in_channels =
-        plugin.audio_bus_channels(&main_thread(), tutti_vst3_ffi::BusDirection::Input);
+    let in_channels = plugin.audio_bus_channels(main_thread(), tutti_vst3_ffi::BusDirection::Input);
     let in_width = in_channels.iter().sum::<usize>();
     let mut input = BusBuffers::new(
         SampleWidth::F32,
@@ -184,10 +183,10 @@ fn a_setup_answered_false_is_a_refusal_and_records_nothing() {
     unsafe { std::env::set_var("TUTTI_PROBE_MISBEHAVIOUR", SETUP_FAILS) };
     let (_module, mut plugin) = plugin();
     assert_eq!(
-        plugin.setup_processing(&main_thread(), setup()),
+        plugin.setup_processing(main_thread(), setup()),
         Err(Vst3Error::False)
     );
-    plugin.set_active(&main_thread(), true).expect("activate");
+    plugin.set_active(main_thread(), true).expect("activate");
     assert!(plugin.audio_side().is_none(), "no setup was recorded");
 }
 

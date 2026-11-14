@@ -31,7 +31,7 @@ pub enum Hosting {
     Auto,
     /// In the host's process: no isolation, no IPC copy, and the editor is the
     /// audio instance. The load needs the main thread
-    /// ([`MainThread`](tutti_plugin_types::MainThread)). Refused with
+    /// ([`MainThreadMarker`](tutti_plugin_types::MainThreadMarker)). Refused with
     /// [`BridgeError::NotInProcess`]
     /// when this build has no host for the format (its `tutti-plugin` feature
     /// is off).

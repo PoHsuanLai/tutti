@@ -3,7 +3,7 @@
 
 use std::cell::Cell;
 use std::marker::PhantomData;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 
 use tutti_plugin_types::{
     Controller, Loaded, PluginError, PluginTail, Prepare, Processor, Refused, RestartRules,
@@ -22,7 +22,7 @@ use crate::scratch::RenderScratch;
 /// handle ([`RenderHandle`](vst::host::RenderHandle)), which shares the plugin's core and
 /// does not keep it open. Dropping the Controller (on the thread the plugin was loaded on)
 /// closes the plugin; a Processor that outlives it renders silence, and a Processor dropped
-/// last does nothing. The main-thread entries take a [`MainThread`] (see
+/// last does nothing. The main-thread entries take a [`MainThreadMarker`] (see
 /// [`PluginInstance`](tutti_vst2_ffi::host::PluginInstance)); a parameter write is a direct
 /// `setParameter`, which the SDK allows from either thread, so no write is queued and a
 /// rejoin has none to carry.
@@ -96,11 +96,11 @@ impl Controller for Vst2Controller {
     type Loaded = Vst2Loaded;
     type Processor = Vst2Processor;
 
-    fn latency(&self, _main: &MainThread) -> Samples {
+    fn latency(&self, _main: MainThreadMarker) -> Samples {
         self.loaded.latency_samples()
     }
 
-    fn tail(&self, main: &MainThread) -> PluginTail {
+    fn tail(&self, main: MainThreadMarker) -> PluginTail {
         Vst2Loaded::tail(&self.loaded, main)
     }
 }
@@ -136,7 +136,7 @@ impl Loaded for Vst2Loaded {
     /// failed licence claim, say) is not an error the host can see.
     fn activate(
         mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         prepare: Prepare,
     ) -> Result<(Vst2Processor, Vst2Controller), Refused<Self>> {
         let rate = prepare.rate().get();
@@ -216,7 +216,7 @@ impl Loaded for Vst2Loaded {
     ///
     /// The halves come back, with the reason, when they are of two activations.
     fn deactivate(
-        main: &MainThread,
+        main: MainThreadMarker,
         mut processor: Vst2Processor,
         controller: Vst2Controller,
     ) -> Result<Self, Stuck<Vst2Processor, Vst2Controller>> {
@@ -241,7 +241,7 @@ impl Vst2Loaded {
     /// processing by now (the rejoin stops it, and sends `effStopProcess` only
     /// if it was on), so the SDK's teardown order holds and nothing is sent
     /// twice.
-    fn suspend(&mut self, main: &MainThread) {
+    fn suspend(&mut self, main: MainThreadMarker) {
         self.instance.suspend(main);
     }
 }

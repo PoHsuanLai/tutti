@@ -30,7 +30,7 @@ use tutti_ump::{Address, MidiChannel, MidiGroup, Ump, Voice2};
 use crate::events::{InputEvents, Stager};
 use crate::types::ParameterChanges;
 use tutti_graph::UmpAt;
-use tutti_plugin_types::{MIDI_STACK_CAPACITY, MainThread, Normalized};
+use tutti_plugin_types::{MIDI_STACK_CAPACITY, MainThreadMarker, Normalized};
 use tutti_rt::{Reader, RtVec};
 use tutti_vst3_ffi::{EventList, Plugin};
 
@@ -88,7 +88,7 @@ impl MidiCcMapping {
     /// Returns an [`empty`](Self::empty) table when the controller is absent
     /// or doesn't implement `IMidiMapping`. Must run on the UI/main thread —
     /// `IMidiMapping` is an `IEditController` extension.
-    pub(crate) fn query(main: &MainThread, plugin: &Plugin) -> Self {
+    pub(crate) fn query(main: MainThreadMarker, plugin: &Plugin) -> Self {
         if !plugin.has_midi_mapping(main) {
             return Self::empty();
         }

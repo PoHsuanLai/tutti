@@ -18,7 +18,7 @@ use clap_sys::ext::note_ports::{
     CLAP_NOTE_DIALECT_MIDI2,
 };
 use clap_sys::ext::voice_info::CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 use tutti_types::ChannelTopology;
 
 impl ClapLoaded {
@@ -29,7 +29,7 @@ impl ClapLoaded {
     /// the count to `usize` and narrowing the index back at the FFI call is a
     /// matched pair of conversions that buys nothing and leaves one concept
     /// with two spellings in one file.
-    pub fn audio_port_count(&self, main: &MainThread, is_input: bool) -> u32 {
+    pub fn audio_port_count(&self, main: MainThreadMarker, is_input: bool) -> u32 {
         self.plugin.audio_port_count(main, is_input)
     }
 
@@ -38,7 +38,7 @@ impl ClapLoaded {
     /// reports more channels than a layout holds.
     pub fn audio_port_info(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         index: u32,
         is_input: bool,
     ) -> Option<AudioPortInfo> {
@@ -54,7 +54,7 @@ impl ClapLoaded {
     /// truncated list [`port_channels`](super::load) presents, or it stops
     /// matching `PortLayout::{input,output}_channel_total`, which is what sizes
     /// the process scratch.
-    fn channel_total(&self, main: &MainThread, is_input: bool) -> usize {
+    fn channel_total(&self, main: MainThreadMarker, is_input: bool) -> usize {
         let count = self.audio_port_count(main, is_input);
         let mut total = 0usize;
         for i in 0..count {
@@ -67,17 +67,17 @@ impl ClapLoaded {
     }
 
     /// Total input channel count, summed across every input port.
-    pub fn num_input_channels(&self, main: &MainThread) -> usize {
+    pub fn num_input_channels(&self, main: MainThreadMarker) -> usize {
         self.channel_total(main, true)
     }
 
     /// Total output channel count, summed across every output port.
-    pub fn num_output_channels(&self, main: &MainThread) -> usize {
+    pub fn num_output_channels(&self, main: MainThreadMarker) -> usize {
         self.channel_total(main, false)
     }
 
     /// Number of input or output note (MIDI) ports.
-    pub fn note_port_count(&self, main: &MainThread, is_input: bool) -> u32 {
+    pub fn note_port_count(&self, main: MainThreadMarker, is_input: bool) -> u32 {
         self.plugin.note_port_count(main, is_input)
     }
 
@@ -86,7 +86,7 @@ impl ClapLoaded {
     /// prefers MIDI, see [`NotePortInfo::dialect_to_send`]). Only input note
     /// port 0 decides. A plugin with no
     /// note port gets CLAP note events, as before.
-    pub fn sends_midi_notes(&self, main: &MainThread) -> bool {
+    pub fn sends_midi_notes(&self, main: MainThreadMarker) -> bool {
         self.note_port_info(main, 0, true)
             .and_then(|port| port.dialect_to_send())
             == Some(NoteDialect::Midi)
@@ -96,7 +96,7 @@ impl ClapLoaded {
     /// notes to it go out as `clap_event_midi`: the same question as
     /// [`sends_midi_notes`](Self::sends_midi_notes), asked of every port.
     /// Empty for a plugin with no input note port.
-    pub(crate) fn midi_note_ports(&self, main: &MainThread) -> Vec<bool> {
+    pub(crate) fn midi_note_ports(&self, main: MainThreadMarker) -> Vec<bool> {
         let count = self.note_port_count(main, true).min(16);
         (0..count)
             .map(|index| {
@@ -111,7 +111,7 @@ impl ClapLoaded {
     /// dialect (`CLAP_NOTE_DIALECT_MIDI` in `supported_dialects`), which
     /// `clap_event_midi` and SysEx may be sent to. Empty for a plugin with no
     /// input note port: it declared no event it takes.
-    pub fn midi_capable_ports(&self, main: &MainThread) -> Vec<bool> {
+    pub fn midi_capable_ports(&self, main: MainThreadMarker) -> Vec<bool> {
         let count = self.note_port_count(main, true).min(16);
         (0..count)
             .map(|index| {
@@ -124,7 +124,7 @@ impl ClapLoaded {
     /// Metadata for the note port at `index`, including supported dialects.
     pub fn note_port_info(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         index: u32,
         is_input: bool,
     ) -> Option<NotePortInfo> {
@@ -147,7 +147,7 @@ impl ClapLoaded {
     }
 
     /// Plugin-reported processing latency in samples. 0 when unsupported.
-    pub fn latency_samples(&self, main: &MainThread) -> u32 {
+    pub fn latency_samples(&self, main: MainThreadMarker) -> u32 {
         self.plugin.latency(main)
     }
 
@@ -157,19 +157,19 @@ impl ClapLoaded {
     /// same answer as `Some(0)`, which means no tail. Raw: any value at or
     /// above `INT32_MAX` means an infinite tail (`clap/ext/tail.h`), which
     /// `Tail::from_clap_samples` decodes.
-    pub fn tail_samples(&self, main: &MainThread) -> Option<u32> {
+    pub fn tail_samples(&self, main: MainThreadMarker) -> Option<u32> {
         self.plugin.tail(main)
     }
 
     /// Whether the plugin requires a hard real-time environment (e.g. it
     /// talks to hardware). Hosts should avoid running such plugins offline.
     #[must_use]
-    pub fn has_hard_realtime_requirement(&self, main: &MainThread) -> bool {
+    pub fn has_hard_realtime_requirement(&self, main: MainThreadMarker) -> bool {
         self.plugin.has_hard_realtime_requirement(main)
     }
 
     /// Voice-allocation information from `CLAP_EXT_VOICE_INFO`.
-    pub fn voice_info(&self, main: &MainThread) -> Option<VoiceInfo> {
+    pub fn voice_info(&self, main: MainThreadMarker) -> Option<VoiceInfo> {
         let info = self.plugin.voice_info(main)?;
         Some(VoiceInfo {
             voice_count: info.voice_count,
@@ -181,12 +181,12 @@ impl ClapLoaded {
 
     /// Number of custom note names (e.g. drum-kit labels) the plugin
     /// exposes via `CLAP_EXT_NOTE_NAME`.
-    pub fn note_name_count(&self, main: &MainThread) -> u32 {
+    pub fn note_name_count(&self, main: MainThreadMarker) -> u32 {
         self.plugin.note_name_count(main)
     }
 
     /// Retrieves a single custom note name.
-    pub fn note_name(&self, main: &MainThread, index: u32) -> Option<NoteName> {
+    pub fn note_name(&self, main: MainThreadMarker, index: u32) -> Option<NoteName> {
         let info = self.plugin.note_name(main, index)?;
         Some(NoteName {
             name: info.name,
@@ -201,7 +201,7 @@ impl ClapLoaded {
     #[must_use]
     pub fn is_ambisonic_config_supported(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         config: &AmbisonicConfig,
     ) -> bool {
         let clap_config = clap_ambisonic_config {
@@ -224,7 +224,7 @@ impl ClapLoaded {
     /// Retrieves the ambisonic config currently used on a given port.
     pub fn ambisonic_config(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         is_input: bool,
         port_index: u32,
     ) -> Option<AmbisonicConfig> {
@@ -249,7 +249,11 @@ impl ClapLoaded {
     /// Asks whether the plugin can process the given
     /// [`SurroundChannel`]-bit channel mask (`CLAP_EXT_SURROUND`).
     #[must_use]
-    pub fn is_surround_channel_mask_supported(&self, main: &MainThread, channel_mask: u64) -> bool {
+    pub fn is_surround_channel_mask_supported(
+        &self,
+        main: MainThreadMarker,
+        channel_mask: u64,
+    ) -> bool {
         self.plugin
             .is_surround_channel_mask_supported(main, channel_mask)
     }
@@ -269,7 +273,7 @@ impl ClapLoaded {
     /// nothing in the buffer can be trusted.
     pub fn surround_channel_map(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         is_input: bool,
         port_index: u32,
     ) -> Option<Vec<SurroundChannel>> {
@@ -294,7 +298,7 @@ impl ClapLoaded {
     /// and keeps its channel's slot.
     pub(crate) fn surround_topology(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         is_input: bool,
         port_index: u32,
     ) -> Option<ChannelTopology> {

@@ -6,7 +6,7 @@ use crate::host::{InputStream, OutputStream};
 use crate::types::StateContext;
 use std::path::Path;
 use tutti_clap_ffi::CallError;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 
 impl ClapLoaded {
     /// Serializes the plugin's state to bytes via `CLAP_EXT_STATE`.
@@ -17,7 +17,7 @@ impl ClapLoaded {
     /// # Errors
     /// [`ClapError::StateError`] if the plugin does not implement state or
     /// its `save` callback returns failure (the cap included).
-    pub(crate) fn read_state(&self, main: &MainThread) -> Result<Vec<u8>> {
+    pub(crate) fn read_state(&self, main: MainThreadMarker) -> Result<Vec<u8>> {
         let mut stream = OutputStream::new();
         match self.plugin.state_save(main, &mut stream) {
             Ok(()) => Ok(stream.into_data()),
@@ -39,7 +39,7 @@ impl ClapLoaded {
     /// # Errors
     /// [`ClapError::StateError`] if the plugin does not implement state or
     /// its `load` callback rejects the data.
-    pub(crate) fn write_state(&mut self, main: &MainThread, data: &[u8]) -> Result<()> {
+    pub(crate) fn write_state(&mut self, main: MainThreadMarker, data: &[u8]) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
@@ -77,7 +77,11 @@ impl ClapLoaded {
     /// silently answer a *preset* request with a project-context blob tagged
     /// `Ok`; the two legitimately differ, so that writes the wrong bytes into
     /// a `.preset` and surfaces only when someone loads it.
-    pub fn state_with_context(&self, main: &MainThread, context: StateContext) -> Result<Vec<u8>> {
+    pub fn state_with_context(
+        &self,
+        main: MainThreadMarker,
+        context: StateContext,
+    ) -> Result<Vec<u8>> {
         let mut stream = OutputStream::new();
         match self
             .plugin
@@ -110,7 +114,7 @@ impl ClapLoaded {
     /// for this context, or an error naming the wrong entry point.
     pub fn set_state_with_context(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         data: &[u8],
         context: StateContext,
     ) -> Result<()> {
@@ -154,7 +158,11 @@ impl ClapLoaded {
     /// # Errors
     /// [`ClapError::StateError`] if the plugin doesn't implement preset
     /// loading, the path isn't valid UTF-8, or the plugin rejects the load.
-    pub fn load_preset_file(&mut self, main: &MainThread, path: impl AsRef<Path>) -> Result<()> {
+    pub fn load_preset_file(
+        &mut self,
+        main: MainThreadMarker,
+        path: impl AsRef<Path>,
+    ) -> Result<()> {
         match self.plugin.preset_load_file(main, path.as_ref()) {
             Ok(()) => Ok(()),
             Err(CallError::NoExtension) => Err(ClapError::StateError(

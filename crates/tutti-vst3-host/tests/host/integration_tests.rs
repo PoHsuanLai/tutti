@@ -309,7 +309,7 @@ fn plain_range_probe_recovers_real_ranges() {
     for path in &corpus {
         let resolved = resolve_bundle(path);
         let Ok(loaded) = tutti_vst3_host::Vst3Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             &resolved,
             tutti_vst3_host::LoadOptions::new(),
@@ -320,15 +320,15 @@ fn plain_range_probe_recovers_real_ranges() {
 
         let mut probed = 0usize;
         let mut non_unit = 0usize;
-        for entry in loaded.parameter_list(&main_thread()).into_iter().take(64) {
+        for entry in loaded.parameter_list(main_thread()).into_iter().take(64) {
             let id = entry.id();
-            let Some(info) = loaded.parameter_info(&main_thread(), id) else {
+            let Some(info) = loaded.parameter_info(main_thread(), id) else {
                 continue;
             };
             // `None` is legitimate: no controller, or an incoherent map. That
             // is the case the caller turns into `ParamRange::Normalized`.
             let Some(tutti_vst3_host::PlainRange { min, max }) =
-                loaded.parameter_plain_range(&main_thread(), id)
+                loaded.parameter_plain_range(main_thread(), id)
             else {
                 continue;
             };

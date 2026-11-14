@@ -8,11 +8,11 @@
 //! count the environment sets.
 
 use tutti_plugin::catalog::PluginRef;
-use tutti_plugin_types::{MainThread, PresetError};
+use tutti_plugin_types::{MainThreadMarker, PresetError};
 use tutti_session::{PluginLoadRequest, PresetKind, Session};
 use tutti_types::{ChannelLayout, SampleRate};
 
-fn main_thread() -> MainThread {
+fn main_thread() -> MainThreadMarker {
     tutti_fixtures::main_thread()
 }
 
@@ -37,7 +37,7 @@ mod clap {
             .expect("an offline session builds");
         let node = s
             .add_plugin_blocking(
-                &main_thread(),
+                main_thread(),
                 PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
             )
             .expect("the reference CLAP plugin loads")
@@ -155,7 +155,7 @@ mod vst2 {
             .expect("a detached session builds");
         let node = s
             .add_plugin_blocking(
-                &main_thread(),
+                main_thread(),
                 PluginLoadRequest::new(
                     PluginRef::file(tutti_fixtures::vst2_probe().to_path_buf())
                         .expect("a plugin file"),

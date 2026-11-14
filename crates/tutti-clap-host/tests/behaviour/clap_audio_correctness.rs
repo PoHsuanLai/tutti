@@ -153,7 +153,7 @@ impl ProbeSession<'_> {
     fn activate(&self) -> Active<f32> {
         let path = Path::new(tutti_fixtures::clap_probe());
         let loaded = ClapLoaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             path,
             LoadOptions::new().library(path),
@@ -169,7 +169,7 @@ impl ProbeSession<'_> {
     fn load(&self) -> ClapLoaded {
         let path = Path::new(tutti_fixtures::clap_probe());
         ClapLoaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             path,
             LoadOptions::new().library(path),
@@ -255,12 +255,12 @@ fn host_reports_asymmetric_port_layout_per_port() {
     let loaded = session.load();
 
     assert_eq!(
-        loaded.audio_port_count(&main_thread(), true),
+        loaded.audio_port_count(main_thread(), true),
         2,
         "plugin advertises a stereo main + a mono aux input"
     );
     assert_eq!(
-        loaded.audio_port_count(&main_thread(), false),
+        loaded.audio_port_count(main_thread(), false),
         2,
         "same on the output side"
     );
@@ -268,7 +268,7 @@ fn host_reports_asymmetric_port_layout_per_port() {
     let widths_in: Vec<u16> = (0..2)
         .map(|i| {
             loaded
-                .audio_port_info(&main_thread(), i, true)
+                .audio_port_info(main_thread(), i, true)
                 .expect("input port info present")
                 .layout
                 .count()
@@ -284,7 +284,7 @@ fn host_reports_asymmetric_port_layout_per_port() {
     let widths_out: Vec<u16> = (0..2)
         .map(|i| {
             loaded
-                .audio_port_info(&main_thread(), i, false)
+                .audio_port_info(main_thread(), i, false)
                 .expect("output port info present")
                 .layout
                 .count()
@@ -292,8 +292,8 @@ fn host_reports_asymmetric_port_layout_per_port() {
         .collect();
     assert_eq!(widths_out, vec![2, 1]);
 
-    assert_eq!(loaded.num_input_channels(&main_thread()), 3);
-    assert_eq!(loaded.num_output_channels(&main_thread()), 3);
+    assert_eq!(loaded.num_input_channels(main_thread()), 3);
+    assert_eq!(loaded.num_output_channels(main_thread()), 3);
 }
 
 /// Port **id** is not port **index**. The plugin reports ids 700, 701; a
@@ -307,7 +307,7 @@ fn host_reports_port_ids_distinct_from_indices() {
     let ids: Vec<u32> = (0..2)
         .map(|i| {
             loaded
-                .audio_port_info(&main_thread(), i, true)
+                .audio_port_info(main_thread(), i, true)
                 .expect("port info")
                 .id
         })
@@ -327,10 +327,10 @@ fn host_reports_per_port_flags_and_names() {
     let loaded = session.load();
 
     let p0 = loaded
-        .audio_port_info(&main_thread(), 0, true)
+        .audio_port_info(main_thread(), 0, true)
         .expect("port 0");
     let p1 = loaded
-        .audio_port_info(&main_thread(), 1, true)
+        .audio_port_info(main_thread(), 1, true)
         .expect("port 1");
 
     assert!(
@@ -354,11 +354,11 @@ fn host_rejects_out_of_range_port_index() {
     let loaded = session.load();
 
     assert!(
-        loaded.audio_port_info(&main_thread(), 2, true).is_none(),
+        loaded.audio_port_info(main_thread(), 2, true).is_none(),
         "index 2 is past the 2-port layout — the plugin returns false and \
          the host must not synthesize a port from the zeroed struct"
     );
-    assert!(loaded.audio_port_info(&main_thread(), 99, false).is_none());
+    assert!(loaded.audio_port_info(main_thread(), 99, false).is_none());
 }
 
 // ---------------------------------------------------------------------------
@@ -640,12 +640,12 @@ fn host_reports_note_ports_per_side() {
     let loaded = session.load();
 
     assert_eq!(
-        loaded.note_port_count(&main_thread(), true),
+        loaded.note_port_count(main_thread(), true),
         2,
         "two note inputs"
     );
     assert_eq!(
-        loaded.note_port_count(&main_thread(), false),
+        loaded.note_port_count(main_thread(), false),
         1,
         "one note output — a host that reuses the input count reports 2"
     );
@@ -661,13 +661,13 @@ fn host_reports_per_note_port_dialects_and_ids() {
     let loaded = session.load();
 
     let in0 = loaded
-        .note_port_info(&main_thread(), 0, true)
+        .note_port_info(main_thread(), 0, true)
         .expect("note input 0");
     let in1 = loaded
-        .note_port_info(&main_thread(), 1, true)
+        .note_port_info(main_thread(), 1, true)
         .expect("note input 1");
     let out0 = loaded
-        .note_port_info(&main_thread(), 0, false)
+        .note_port_info(main_thread(), 0, false)
         .expect("note output 0");
 
     assert_eq!(in0.id, 800);
@@ -694,8 +694,8 @@ fn host_reports_per_note_port_dialects_and_ids() {
     );
     assert!(!in1.supported_dialects.contains(NoteDialects::CLAP));
 
-    assert!(loaded.note_port_info(&main_thread(), 2, true).is_none());
-    assert!(loaded.note_port_info(&main_thread(), 1, false).is_none());
+    assert!(loaded.note_port_info(main_thread(), 2, true).is_none());
+    assert!(loaded.note_port_info(main_thread(), 1, false).is_none());
 }
 
 /// A plugin that names no preferred dialect, and one that names a dialect this
@@ -713,7 +713,7 @@ fn host_does_not_invent_a_preferred_note_dialect() {
     session.controls.set_preferred_dialect(0);
     let in0 = session
         .load()
-        .note_port_info(&main_thread(), 0, true)
+        .note_port_info(main_thread(), 0, true)
         .expect("note input 0");
     assert_eq!(
         in0.preferred_dialect, None,
@@ -731,7 +731,7 @@ fn host_does_not_invent_a_preferred_note_dialect() {
     session.controls.set_preferred_dialect(1 << 4);
     let in0 = session
         .load()
-        .note_port_info(&main_thread(), 0, true)
+        .note_port_info(main_thread(), 0, true)
         .expect("note input 0");
     assert_eq!(in0.preferred_dialect, None);
 
@@ -742,7 +742,7 @@ fn host_does_not_invent_a_preferred_note_dialect() {
         .set_preferred_dialect(CLAP_NOTE_DIALECT_MIDI2);
     let in0 = session
         .load()
-        .note_port_info(&main_thread(), 0, true)
+        .note_port_info(main_thread(), 0, true)
         .expect("note input 0");
     assert_eq!(
         in0.preferred_dialect,
@@ -761,7 +761,7 @@ fn host_does_not_invent_a_preferred_note_dialect() {
     session.controls.set_preferred_dialect(0);
     let in1 = session
         .load()
-        .note_port_info(&main_thread(), 1, true)
+        .note_port_info(main_thread(), 1, true)
         .expect("note input 1");
     assert_eq!(in1.preferred_dialect, None);
     assert_eq!(
@@ -777,7 +777,7 @@ fn host_does_not_invent_a_preferred_note_dialect() {
         .set_preferred_dialect(PREFERRED_DIALECT_DEFAULT);
     let in0 = session
         .load()
-        .note_port_info(&main_thread(), 0, true)
+        .note_port_info(main_thread(), 0, true)
         .expect("note input 0");
     assert_eq!(in0.preferred_dialect, Some(NoteDialect::Clap));
 }
@@ -791,14 +791,14 @@ fn notes_follow_the_input_note_ports_dialect() {
 
     let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
     assert!(
-        !session.load().sends_midi_notes(&main_thread()),
+        !session.load().sends_midi_notes(main_thread()),
         "port 0 prefers CLAP"
     );
 
     session
         .controls
         .set_preferred_dialect(CLAP_NOTE_DIALECT_MIDI);
-    assert!(session.load().sends_midi_notes(&main_thread()));
+    assert!(session.load().sends_midi_notes(main_thread()));
     let mut active = session.activate();
     assert!(active.sends_midi_notes(), "read at activation");
 
@@ -825,13 +825,13 @@ fn midi_goes_only_to_note_ports_that_declare_the_midi_dialect() {
 
     let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
     assert_eq!(
-        session.load().midi_capable_ports(&main_thread()),
+        session.load().midi_capable_ports(main_thread()),
         [true, true]
     );
 
     session.controls.set_port0_dialects(CLAP_NOTE_DIALECT_CLAP);
     assert_eq!(
-        session.load().midi_capable_ports(&main_thread()),
+        session.load().midi_capable_ports(main_thread()),
         [false, true],
         "port 0 declared no MIDI dialect"
     );
@@ -846,7 +846,7 @@ fn host_render_mode_reaches_the_plugin() {
     let mut loaded = session.load();
 
     assert!(
-        loaded.set_render_mode(&main_thread(), RenderMode::Offline),
+        loaded.set_render_mode(main_thread(), RenderMode::Offline),
         "plugin accepts offline render"
     );
     assert_eq!(
@@ -857,7 +857,7 @@ fn host_render_mode_reaches_the_plugin() {
     );
 
     assert!(
-        loaded.set_render_mode(&main_thread(), RenderMode::Realtime),
+        loaded.set_render_mode(main_thread(), RenderMode::Realtime),
         "plugin accepts realtime"
     );
     assert_eq!(
@@ -867,7 +867,7 @@ fn host_render_mode_reaches_the_plugin() {
     );
 
     assert!(
-        !loaded.has_hard_realtime_requirement(&main_thread()),
+        !loaded.has_hard_realtime_requirement(main_thread()),
         "the probe is pure software; a host that inverted this would refuse \
          to render it offline"
     );

@@ -35,7 +35,7 @@ fn set_server() {
     unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", plugin_server()) };
 }
 
-fn main_thread() -> tutti_plugin_types::MainThread {
+fn main_thread() -> tutti_plugin_types::MainThreadMarker {
     tutti_fixtures::main_thread()
 }
 
@@ -54,7 +54,7 @@ fn offline() -> Session {
 fn add_probe_on_outputs(s: &mut Session) -> tutti_graph::NodeKey {
     let node = s
         .add_plugin_blocking(
-            &main_thread(),
+            main_thread(),
             PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
         )
         .expect("the reference CLAP plugin loads");

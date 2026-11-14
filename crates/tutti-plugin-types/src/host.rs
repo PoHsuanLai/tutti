@@ -16,7 +16,7 @@
 //!
 //! Every method of [`Control`] and [`Controller`] runs on the main thread, one
 //! at a time. The entries that must (all of [`Control`] but `info`, and the
-//! transitions of [`Loaded`]) take a [`&MainThread`](crate::MainThread): holding
+//! transitions of [`Loaded`]) take a [`MainThreadMarker`]: holding
 //! one is the proof, and no check runs. [`Processor::process`] and [`Processor::stop`] run on whichever
 //! thread holds the Processor and are the only calls that thread makes. An
 //! implementation's `unsafe` states, per format, why the two halves may reach
@@ -35,7 +35,7 @@ use crate::{
 };
 use crate::{Delivered, ParamEdit};
 use crate::{
-    FdId, MainThread, Prepare, Ready, RenderMode, RenderModeSupport, Request, RescanScope,
+    FdId, MainThreadMarker, Prepare, Ready, RenderMode, RenderModeSupport, Request, RescanScope,
     RestartRules, StateUse, TimerId, TrackInfo, Wakeups,
 };
 
@@ -48,28 +48,28 @@ pub trait Control: EditorWindow {
     fn info(&self) -> &PluginDescriptor;
 
     /// The wiring read from the plugin now, not a load-time cache.
-    fn wiring(&self, main: &MainThread) -> LoadedPlugin;
+    fn wiring(&self, main: MainThreadMarker) -> LoadedPlugin;
 
     /// Every parameter the plugin declares.
-    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo>;
+    fn parameters(&self, main: MainThreadMarker) -> Vec<ParameterInfo>;
 
     /// How many parameters the plugin declares: at least `parameters().len()`
     /// (a format whose list skips a parameter it declines to describe still
     /// counts it). The default builds the list; a format with a count query
     /// overrides it, for a caller between blocks that sizes storage by it and
     /// should not build every descriptor to do so.
-    fn parameter_count(&self, main: &MainThread) -> usize {
+    fn parameter_count(&self, main: MainThreadMarker) -> usize {
         self.parameters(main).len()
     }
 
     /// The parameter's current value, or `None` if the plugin has no such
     /// parameter.
-    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized>;
+    fn parameter(&self, main: MainThreadMarker, id: ParamId) -> Option<Normalized>;
 
     /// Sets a parameter. Loaded: applied now. Active: an edit queued to the
     /// Processor, applied at the head of its next block
     /// ([`Edit`](crate::Edit)).
-    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized);
+    fn set_parameter(&mut self, main: MainThreadMarker, id: ParamId, value: Normalized);
 
     /// The plain value `value` stands for, in the unit
     /// [`ParameterInfo::unit`](crate::ParameterInfo::unit) names: the
@@ -78,7 +78,12 @@ pub trait Control: EditorWindow {
     /// plugin's; CLAP and AU convert against their own declared range). `None`
     /// when the parameter does not exist or the format has no plain value for
     /// it (a VST2 parameter with no integer range).
-    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64>;
+    fn parameter_plain(
+        &self,
+        main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<f64>;
 
     /// The inverse of [`parameter_plain`](Self::parameter_plain): the
     /// [`Normalized`] value a plain one stands for, clamped onto `0..=1` where
@@ -86,13 +91,18 @@ pub trait Control: EditorWindow {
     /// `parameter_plain`.
     fn parameter_normalized(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         id: ParamId,
         plain: f64,
     ) -> Option<Normalized>;
 
     /// The plugin's display text for `value`, if it has any.
-    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+    fn parameter_text(
+        &self,
+        main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<String> {
         let _ = (main, id, value);
         None
     }
@@ -100,7 +110,7 @@ pub trait Control: EditorWindow {
     /// The value the plugin parses from `text`, if it can.
     fn parameter_value_from_text(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         id: ParamId,
         text: &str,
     ) -> Option<Normalized> {
@@ -114,7 +124,7 @@ pub trait Control: EditorWindow {
     /// # Errors
     ///
     /// [`PluginError::State`] when the plugin cannot save.
-    fn save_state(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>>;
+    fn save_state(&mut self, main: MainThreadMarker, state_use: StateUse) -> PluginResult<Vec<u8>>;
 
     /// Restores state saved by [`save_state`](Self::save_state) with the same
     /// `state_use`.
@@ -124,31 +134,31 @@ pub trait Control: EditorWindow {
     /// [`PluginError::State`] when the plugin rejects the bytes.
     fn load_state(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         bytes: &[u8],
         state_use: StateUse,
     ) -> PluginResult<()>;
 
     /// The plugin's factory presets. Empty when the format has none.
-    fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
+    fn presets(&mut self, main: MainThreadMarker) -> Vec<Preset> {
         let _ = main;
         Vec::new()
     }
 
     /// Loads a preset; `false` when the format or the plugin cannot.
-    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
+    fn load_preset(&mut self, main: MainThreadMarker, id: &PresetId) -> bool {
         let _ = (main, id);
         false
     }
 
     /// The preset the plugin is on, if it says.
-    fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
+    fn current_preset(&mut self, main: MainThreadMarker) -> Option<PresetId> {
         let _ = main;
         None
     }
 
     /// Tells the plugin how the host is automating it.
-    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
+    fn set_automation_state(&mut self, main: MainThreadMarker, mode: AutomationMode) {
         let _ = (main, mode);
     }
 
@@ -161,19 +171,19 @@ pub trait Control: EditorWindow {
     /// [`PluginDead`](Delivered::PluginDead) when the plugin is gone,
     /// [`Dropped`](Delivered::Dropped) when a served plugin's queue was full
     /// and a later call may succeed.
-    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) -> Delivered {
+    fn set_track_info(&mut self, main: MainThreadMarker, info: &TrackInfo) -> Delivered {
         let _ = (main, info);
         Delivered::Yes
     }
 
     /// Reads parameters again after a rescan the plugin asked for.
-    fn rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
+    fn rescan_parameters(&mut self, main: MainThreadMarker, scope: RescanScope) {
         let _ = (main, scope);
     }
 
     /// Rebuilds the host's MIDI controller-to-parameter mapping from the plugin
     /// (VST3 `kMidiCCAssignmentChanged`).
-    fn rebuild_midi_mapping(&mut self, main: &MainThread) {
+    fn rebuild_midi_mapping(&mut self, main: MainThreadMarker) {
         let _ = main;
     }
 
@@ -182,22 +192,22 @@ pub trait Control: EditorWindow {
     /// calls it on every [`Event::Tick`](crate::Event::Tick), so the host must
     /// keep ticking: with no ticks a refused edit is never retried and the
     /// plugin keeps the older value.
-    fn flush_edits(&mut self, main: &MainThread) {
+    fn flush_edits(&mut self, main: MainThreadMarker) {
         let _ = main;
     }
 
     /// The plugin's own main-thread work (CLAP `on_main_thread`).
-    fn run_main_thread(&mut self, main: &MainThread) {
+    fn run_main_thread(&mut self, main: MainThreadMarker) {
         let _ = main;
     }
 
     /// Runs a plugin timer that is due.
-    fn run_timer(&mut self, main: &MainThread, id: TimerId) {
+    fn run_timer(&mut self, main: MainThreadMarker, id: TimerId) {
         let _ = (main, id);
     }
 
     /// Services a plugin file descriptor that is ready.
-    fn service_fd(&mut self, main: &MainThread, id: FdId) {
+    fn service_fd(&mut self, main: MainThreadMarker, id: FdId) {
         let _ = (main, id);
     }
 
@@ -205,20 +215,20 @@ pub trait Control: EditorWindow {
     /// appended to `out` in the order [`taken`](crate::taken) yields them, for
     /// [`Lifecycle::drive`](crate::Lifecycle::drive). A format with nothing to
     /// ask says so by pushing nothing.
-    fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
+    fn take_requests(&mut self, main: MainThreadMarker, out: &mut Vec<Request>) {
         let _ = (main, out);
     }
 
     /// Returns how this plugin takes a change of render mode: told live,
     /// read at its next activation, or not at all.
-    fn render_mode_support(&self, main: &MainThread) -> RenderModeSupport;
+    fn render_mode_support(&self, main: MainThreadMarker) -> RenderModeSupport;
 
     /// Tells a [`Live`](RenderModeSupport::Live) plugin its render mode now,
     /// and returns whether it took it. A host calls this only where
     /// [`render_mode_support`](Self::render_mode_support) is `Live`; elsewhere
     /// the mode reaches the plugin as the [`Prepare::mode`](crate::Prepare::mode)
     /// of its next activation, and this answers `false` and changes nothing.
-    fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
+    fn set_render_mode(&mut self, main: MainThreadMarker, mode: RenderMode) -> bool {
         let _ = (main, mode);
         false
     }
@@ -237,7 +247,7 @@ pub trait Control: EditorWindow {
     ///
     /// A served plugin (`Ipc`) reports none here: its server forwards them over
     /// the wire, and the bridge's listener hears each as it arrives.
-    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>) {
+    fn take_reported_edits(&mut self, main: MainThreadMarker, out: &mut Vec<ParamEdit>) {
         let _ = (main, out);
     }
 
@@ -276,7 +286,7 @@ pub trait Loaded: Control + Sized + Send {
     /// [`Refused`] when the plugin will not run at `prepare`.
     fn activate(
         self,
-        main: &MainThread,
+        main: MainThreadMarker,
         prepare: Prepare,
     ) -> Result<(Self::Processor, Self::Controller), Refused<Self>>;
 
@@ -287,7 +297,7 @@ pub trait Loaded: Control + Sized + Send {
     /// [`Stuck`], with both halves, for a pair from two activations or a plugin
     /// that will not stop.
     fn deactivate(
-        main: &MainThread,
+        main: MainThreadMarker,
         processor: Self::Processor,
         controller: Self::Controller,
     ) -> Result<Self, Stuck<Self::Processor, Self::Controller>>;
@@ -299,7 +309,7 @@ pub trait Loaded: Control + Sized + Send {
     ///
     /// [`Refused`], holding the plugin if it survived, when the instance cannot
     /// be rebuilt.
-    fn rebuild(self, main: &MainThread) -> Result<Self, Refused<Self>> {
+    fn rebuild(self, main: MainThreadMarker) -> Result<Self, Refused<Self>> {
         let _ = main;
         Ok(self)
     }
@@ -389,7 +399,7 @@ pub trait Processor: Send {
     /// Called from the node's `prepare`, which runs off the audio thread with
     /// the node out of any executor, so it may allocate; it starts the
     /// Processor over (its chunk phase and any chunk in flight), as a
-    /// [`reset`](Self::reset) does. Needs no [`MainThread`],
+    /// [`reset`](Self::reset) does. Needs no [`MainThreadMarker`],
     /// which is why the served hosting can take it from any thread.
     fn retune(&mut self, rate: SampleRate, max_block: Samples, quantum: Option<Samples>) -> bool {
         let _ = (rate, max_block, quantum);
@@ -408,10 +418,10 @@ pub trait Controller: Control + Send {
     type Processor: Processor;
 
     /// The latency the plugin reports now.
-    fn latency(&self, main: &MainThread) -> Samples;
+    fn latency(&self, main: MainThreadMarker) -> Samples;
 
     /// The tail the plugin reports now.
-    fn tail(&self, main: &MainThread) -> PluginTail;
+    fn tail(&self, main: MainThreadMarker) -> PluginTail;
 }
 
 /// A [`Control`] that is a loaded plugin's own, with what an activation adds.
@@ -446,13 +456,13 @@ pub trait Wraps {
 
     /// A host write, after the plugin took it (or instead of it): hands it to
     /// the Processor.
-    fn queue_write(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
+    fn queue_write(&mut self, main: MainThreadMarker, id: ParamId, value: Normalized) {
         let _ = (main, id, value);
     }
 
     /// A state or a preset load took: the writes queued before it are stale, and
     /// whatever it carried is owed to the Processor.
-    fn after_restore(&mut self, main: &MainThread) {
+    fn after_restore(&mut self, main: MainThreadMarker) {
         let _ = main;
     }
 
@@ -464,7 +474,7 @@ pub trait Wraps {
     /// As [`Control::save_state`].
     fn save_with_pending(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         state_use: StateUse,
     ) -> PluginResult<Vec<u8>> {
         self.plugin_mut().save_state(main, state_use)
@@ -472,7 +482,7 @@ pub trait Wraps {
 
     /// Appends what the Processor reported to `out`, after the plugin's own,
     /// which start at `from`.
-    fn collect_reports(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>, from: usize) {
+    fn collect_reports(&mut self, main: MainThreadMarker, out: &mut Vec<ParamEdit>, from: usize) {
         let _ = (main, out, from);
     }
 
@@ -483,13 +493,13 @@ pub trait Wraps {
 
     /// A rescan changed what the parameters are: the ranges the Processor
     /// denormalizes against are read again and republished.
-    fn republish_ranges(&mut self, main: &MainThread) {
+    fn republish_ranges(&mut self, main: MainThreadMarker) {
         let _ = main;
     }
 
     /// The control-side tick (every [`Event::Tick`](crate::Event::Tick)): retry
     /// or apply what the Processor owes, and let retired published values go.
-    fn tick(&mut self, main: &MainThread) {
+    fn tick(&mut self, main: MainThreadMarker) {
         let _ = main;
     }
 }
@@ -499,62 +509,72 @@ impl<W: Wraps> Control for W {
         self.plugin().info()
     }
 
-    fn wiring(&self, main: &MainThread) -> LoadedPlugin {
+    fn wiring(&self, main: MainThreadMarker) -> LoadedPlugin {
         self.plugin().wiring(main)
     }
 
-    fn parameters(&self, main: &MainThread) -> Vec<ParameterInfo> {
+    fn parameters(&self, main: MainThreadMarker) -> Vec<ParameterInfo> {
         self.plugin().parameters(main)
     }
 
-    fn parameter_count(&self, main: &MainThread) -> usize {
+    fn parameter_count(&self, main: MainThreadMarker) -> usize {
         self.plugin().parameter_count(main)
     }
 
-    fn parameter(&self, main: &MainThread, id: ParamId) -> Option<Normalized> {
+    fn parameter(&self, main: MainThreadMarker, id: ParamId) -> Option<Normalized> {
         self.plugin().parameter(main, id)
     }
 
-    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, main: MainThreadMarker, id: ParamId, value: Normalized) {
         if W::WRITES_PLUGIN {
             self.plugin_mut().set_parameter(main, id, value);
         }
         self.queue_write(main, id, value);
     }
 
-    fn parameter_plain(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
+    fn parameter_plain(
+        &self,
+        main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<f64> {
         self.plugin().parameter_plain(main, id, value)
     }
 
     fn parameter_normalized(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         id: ParamId,
         plain: f64,
     ) -> Option<Normalized> {
         self.plugin().parameter_normalized(main, id, plain)
     }
 
-    fn parameter_text(&self, main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+    fn parameter_text(
+        &self,
+        main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<String> {
         self.plugin().parameter_text(main, id, value)
     }
 
     fn parameter_value_from_text(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         id: ParamId,
         text: &str,
     ) -> Option<Normalized> {
         self.plugin().parameter_value_from_text(main, id, text)
     }
 
-    fn save_state(&mut self, main: &MainThread, state_use: StateUse) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, main: MainThreadMarker, state_use: StateUse) -> PluginResult<Vec<u8>> {
         self.save_with_pending(main, state_use)
     }
 
     fn load_state(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         bytes: &[u8],
         state_use: StateUse,
     ) -> PluginResult<()> {
@@ -563,11 +583,11 @@ impl<W: Wraps> Control for W {
         result
     }
 
-    fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
+    fn presets(&mut self, main: MainThreadMarker) -> Vec<Preset> {
         self.plugin_mut().presets(main)
     }
 
-    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
+    fn load_preset(&mut self, main: MainThreadMarker, id: &PresetId) -> bool {
         let loaded = self.plugin_mut().load_preset(main, id);
         if loaded {
             self.after_restore(main);
@@ -575,59 +595,59 @@ impl<W: Wraps> Control for W {
         loaded
     }
 
-    fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
+    fn current_preset(&mut self, main: MainThreadMarker) -> Option<PresetId> {
         self.plugin_mut().current_preset(main)
     }
 
-    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
+    fn set_automation_state(&mut self, main: MainThreadMarker, mode: AutomationMode) {
         self.plugin_mut().set_automation_state(main, mode);
     }
 
-    fn rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
+    fn rescan_parameters(&mut self, main: MainThreadMarker, scope: RescanScope) {
         self.plugin_mut().rescan_parameters(main, scope);
         if matches!(scope, RescanScope::Info | RescanScope::All) {
             self.republish_ranges(main);
         }
     }
 
-    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) -> Delivered {
+    fn set_track_info(&mut self, main: MainThreadMarker, info: &TrackInfo) -> Delivered {
         self.plugin_mut().set_track_info(main, info)
     }
 
-    fn rebuild_midi_mapping(&mut self, main: &MainThread) {
+    fn rebuild_midi_mapping(&mut self, main: MainThreadMarker) {
         self.plugin_mut().rebuild_midi_mapping(main);
     }
 
-    fn flush_edits(&mut self, main: &MainThread) {
+    fn flush_edits(&mut self, main: MainThreadMarker) {
         self.plugin_mut().flush_edits(main);
         self.tick(main);
     }
 
-    fn run_main_thread(&mut self, main: &MainThread) {
+    fn run_main_thread(&mut self, main: MainThreadMarker) {
         self.plugin_mut().run_main_thread(main);
     }
 
-    fn run_timer(&mut self, main: &MainThread, id: TimerId) {
+    fn run_timer(&mut self, main: MainThreadMarker, id: TimerId) {
         self.plugin_mut().run_timer(main, id);
     }
 
-    fn service_fd(&mut self, main: &MainThread, id: FdId) {
+    fn service_fd(&mut self, main: MainThreadMarker, id: FdId) {
         self.plugin_mut().service_fd(main, id);
     }
 
-    fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
+    fn take_requests(&mut self, main: MainThreadMarker, out: &mut Vec<Request>) {
         self.plugin_mut().take_requests(main, out);
     }
 
-    fn render_mode_support(&self, main: &MainThread) -> RenderModeSupport {
+    fn render_mode_support(&self, main: MainThreadMarker) -> RenderModeSupport {
         self.plugin().render_mode_support(main)
     }
 
-    fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
+    fn set_render_mode(&mut self, main: MainThreadMarker, mode: RenderMode) -> bool {
         self.plugin_mut().set_render_mode(main, mode)
     }
 
-    fn take_reported_edits(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>) {
+    fn take_reported_edits(&mut self, main: MainThreadMarker, out: &mut Vec<ParamEdit>) {
         let from = out.len();
         self.plugin_mut().take_reported_edits(main, out);
         self.collect_reports(main, out, from);
@@ -643,56 +663,60 @@ impl<W: Wraps> Control for W {
 }
 
 impl<W: Wraps> EditorWindow for W {
-    fn has_editor(&self, main: &MainThread) -> bool {
+    fn has_editor(&self, main: MainThreadMarker) -> bool {
         self.plugin().has_editor(main)
     }
 
     fn open_editor(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         parent: WindowHandle,
         scale: ContentScale,
     ) -> PluginResult<Size> {
         self.plugin_mut().open_editor(main, parent, scale)
     }
 
-    fn open_floating_editor(&mut self, main: &MainThread) -> PluginResult<()> {
+    fn open_floating_editor(&mut self, main: MainThreadMarker) -> PluginResult<()> {
         self.plugin_mut().open_floating_editor(main)
     }
 
-    fn set_editor_scale(&mut self, main: &MainThread, scale: ContentScale) -> PluginResult<()> {
+    fn set_editor_scale(
+        &mut self,
+        main: MainThreadMarker,
+        scale: ContentScale,
+    ) -> PluginResult<()> {
         self.plugin_mut().set_editor_scale(main, scale)
     }
 
-    fn editor_key(&mut self, main: &MainThread, event: KeyEvent) -> PluginResult<KeyUse> {
+    fn editor_key(&mut self, main: MainThreadMarker, event: KeyEvent) -> PluginResult<KeyUse> {
         self.plugin_mut().editor_key(main, event)
     }
 
-    fn close_editor(&mut self, main: &MainThread) {
+    fn close_editor(&mut self, main: MainThreadMarker) {
         self.plugin_mut().close_editor(main);
     }
 
-    fn editor_idle(&mut self, main: &MainThread) {
+    fn editor_idle(&mut self, main: MainThreadMarker) {
         self.plugin_mut().editor_idle(main);
     }
 
-    fn wakeups(&mut self, main: &MainThread, out: &mut Wakeups) {
+    fn wakeups(&mut self, main: MainThreadMarker, out: &mut Wakeups) {
         self.plugin_mut().wakeups(main, out);
     }
 
-    fn wake(&mut self, main: &MainThread, ready: &[Ready], now: Instant) {
+    fn wake(&mut self, main: MainThreadMarker, ready: &[Ready], now: Instant) {
         self.plugin_mut().wake(main, ready, now);
     }
 
-    fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
+    fn editor_capabilities(&mut self, main: MainThreadMarker) -> EditorCapabilities {
         self.plugin_mut().editor_capabilities(main)
     }
 
-    fn set_editor_size(&mut self, main: &MainThread, requested: Size) -> PluginResult<Size> {
+    fn set_editor_size(&mut self, main: MainThreadMarker, requested: Size) -> PluginResult<Size> {
         self.plugin_mut().set_editor_size(main, requested)
     }
 
-    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<Size> {
+    fn poll_editor_resize_request(&mut self, main: MainThreadMarker) -> Option<Size> {
         self.plugin_mut().poll_editor_resize_request(main)
     }
 }

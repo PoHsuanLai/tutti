@@ -114,7 +114,7 @@ fn load() -> Loaded {
     let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_probe(&path);
     let (unit, handle) = load_client::<Vst2Loaded>(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         &Load::new(),
@@ -316,14 +316,14 @@ fn the_parked_rate_reaches_the_plugin_on_the_main_thread_drain() {
     // The drain point: `editor_idle` is the per-frame main-thread call, and it
     // is reached through the handle rather than the node — the two ends of the
     // deferral are deliberately on opposite sides of the audio/control split.
-    loaded.handle.editor_idle(&main_thread());
+    loaded.handle.editor_idle(main_thread());
     assert_eq!(
         read_capture(&loaded.path).sample_rate,
         SAMPLE_RATE as f32,
         "the Processor is still on the audio thread"
     );
     process_block(&mut loaded.unit, BLOCK);
-    loaded.handle.editor_idle(&main_thread());
+    loaded.handle.editor_idle(main_thread());
 
     let after = read_capture(&loaded.path);
     assert_eq!(
@@ -381,9 +381,9 @@ fn a_drain_with_nothing_parked_dispatches_nothing() {
     let _guard = lock_probe();
     let loaded = load();
 
-    loaded.handle.editor_idle(&main_thread());
+    loaded.handle.editor_idle(main_thread());
     let before = read_capture(&loaded.path);
-    loaded.handle.editor_idle(&main_thread());
+    loaded.handle.editor_idle(main_thread());
     let after = read_capture(&loaded.path);
 
     assert_eq!(
@@ -507,7 +507,7 @@ fn outputs_past_the_tables_are_silent() {
         std::env::set_var("TUTTI_VST2_PROBE_OUTPUTS", WIDE.to_string());
     }
     let loaded = load_client::<Vst2Loaded>(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         &Load::new(),
@@ -668,9 +668,9 @@ fn an_io_change_reaches_a_subscriber_and_the_shape() {
     // The first pump asks the audio thread for the Processor back; the block hands it over
     // (between blocks), and the next pump restarts the plugin and reads it again.
     let mut loaded = loaded;
-    loaded.handle.editor_idle(&main_thread());
+    loaded.handle.editor_idle(main_thread());
     drive_block(&mut loaded.unit);
-    loaded.handle.editor_idle(&main_thread());
+    loaded.handle.editor_idle(main_thread());
 
     let seen = seen.lock().unwrap();
     assert!(

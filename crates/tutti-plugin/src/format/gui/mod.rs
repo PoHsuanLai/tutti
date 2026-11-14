@@ -8,12 +8,12 @@
 
 use std::path::Path;
 use tutti_plugin_types::{BridgeError, BridgeResult};
-use tutti_plugin_types::{Editor, MainThread, MainWorkHandle};
+use tutti_plugin_types::{Editor, MainThreadMarker, MainWorkHandle};
 use tutti_plugin_types::{Load, LoadStage};
 
 #[cfg(all(any(feature = "vst3", feature = "clap", feature = "au"), unix))]
 pub(crate) fn load_gui_instance(
-    main: &MainThread,
+    main: MainThreadMarker,
     work: &MainWorkHandle,
     path: &Path,
     load: &Load,
@@ -61,7 +61,7 @@ pub(crate) fn load_gui_instance(
     all(feature = "au", target_os = "macos")
 ))]
 fn editor<F: tutti_plugin_types::OutOfProcess>(
-    main: &MainThread,
+    main: MainThreadMarker,
     work: &MainWorkHandle,
     path: &Path,
     load: &Load,
@@ -80,7 +80,7 @@ where
 
 #[cfg(not(all(any(feature = "vst3", feature = "clap", feature = "au"), unix)))]
 pub(crate) fn load_gui_instance(
-    _main: &MainThread,
+    _main: MainThreadMarker,
     _work: &MainWorkHandle,
     path: &Path,
     _load: &Load,

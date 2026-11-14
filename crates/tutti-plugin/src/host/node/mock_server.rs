@@ -76,7 +76,7 @@ fn layout() -> SlabLayout {
 }
 
 fn no_editor(
-    _: &tutti_plugin_types::MainThread,
+    _: tutti_plugin_types::MainThreadMarker,
     _: &tutti_plugin_types::MainWorkHandle,
     path: &std::path::Path,
     _: &tutti_plugin_types::Load,

@@ -21,7 +21,7 @@
 //!
 //! The served control is **thread-agnostic**: the bridge answers a parameter
 //! read, a state save or a render-mode write from any thread. [`Control`](tutti_plugin_types::Control)'s
-//! methods take a [`MainThread`] because the
+//! methods take a [`MainThreadMarker`] because the
 //! trait is the in-process one, and here the token is ignored, never required:
 //! a caller with no token reaches the same bridge through
 //! [`Ipc::bridge`] / [`IpcController::bridge`]. Nothing in this module hops to
@@ -51,9 +51,9 @@ use std::time::Duration;
 
 use tutti_plugin_types::{
     BridgeError, BridgeResult, ChunkCounters, Controller, Load, LoadStage, Loaded, LoadedPlugin,
-    MainThread, ParameterChanges, ParameterQueue, PluginDescriptor, PluginError, PluginResult,
-    PluginTail, Prepare, ProcessWake, Refused, Reopen, Request, RestartRules, SampleFormat,
-    SampleRate, Samples, StateUse, Stuck,
+    MainThreadMarker, ParameterChanges, ParameterQueue, PluginDescriptor, PluginError,
+    PluginResult, PluginTail, Prepare, ProcessWake, Refused, Reopen, Request, RestartRules,
+    SampleFormat, SampleRate, Samples, StateUse, Stuck,
 };
 use tutti_types::AtomicSampleRate;
 
@@ -487,7 +487,7 @@ impl Ipc {
     }
 
     /// The bridge: the control socket and audio slab, for a caller that has
-    /// no [`MainThread`] to hold (the served control is thread-agnostic).
+    /// no [`MainThreadMarker`] to hold (the served control is thread-agnostic).
     pub fn bridge(&self) -> &Arc<PluginBridge> {
         &self.link.bridge
     }
@@ -561,7 +561,7 @@ impl std::fmt::Debug for IpcController {
 }
 
 impl IpcController {
-    /// The bridge, for a caller that has no [`MainThread`] to hold.
+    /// The bridge, for a caller that has no [`MainThreadMarker`] to hold.
     pub fn bridge(&self) -> &Arc<PluginBridge> {
         &self.link.bridge
     }
@@ -580,11 +580,11 @@ impl Controller for IpcController {
     /// which out-of-process audio adds (it is submitted now and collected a
     /// chunk later), is the Processor's ([`Processor::latency`](tutti_plugin_types::Processor::latency)): the node
     /// declares both, and that is what turns the chunk into compensated delay.
-    fn latency(&self, _main: &MainThread) -> Samples {
+    fn latency(&self, _main: MainThreadMarker) -> Samples {
         self.link.latency()
     }
 
-    fn tail(&self, _main: &MainThread) -> PluginTail {
+    fn tail(&self, _main: MainThreadMarker) -> PluginTail {
         self.link.tail()
     }
 }
@@ -643,14 +643,14 @@ impl Loaded for Ipc {
     /// that follows another tells it through [`Processor::retune`](tutti_plugin_types::Processor::retune).
     fn activate(
         self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         prepare: Prepare,
     ) -> Result<(IpcProcessor, IpcController), Refused<Self>> {
         self.activate_anywhere(prepare)
     }
 
     fn deactivate(
-        _main: &MainThread,
+        _main: MainThreadMarker,
         processor: IpcProcessor,
         controller: IpcController,
     ) -> Result<Self, Stuck<IpcProcessor, IpcController>> {
@@ -673,7 +673,7 @@ impl Loaded for Ipc {
 
 impl Reopen for Ipc {
     /// [`Ipc::reopen_restoring`] with no state. The token is not needed.
-    fn reopen(&self, _main: &MainThread) -> PluginResult<Self> {
+    fn reopen(&self, _main: MainThreadMarker) -> PluginResult<Self> {
         self.reopen_restoring(None)
             .map(|reopened| reopened.ipc)
             .map_err(|e| PluginError::Other(e.to_string()))

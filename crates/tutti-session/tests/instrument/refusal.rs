@@ -9,7 +9,7 @@ use tutti_session::{Error, NotInstrument};
 #[test]
 fn an_effect_plugin_is_refused() {
     let (mut session, loaded) = Plugin::effect();
-    match session.instrument_plugin(&main_thread(), loaded) {
+    match session.instrument_plugin(main_thread(), loaded) {
         Err(Error::NotInstrument {
             why: NotInstrument::Plugin(PluginRole::Effect),
             ..
@@ -21,6 +21,6 @@ fn an_effect_plugin_is_refused() {
 
 /// This process's main thread. Each test is its own process under nextest, so
 /// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
+fn main_thread() -> tutti_plugin_types::MainThreadMarker {
     tutti_fixtures::main_thread()
 }

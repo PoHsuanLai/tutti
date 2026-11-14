@@ -79,7 +79,7 @@ fn load(tasks: u32, task_us: u32, nested: bool) -> Active<f32> {
     }
     let path = Path::new(tutti_fixtures::clap_probe());
     let loaded = ClapLoaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         path,
         LoadOptions::new().library(path),

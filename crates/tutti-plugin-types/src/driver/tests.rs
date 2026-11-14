@@ -16,7 +16,7 @@ use crate::{
 
 /// The test process's main thread: nextest runs each test in its own process,
 /// so the claim always succeeds.
-fn main() -> MainThread {
+fn main() -> MainThreadMarker {
     tutti_fixtures::main_thread()
 }
 
@@ -63,7 +63,7 @@ impl Rig {
         let notices = &mut self.notices;
         self.state = self
             .lifecycle
-            .drive(state, event, &mut self.hand, &main(), |n| notices.push(n));
+            .drive(state, event, &mut self.hand, main(), |n| notices.push(n));
     }
 
     fn op(&mut self, op: HostOp) {
@@ -227,16 +227,16 @@ fn stuck_restores_both_halves() {
 #[test]
 fn a_pair_from_two_activations_is_refused() {
     let (plugin, loaded) = FakePlugin::new();
-    let (p1, c1) = loaded.activate(&main(), prepare(48_000.0)).unwrap();
-    let c1 = FakeLoaded::deactivate(&main(), p1, c1).unwrap();
-    let (p1, c1) = c1.activate(&main(), prepare(48_000.0)).unwrap();
+    let (p1, c1) = loaded.activate(main(), prepare(48_000.0)).unwrap();
+    let c1 = FakeLoaded::deactivate(main(), p1, c1).unwrap();
+    let (p1, c1) = c1.activate(main(), prepare(48_000.0)).unwrap();
     let (_, other) = FakePlugin::new();
-    let (p2, c2) = other.activate(&main(), prepare(48_000.0)).unwrap();
+    let (p2, c2) = other.activate(main(), prepare(48_000.0)).unwrap();
 
-    let stuck = FakeLoaded::deactivate(&main(), p1, c2).unwrap_err();
+    let stuck = FakeLoaded::deactivate(main(), p1, c2).unwrap_err();
     assert!(stuck.reason.to_string().contains("two activations"));
     // Both halves are back and still pair with their own.
-    FakeLoaded::deactivate(&main(), p2, c1).expect_err("crossed again");
+    FakeLoaded::deactivate(main(), p2, c1).expect_err("crossed again");
     drop(plugin);
 }
 
@@ -342,7 +342,7 @@ fn a_parameter_set_reaches_the_processor_at_the_next_block() {
     rig.lifecycle
         .control()
         .unwrap()
-        .set_parameter(&main(), a, Normalized::of(0.5));
+        .set_parameter(main(), a, Normalized::of(0.5));
     assert_eq!(rig.plugin.calls(), [Call::SetParameter(a)]);
     rig.plugin.clear_calls();
 
@@ -350,7 +350,7 @@ fn a_parameter_set_reaches_the_processor_at_the_next_block() {
     assert_eq!(
         rig.lifecycle
             .control_ref()
-            .and_then(|c| c.parameter(&main(), a))
+            .and_then(|c| c.parameter(main(), a))
             .map(Normalized::get),
         Some(0.5),
         "values survive the split"
@@ -359,11 +359,11 @@ fn a_parameter_set_reaches_the_processor_at_the_next_block() {
     rig.lifecycle
         .control()
         .expect("the plugin is there")
-        .set_parameter(&main(), a, Normalized::of(0.25));
+        .set_parameter(main(), a, Normalized::of(0.25));
     rig.lifecycle
         .control()
         .expect("the plugin is there")
-        .set_parameter(&main(), b, Normalized::of(0.75));
+        .set_parameter(main(), b, Normalized::of(0.75));
     rig.render(64).unwrap();
     rig.render(64).unwrap();
     assert_eq!(
@@ -408,7 +408,7 @@ fn control_is_reachable_loaded_active_and_refused() {
     assert!(
         rig.lifecycle
             .control_ref()
-            .map(|c| c.wiring(&main()))
+            .map(|c| c.wiring(main()))
             .is_some()
     );
     rig.plugin.refuse_rate(Some(SampleRate::of(1_000.0)));
@@ -424,14 +424,14 @@ fn state_round_trips_through_the_lifecycle() {
     rig.lifecycle
         .control()
         .expect("the plugin is there")
-        .load_state(&main(), b"abc", crate::StateUse::Project)
+        .load_state(main(), b"abc", crate::StateUse::Project)
         .unwrap();
     rig.op(HostOp::Activate(prepare(48_000.0)));
     assert_eq!(
         rig.lifecycle
             .control()
             .expect("the plugin is there")
-            .save_state(&main(), crate::StateUse::Project)
+            .save_state(main(), crate::StateUse::Project)
             .unwrap(),
         b"abc"
     );
@@ -586,16 +586,16 @@ fn a_refused_edit_is_retried_on_the_next_tick() {
     rig.lifecycle
         .control()
         .expect("the plugin is there")
-        .set_parameter(&main(), a, Normalized::of(0.1));
+        .set_parameter(main(), a, Normalized::of(0.1));
     // The ring holds one: these are refused, `b` twice.
     rig.lifecycle
         .control()
         .expect("the plugin is there")
-        .set_parameter(&main(), b, Normalized::of(0.2));
+        .set_parameter(main(), b, Normalized::of(0.2));
     rig.lifecycle
         .control()
         .expect("the plugin is there")
-        .set_parameter(&main(), b, Normalized::of(0.9));
+        .set_parameter(main(), b, Normalized::of(0.9));
     rig.plugin.clear_calls();
     rig.render(64).unwrap();
     assert_eq!(
@@ -613,7 +613,7 @@ fn a_refused_edit_is_retried_on_the_next_tick() {
     assert_eq!(
         rig.lifecycle
             .control_ref()
-            .and_then(|c| c.parameter(&main(), b))
+            .and_then(|c| c.parameter(main(), b))
             .map(Normalized::get),
         Some(0.9)
     );
@@ -758,20 +758,20 @@ fn the_fake_control_answers_nothing_in_either_state() {
         let main = main();
         let control = rig.lifecycle.control().expect("a plugin is held");
 
-        assert!(!control.set_render_mode(&main, RenderMode::Offline));
-        assert!(!control.has_editor(&main));
+        assert!(!control.set_render_mode(main, RenderMode::Offline));
+        assert!(!control.has_editor(main));
         assert!(matches!(
-            control.open_floating_editor(&main),
+            control.open_floating_editor(main),
             Err(PluginError::Editor(_))
         ));
-        control.close_editor(&main);
-        control.editor_idle(&main);
+        control.close_editor(main);
+        control.editor_idle(main);
 
         let mut requests = Vec::new();
-        control.take_requests(&main, &mut requests);
+        control.take_requests(main, &mut requests);
         assert!(requests.is_empty());
         let mut edits = Vec::new();
-        control.take_reported_edits(&main, &mut edits);
+        control.take_reported_edits(main, &mut edits);
         assert!(edits.is_empty());
     }
 }
@@ -789,8 +789,8 @@ fn an_adopted_plugin_is_in_the_state_a_driven_activation_leaves() {
 
     let (plugin, loaded) = FakePlugin::new();
     plugin.set_latency(Samples(32));
-    let wiring = Control::wiring(&loaded, &main());
-    let (processor, controller) = match loaded.activate(&main(), prepare(48_000.0)) {
+    let wiring = Control::wiring(&loaded, main());
+    let (processor, controller) = match loaded.activate(main(), prepare(48_000.0)) {
         Ok(halves) => halves,
         Err(_) => panic!("the fake activates"),
     };

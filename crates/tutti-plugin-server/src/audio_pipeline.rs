@@ -1386,7 +1386,7 @@ mod tests {
 
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut plugin, _) = Served::<Vst3Loaded>::load(
-            &tutti_fixtures::main_thread(),
+            tutti_fixtures::main_thread(),
             &tutti_fixtures::detached_work(),
             std::path::Path::new(crate::test_utils::vst3_probe_path()),
             &Load::new(),

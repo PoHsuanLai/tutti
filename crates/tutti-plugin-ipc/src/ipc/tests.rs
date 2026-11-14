@@ -61,7 +61,7 @@ impl Mock {
 }
 
 fn no_editor(
-    _: &tutti_plugin_types::MainThread,
+    _: tutti_plugin_types::MainThreadMarker,
     _: &tutti_plugin_types::MainWorkHandle,
     path: &std::path::Path,
     _: &tutti_plugin_types::Load,
@@ -263,7 +263,7 @@ fn prepare(block: usize) -> Prepare {
 }
 
 fn activate(ipc: Ipc, block: usize) -> (IpcProcessor, IpcController) {
-    match ipc.activate(&main_thread(), prepare(block)) {
+    match ipc.activate(main_thread(), prepare(block)) {
         Ok(halves) => halves,
         Err(refused) => panic!("{}", refused.reason),
     }
@@ -325,12 +325,12 @@ fn only_the_halves_of_one_activation_rejoin() {
     let ((first, _a), (second, _b)) = (mock(), mock());
     let (first_p, first_c) = activate(first, 32);
     let (second_p, second_c) = activate(second, 32);
-    let Err(stuck) = Ipc::deactivate(&main, first_p, second_c) else {
+    let Err(stuck) = Ipc::deactivate(main, first_p, second_c) else {
         panic!("a pair from two activations must not rejoin");
     };
     let (first_p, second_c) = (stuck.processor, stuck.controller);
-    let again = Ipc::deactivate(&main, first_p, first_c).expect("one activation rejoins");
-    assert!(again.activate(&main, prepare(32)).is_ok());
+    let again = Ipc::deactivate(main, first_p, first_c).expect("one activation rejoins");
+    assert!(again.activate(main, prepare(32)).is_ok());
     drop((second_p, second_c));
 }
 
@@ -353,10 +353,10 @@ fn the_controller_reports_what_the_plugin_re_reports() {
     let say = |latency| server.say(&BridgeMessage::LatencyChanged { samples: latency });
     let main = main_thread();
     let (_processor, mut controller) = activate(ipc, 32);
-    assert_eq!(controller.latency(&main), Samples(5));
+    assert_eq!(controller.latency(main), Samples(5));
     say(Samples(77));
     // An idle bridge reads nothing: the next command's reply reads it.
-    assert_eq!(controller.parameters(&main).len(), 1);
+    assert_eq!(controller.parameters(main).len(), 1);
     // The bridge's thread stores the latency, asks for the re-read, then
     // forwards the event, in that order: once the host has heard it, all
     // three are done.
@@ -373,11 +373,11 @@ fn the_controller_reports_what_the_plugin_re_reports() {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(controller.latency(&main), Samples(77));
+    assert_eq!(controller.latency(main), Samples(77));
     let mut asked = Vec::new();
-    controller.take_requests(&main, &mut asked);
+    controller.take_requests(main, &mut asked);
     assert_eq!(asked, [Request::LatencyChanged]);
-    controller.take_requests(&main, &mut asked);
+    controller.take_requests(main, &mut asked);
     assert_eq!(asked.len(), 1, "once");
     assert!(server.wait_for(|got| {
         got.iter()
@@ -393,14 +393,14 @@ fn a_plugin_with_no_origin_is_not_reopened() {
     let (ipc, _server) = mock();
     let err = ipc.reopen_restoring(None).expect_err("no origin");
     assert!(err.to_string().contains("no origin"), "{err}");
-    assert!(ipc.reopen(&main_thread()).is_err());
+    assert!(ipc.reopen(main_thread()).is_err());
 }
 
 /// The `Load` the last [`recording_editor`] was given.
 static EDITOR_LOAD: Mutex<Option<tutti_plugin_types::Load>> = Mutex::new(None);
 
 fn recording_editor(
-    _: &tutti_plugin_types::MainThread,
+    _: tutti_plugin_types::MainThreadMarker,
     _: &tutti_plugin_types::MainWorkHandle,
     path: &std::path::Path,
     load: &tutti_plugin_types::Load,
@@ -426,7 +426,7 @@ fn the_editor_instance_is_loaded_with_the_choice_the_bridge_was_made_for() {
         tutti_plugin_types::Origin::new("bundle.clap", chosen.clone()),
         crate::EditorLoader::new(recording_editor, tutti_fixtures::detached_work()),
     );
-    let refused = ipc.bridge().open_floating_editor(&main_thread());
+    let refused = ipc.bridge().open_floating_editor(main_thread());
     assert!(refused.is_err(), "the recording loader loads no editor");
     assert_eq!(*EDITOR_LOAD.lock().unwrap(), Some(chosen));
 }
@@ -451,12 +451,12 @@ fn a_remote_editor_opens_resizes_and_closes_over_the_wire() {
     let scale = ContentScale::new(2.0).expect("a scale");
 
     let size = ipc
-        .open_editor(&main, host_window(0x40_0001), scale)
+        .open_editor(main, host_window(0x40_0001), scale)
         .expect("the server opens it");
     assert_eq!(size, MOCK_EDITOR);
     let wanted = dpi::Size::Physical(dpi::PhysicalSize::new(801, 601));
-    assert_eq!(ipc.set_editor_size(&main, wanted).expect("resized"), wanted);
-    ipc.close_editor(&main);
+    assert_eq!(ipc.set_editor_size(main, wanted).expect("resized"), wanted);
+    ipc.close_editor(main);
 
     assert!(server.wait_for(|got| matches!(
         got,
@@ -475,7 +475,7 @@ fn a_remote_floating_editor_sends_no_parent() {
     use tutti_plugin_types::EditorWindow;
     let _machine = machine_lock();
     let (mut ipc, server) = mock_remote();
-    ipc.open_floating_editor(&main_thread()).expect("opens");
+    ipc.open_floating_editor(main_thread()).expect("opens");
     assert!(server.wait_for(|got| matches!(got, [HostMessage::OpenEditor { parent: None, .. }])));
 }
 
@@ -487,7 +487,7 @@ fn a_refused_remote_open_carries_the_servers_reason() {
     let _machine = machine_lock();
     let (mut ipc, _server) = mock_remote();
     let refused = ipc
-        .open_editor(&main_thread(), host_window(0), ContentScale::IDENTITY)
+        .open_editor(main_thread(), host_window(0), ContentScale::IDENTITY)
         .expect_err("the mock refuses a window 0");
     assert!(
         refused
@@ -508,7 +508,7 @@ fn what_the_servers_editor_says_unprompted_is_heard() {
     let _machine = machine_lock();
     let (mut ipc, server) = mock_remote();
     let main = main_thread();
-    ipc.open_editor(&main, host_window(0x40_0001), ContentScale::IDENTITY)
+    ipc.open_editor(main, host_window(0x40_0001), ContentScale::IDENTITY)
         .expect("opens");
     let asked = dpi::Size::Physical(dpi::PhysicalSize::new(1024, 768));
     server.say(&BridgeMessage::EditorWantsSize { size: asked });
@@ -516,15 +516,15 @@ fn what_the_servers_editor_says_unprompted_is_heard() {
     // An idle bridge reads nothing: the next command's reply reads both.
     assert_eq!(ipc.bridge().parameters().expect("answered").len(), 1);
 
-    assert_eq!(ipc.poll_editor_resize_request(&main), Some(asked));
-    assert_eq!(ipc.poll_editor_resize_request(&main), None, "once");
+    assert_eq!(ipc.poll_editor_resize_request(main), Some(asked));
+    assert_eq!(ipc.poll_editor_resize_request(main), None, "once");
     let refused = ipc
-        .set_editor_size(&main, asked)
+        .set_editor_size(main, asked)
         .expect_err("the server closed it");
     assert!(refused.to_string().contains("not open"), "{refused}");
     // A close of an editor the server already closed sends nothing: asked
     // after it, in order, a reply the mock answers proves what it was sent.
-    ipc.close_editor(&main);
+    ipc.close_editor(main);
     assert_eq!(ipc.bridge().parameters().expect("answered").len(), 1);
     assert!(
         !server
@@ -545,7 +545,7 @@ fn a_client_with_a_loader_sends_no_editor_message() {
     let _machine = machine_lock();
     let (mut ipc, server) = mock();
     assert!(
-        ipc.open_floating_editor(&main_thread()).is_err(),
+        ipc.open_floating_editor(main_thread()).is_err(),
         "no editor in these tests"
     );
     assert_eq!(ipc.bridge().parameters().expect("answered").len(), 1);

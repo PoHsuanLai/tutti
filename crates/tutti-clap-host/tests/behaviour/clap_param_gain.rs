@@ -131,7 +131,7 @@ impl GainSession<'_> {
     fn activate(&self) -> Active<f32> {
         let path = Path::new(tutti_fixtures::clap_probe());
         let loaded = ClapLoaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             path,
             LoadOptions::new().library(path),
@@ -408,7 +408,7 @@ fn the_host_reports_the_probes_declared_gain_range() {
     let loaded = {
         let path = Path::new(tutti_fixtures::clap_probe());
         ClapLoaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             path,
             LoadOptions::new().library(path),
@@ -417,7 +417,7 @@ fn the_host_reports_the_probes_declared_gain_range() {
     };
 
     let (min, max) = loaded
-        .parameter_range(&main_thread(), GAIN_PARAM_ID)
+        .parameter_range(main_thread(), GAIN_PARAM_ID)
         .unwrap_or_else(|| {
             panic!(
                 "the host did not enumerate the probe's Gain parameter (id \

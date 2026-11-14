@@ -85,11 +85,11 @@ fn a_registered_descriptor_that_becomes_readable_is_served_well_under_a_tick() {
         &mut fixture.session,
         &mut transport,
         &mut Native::default(),
-        &main,
+        main,
         &render,
         SLOW_TICK,
     );
-    fixture.session.drop_plugin(&main);
+    fixture.session.drop_plugin(main);
     drop(render.stop());
     assert!(result.is_ok(), "{result:?}");
 

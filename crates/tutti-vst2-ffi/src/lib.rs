@@ -56,13 +56,13 @@
 //!     let path = Path::new("/path/to/vst");
 //!
 //!     let mut loader = PluginLoader::load(path, host.clone()).unwrap();
-//!     let main = tutti_plugin_types::MainThread::new().unwrap();
+//!     let main = tutti_plugin_types::MainThreadMarker::new().unwrap();
 //!     let (_collector, work) = tutti_plugin_types::MainWork::new();
-//!     let mut instance = loader.instance(&main, &work).unwrap();
+//!     let mut instance = loader.instance(main, &work).unwrap();
 //!
 //!     println!("Loaded {}", instance.get_info().name);
 //!
-//!     instance.init(&main);
+//!     instance.init(main);
 //!     println!("Initialized instance!");
 //!
 //!     println!("Closing instance...");

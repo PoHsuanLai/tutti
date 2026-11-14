@@ -48,7 +48,7 @@ impl Vst2Loaded {
     ///
     /// `getParameter` is callable from either thread under the VST2 SDK (as is
     /// `setParameter`, see [`write_parameter`](Self::write_parameter)), so this
-    /// takes no [`MainThread`](tutti_plugin_types::MainThread): the in-process
+    /// takes no [`MainThreadMarker`](tutti_plugin_types::MainThreadMarker): the in-process
     /// backend reads it behind its own lock, from whichever thread asks.
     pub fn parameter_value(&self, id: ParamId) -> Option<Normalized> {
         let index = self.param_index(id)?;

@@ -81,12 +81,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .sample_rate(RATE)
         .max_block(MaxBlock::of(Samples(512)))
         .build()?;
-    let main = tutti::plugin::MainThread::new().ok_or("run on the process's main thread")?;
+    let main = tutti::plugin::MainThreadMarker::new().ok_or("run on the process's main thread")?;
     let loaded = session
         .plugin_load(PluginLoadRequest::new(plugin))
         .with_catalog(&catalog)
         .run();
-    let node = session.add_plugin(&main, loaded)?;
+    let node = session.add_plugin(main, loaded)?;
 
     // 4. Wire it: the plugin's outputs feed the root's channels. `node` is a
     //    `Key<PluginNode>`: ports come from it as from any node's key

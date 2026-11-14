@@ -119,7 +119,7 @@ fn latency_declared_after_construction_reaches_the_metadata() {
     let instance = probe.load();
 
     assert_eq!(
-        instance.wiring(&main_thread()).latency_samples,
+        instance.wiring(main_thread()).latency_samples,
         Samples(LATE_LATENCY as usize),
         "the host read `initialDelay` from the construction-time snapshot, \
          before the plugin had been told its sample rate"
@@ -138,7 +138,7 @@ fn a_plugin_with_no_latency_reports_none() {
     let instance = probe.load();
 
     assert_eq!(
-        instance.wiring(&main_thread()).latency_samples,
+        instance.wiring(main_thread()).latency_samples,
         Samples(0),
         "a probe declaring no latency must not acquire one"
     );
@@ -165,7 +165,7 @@ fn the_latency_accessor_reads_the_live_field() {
     );
     assert_eq!(
         instance.loaded().latency_samples(),
-        instance.wiring(&main_thread()).latency_samples,
+        instance.wiring(main_thread()).latency_samples,
         "the accessor and the wiring read the same field"
     );
 }

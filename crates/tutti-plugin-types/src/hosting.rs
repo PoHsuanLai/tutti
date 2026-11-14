@@ -18,8 +18,8 @@ use dpi::Size;
 
 use crate::{
     AutomationMode, ContentScale, EditorCapabilities, EditorError, KeyEvent, KeyUse, Loaded,
-    MainThread, MainWorkHandle, Normalized, ParamEdit, ParamId, PluginError, PluginResult, Ready,
-    Request, Wakeups, WindowHandle,
+    MainThreadMarker, MainWorkHandle, Normalized, ParamEdit, ParamId, PluginError, PluginResult,
+    Ready, Request, Wakeups, WindowHandle,
 };
 
 /// What to load from a plugin file: which plugin, when the file exports
@@ -113,7 +113,7 @@ pub trait InProcess: Loaded {
     /// itself off the main thread hands its close there (see
     /// [`MainWork`](crate::MainWork)).
     fn load_in_process(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,
@@ -148,7 +148,7 @@ pub trait OutOfProcess: Loaded {
     ///
     /// As [`InProcess::load_in_process`].
     fn load_served(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,
@@ -161,7 +161,7 @@ pub trait OutOfProcess: Loaded {
     ///
     /// As [`InProcess::load_in_process`].
     fn load_editor(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,
@@ -180,11 +180,11 @@ pub trait Reopen: Loaded {
     /// # Errors
     ///
     /// As [`InProcess::load_in_process`].
-    fn reopen(&self, main: &MainThread) -> PluginResult<Self>;
+    fn reopen(&self, main: MainThreadMarker) -> PluginResult<Self>;
 }
 
 impl<F: InProcess> Reopen for F {
-    fn reopen(&self, main: &MainThread) -> PluginResult<Self> {
+    fn reopen(&self, main: MainThreadMarker) -> PluginResult<Self> {
         let origin = self.origin();
         F::load_in_process(main, self.main_work(), origin.path(), origin.load())
     }
@@ -193,7 +193,7 @@ impl<F: InProcess> Reopen for F {
 /// A plugin's editor window, in whatever object holds the plugin: a
 /// [`Control`](crate::Control) (loaded or active) or an [`Editor`] (the
 /// editor-only instance). Every method is a main-thread call, which the
-/// `&MainThread` proves.
+/// `MainThreadMarker` proves.
 ///
 /// Every method is required but [`open_floating_editor`](Self::open_floating_editor),
 /// [`set_editor_scale`](Self::set_editor_scale) and [`editor_key`](Self::editor_key), whose default is a typed
@@ -201,7 +201,7 @@ impl<F: InProcess> Reopen for F {
 /// inheriting one.
 pub trait EditorWindow {
     /// Whether the plugin has an editor it can embed or open.
-    fn has_editor(&self, main: &MainThread) -> bool;
+    fn has_editor(&self, main: MainThreadMarker) -> bool;
 
     /// Embeds the editor into `parent`, whose backing-store scale is `scale`
     /// (forwarded where the format takes it; see [`ContentScale`]), and returns
@@ -215,7 +215,7 @@ pub trait EditorWindow {
     /// The plugin has no editor, or refuses or fails to open it.
     fn open_editor(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         parent: WindowHandle,
         scale: ContentScale,
     ) -> PluginResult<Size>;
@@ -228,7 +228,7 @@ pub trait EditorWindow {
     /// # Errors
     ///
     /// The format has no floating editor, or the plugin refuses.
-    fn open_floating_editor(&mut self, main: &MainThread) -> PluginResult<()> {
+    fn open_floating_editor(&mut self, main: MainThreadMarker) -> PluginResult<()> {
         let _ = main;
         Err(PluginError::Editor(EditorError::PluginError(
             "this plugin format has no floating-window editor".into(),
@@ -248,7 +248,11 @@ pub trait EditorWindow {
     ///
     /// [`EditorError::ScaleUnsupported`] as above, and any other refusal of the
     /// plugin or of a missing editor.
-    fn set_editor_scale(&mut self, main: &MainThread, scale: ContentScale) -> PluginResult<()> {
+    fn set_editor_scale(
+        &mut self,
+        main: MainThreadMarker,
+        scale: ContentScale,
+    ) -> PluginResult<()> {
         let _ = (main, scale);
         Err(PluginError::Editor(EditorError::ScaleUnsupported))
     }
@@ -264,14 +268,14 @@ pub trait EditorWindow {
     ///
     /// [`EditorError::KeysUnsupported`] as above, and any other refusal of the plugin or of
     /// a missing editor.
-    fn editor_key(&mut self, main: &MainThread, event: KeyEvent) -> PluginResult<KeyUse> {
+    fn editor_key(&mut self, main: MainThreadMarker, event: KeyEvent) -> PluginResult<KeyUse> {
         let _ = (main, event);
         Err(PluginError::Editor(EditorError::KeysUnsupported))
     }
 
     /// Closes the editor. The plugin stays loaded. Nothing happens when no
     /// editor is open.
-    fn close_editor(&mut self, main: &MainThread);
+    fn close_editor(&mut self, main: MainThreadMarker);
 
     /// The editor's main-thread tick, where the format has one that is not a
     /// request: VST2's `effEditIdle`, VST3's run loop on Linux. What a plugin
@@ -280,7 +284,7 @@ pub trait EditorWindow {
     /// [`Lifecycle::drive`](crate::Lifecycle::drive), so a [`Control`](crate::Control)
     /// that has no such tick does nothing here. An [`Editor`] has no
     /// `Lifecycle` to feed, so its idle serves those requests itself.
-    fn editor_idle(&mut self, main: &MainThread);
+    fn editor_idle(&mut self, main: MainThreadMarker);
 
     /// What the plugin wants the host's main loop to wait on, added to `out`
     /// (the caller clears it first): the descriptors it asked to have watched
@@ -293,7 +297,7 @@ pub trait EditorWindow {
     /// A deadline is when a wait should end, not a promise to fire: a format
     /// floors a period it cannot serve at once so that a timer asking for zero
     /// does not spin the loop.
-    fn wakeups(&mut self, main: &MainThread, out: &mut Wakeups) {
+    fn wakeups(&mut self, main: MainThreadMarker, out: &mut Wakeups) {
         let _ = (main, out);
     }
 
@@ -305,12 +309,12 @@ pub trait EditorWindow {
     /// ([`Control::take_requests`](crate::Control::take_requests): CLAP's
     /// `on_fd` and `on_timer`, under the lifecycle's budget). The default does
     /// nothing.
-    fn wake(&mut self, main: &MainThread, ready: &[Ready], now: Instant) {
+    fn wake(&mut self, main: MainThreadMarker, ready: &[Ready], now: Instant) {
         let _ = (main, ready, now);
     }
 
     /// The view's static resize capabilities.
-    fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities;
+    fn editor_capabilities(&mut self, main: MainThreadMarker) -> EditorCapabilities;
 
     /// Asks the view to take `requested`, in either unit (converted at the
     /// editor's scale where the format counts in the other); it answers with the
@@ -320,11 +324,11 @@ pub trait EditorWindow {
     /// # Errors
     ///
     /// The format or the plugin cannot resize.
-    fn set_editor_size(&mut self, main: &MainThread, requested: Size) -> PluginResult<Size>;
+    fn set_editor_size(&mut self, main: MainThreadMarker, requested: Size) -> PluginResult<Size>;
 
     /// A size the plugin asked its window to take, if it asked since the last
     /// poll, in the format's own unit.
-    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<Size>;
+    fn poll_editor_resize_request(&mut self, main: MainThreadMarker) -> Option<Size>;
 }
 
 /// The editor-only instance an [`OutOfProcess`] format loads in the host
@@ -333,25 +337,25 @@ pub trait EditorWindow {
 /// It shows the plugin's GUI and is kept faithful to the audio instance by the
 /// host: parameter writes and the state blob go to it, and the parameter edits
 /// the user makes in it come back through [`poll_edits`](Self::poll_edits).
-/// Every method is a main-thread call, which the `&MainThread` proves. Its
+/// Every method is a main-thread call, which the `MainThreadMarker` proves. Its
 /// window is an [`EditorWindow`].
 pub trait Editor: EditorWindow + Send {
     /// Mirrors a parameter write so the editor's display follows a host-side
     /// edit. Normalized, as the audio path takes it; an impl denormalizes at its
     /// own edge if its format speaks plain units.
-    fn set_parameter(&mut self, main: &MainThread, id: ParamId, value: Normalized);
+    fn set_parameter(&mut self, main: MainThreadMarker, id: ParamId, value: Normalized);
 
     /// Mirrors the audio instance's state into the editor instance.
     ///
     /// # Errors
     ///
     /// The plugin refuses the state.
-    fn set_state(&mut self, main: &MainThread, data: &[u8]) -> PluginResult<()>;
+    fn set_state(&mut self, main: MainThreadMarker, data: &[u8]) -> PluginResult<()>;
 
     /// The parameter edits the user made in the editor since the last poll, in
     /// the order the plugin made them: the changes the host sends to the audio
     /// instance, and the gesture around them.
-    fn poll_edits(&mut self, main: &MainThread) -> Vec<ParamEdit>;
+    fn poll_edits(&mut self, main: MainThreadMarker) -> Vec<ParamEdit>;
 
     /// The editor instance's whole state, for the host to give the audio
     /// instance what the user changed in the editor that is not a parameter.
@@ -359,13 +363,13 @@ pub trait Editor: EditorWindow + Send {
     /// # Errors
     ///
     /// The plugin cannot save its state.
-    fn save_state(&mut self, main: &MainThread) -> PluginResult<Vec<u8>>;
+    fn save_state(&mut self, main: MainThreadMarker) -> PluginResult<Vec<u8>>;
 
     /// Whether the plugin said its state changed since the last call (CLAP
     /// `state.mark_dirty`, VST3 `setDirty`). Consumes the signal. `false` for a
     /// format without one; the host still reads the state when the editor
     /// closes.
-    fn take_dirty(&mut self, main: &MainThread) -> bool {
+    fn take_dirty(&mut self, main: MainThreadMarker) -> bool {
         let _ = main;
         false
     }
@@ -379,13 +383,13 @@ pub trait Editor: EditorWindow + Send {
     /// it yields is a [`Request::Transport`] (CLAP `transport-control`: a
     /// plugin's own buttons call the host of the instance that shows them). A
     /// format with nothing to ask keeps the default and appends nothing.
-    fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
+    fn take_requests(&mut self, main: MainThreadMarker, out: &mut Vec<Request>) {
         let _ = (main, out);
     }
 
     /// Shows the host's automation mode in the editor. No-op for a format
     /// without the concept.
-    fn set_automation_state(&mut self, main: &MainThread, mode: AutomationMode) {
+    fn set_automation_state(&mut self, main: MainThreadMarker, mode: AutomationMode) {
         let _ = (main, mode);
     }
 }

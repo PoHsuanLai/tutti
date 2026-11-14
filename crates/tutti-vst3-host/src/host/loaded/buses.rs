@@ -2,14 +2,14 @@
 
 use super::*;
 use crate::host::instance::bus_layout;
-use tutti_plugin_types::{BusRole, MainThread, PluginBus, PluginBuses};
+use tutti_plugin_types::{BusRole, MainThreadMarker, PluginBus, PluginBuses};
 
 impl Vst3Loaded {
     /// Reads the current processing latency directly from
     /// `IAudioProcessor::getLatencySamples`. Call this at load time and
     /// whenever [`RestartOutcome::latency_changed`] is set to get the fresh
     /// value for PDC.
-    pub fn latency_samples(&self, _main: &MainThread) -> u32 {
+    pub fn latency_samples(&self, _main: MainThreadMarker) -> u32 {
         self.plugin.latency_samples()
     }
 
@@ -20,14 +20,14 @@ impl Vst3Loaded {
     /// effectively unbounded one) both reach the caller as the plugin stated
     /// them. `PluginTail::from_vst3_samples` is what turns those into the shared
     /// vocabulary; this stays at the ABI's own type so nothing is decided here.
-    pub fn tail_samples(&self, _main: &MainThread) -> u32 {
+    pub fn tail_samples(&self, _main: MainThreadMarker) -> u32 {
         self.plugin.tail_samples()
     }
 
     /// Queries the plugin's offline/prefetch processing support via
     /// `IPrefetchableSupport`. `None` if the plugin doesn't implement the
     /// interface. Main/UI thread.
-    pub fn prefetchable_support(&self, main: &MainThread) -> Option<PrefetchSupport> {
+    pub fn prefetchable_support(&self, main: MainThreadMarker) -> Option<PrefetchSupport> {
         self.plugin.prefetchable_support(main)
     }
 
@@ -39,7 +39,7 @@ impl Vst3Loaded {
     /// interface. Main/UI thread.
     pub fn set_audio_presentation_latency(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         dir: crate::BusDirection,
         bus_index: i32,
         latency_samples: u32,
@@ -57,7 +57,7 @@ impl Vst3Loaded {
     /// deactivate/reactivate cycle. Deliberately not public:
     /// on a live instance this must never be reached on its own, or the
     /// re-enumeration runs mid-activation.
-    pub(crate) fn reconcile_bus_counts(&mut self, main: &MainThread) {
+    pub(crate) fn reconcile_bus_counts(&mut self, main: MainThreadMarker) {
         if let Some(layout) = self
             .plugin
             .audio_bus_channel_count(main, BusDirection::Input)
@@ -122,7 +122,7 @@ impl Vst3Loaded {
     /// by speaker"), and its role from `busType`: `kMain` is
     /// [`BusRole::Main`], `kAux` (or a bus whose info cannot be read)
     /// [`BusRole::Aux`]. VST3 marks no bus a sidechain.
-    pub fn buses(&self, main: &MainThread, direction: BusDirection) -> PluginBuses {
+    pub fn buses(&self, main: MainThreadMarker, direction: BusDirection) -> PluginBuses {
         let widths = match direction {
             BusDirection::Input => &self.info.input_bus_channels,
             BusDirection::Output => &self.info.output_bus_channels,
@@ -156,7 +156,7 @@ impl Vst3Loaded {
     /// mask carries *which speaker each channel is*, which a popcount discards.
     pub(in crate::host) fn read_back_arrangements(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         direction: BusDirection,
         num_buses: usize,
     ) -> Vec<ChannelTopology> {

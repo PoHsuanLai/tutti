@@ -21,11 +21,11 @@ use crate::{
 };
 
 fn read<C: Control + ?Sized>(c: &C, param: Param) -> Option<f64> {
-    c.parameter(&main_thread(), param.id()).map(Normalized::get)
+    c.parameter(main_thread(), param.id()).map(Normalized::get)
 }
 
 fn write<C: Control + ?Sized>(c: &mut C, param: Param, value: f64) {
-    c.set_parameter(&main_thread(), param.id(), Normalized::clamped(value));
+    c.set_parameter(main_thread(), param.id(), Normalized::clamped(value));
 }
 
 fn activate<L: Loaded>(loaded: L, block: usize) -> Active<L> {
@@ -109,10 +109,10 @@ pub fn buses_reported<F: Format>() {
     let want = [(spec::MAIN_BUS, BusRole::Main)];
     let of =
         |buses: &[PluginBus]| -> Vec<_> { buses.iter().map(|b| (b.channels, b.role)).collect() };
-    let loaded = F::load().wiring(&main);
+    let loaded = F::load().wiring(main);
     assert_eq!(of(&loaded.inputs), want, "loaded inputs");
     assert_eq!(of(&loaded.outputs), want, "loaded outputs");
-    let active = active_in::<F>(Mode::Tag).controller().wiring(&main);
+    let active = active_in::<F>(Mode::Tag).controller().wiring(main);
     assert_eq!(of(&active.inputs), want, "active inputs");
     assert_eq!(of(&active.outputs), want, "active outputs");
 }
@@ -123,13 +123,13 @@ pub fn latency_reported<F: Format>() {
     assert_eq!(
         active_in::<F>(Mode::Delay)
             .controller()
-            .latency(&main_thread()),
+            .latency(main_thread()),
         spec::LATENCY
     );
     assert_eq!(
         active_in::<F>(Mode::Tag)
             .controller()
-            .latency(&main_thread()),
+            .latency(main_thread()),
         Samples(0)
     );
 }
@@ -186,7 +186,7 @@ pub fn reset_clears_the_delay_line<F: Format>() {
 /// Spec: clap.ext.tail.get, vst3.IAudioProcessor.getTailSamples, vst2.eff.GetTailSize, au.prop.TailTime
 pub fn tail_reported<F: Format>() {
     assert_eq!(
-        active_in::<F>(Mode::Tag).controller().tail(&main_thread()),
+        active_in::<F>(Mode::Tag).controller().tail(main_thread()),
         PluginTail::Finite(spec::TAIL)
     );
 }
@@ -204,13 +204,13 @@ pub fn tail_markers_reported<F: Format>() {
     let mut loaded = F::load();
     select_tail::<F, _>(&mut loaded, spec::TAIL_PAST_CAP);
     assert_eq!(
-        loaded.wiring(&main).tail,
+        loaded.wiring(main).tail,
         PluginTail::Finite(spec::TAIL_PAST_CAP_FRAMES),
         "a finite tail past the graph's bound"
     );
     if let Some(infinite) = spec.infinite_tail {
         select_tail::<F, _>(&mut loaded, spec::TAIL_INFINITE);
-        assert_eq!(loaded.wiring(&main).tail, infinite, "the infinite marker");
+        assert_eq!(loaded.wiring(main).tail, infinite, "the infinite marker");
     }
 }
 
@@ -219,7 +219,7 @@ pub fn tail_markers_reported<F: Format>() {
 /// flag carries none, and VST2 has no steps.
 /// Spec: clap.ext.params.count, clap.ext.params.get_info, vst3.IEditController.getParameterCount, vst3.IEditController.getParameterInfo, vst2.field.numParams, vst2.eff.GetParamName, au.prop.ParameterList, au.prop.ParameterInfo
 pub fn parameters_listed<F: Format>() {
-    let mut got = F::load().parameters(&main_thread());
+    let mut got = F::load().parameters(main_thread());
     got.sort_by_key(|p| p.id().get());
     assert_eq!(got.len(), Param::ALL.len(), "the listed parameters");
     for (info, &(param, default)) in got.iter().zip(&Param::ALL) {
@@ -270,11 +270,11 @@ pub fn parameter_conversion_is_the_formats_own<F: Format>() {
         let main = main_thread();
         let tone = F::SURFACE.tone;
         for (i, &n) in spec::TONE_AT.iter().enumerate() {
-            let plain = c.parameter_plain(&main, Param::Tone.id(), Normalized::of(n));
+            let plain = c.parameter_plain(main, Param::Tone.id(), Normalized::of(n));
             let Some(want) = tone.plain else {
                 assert_eq!(plain, None, "tone plain at {n} ({when})");
                 assert_eq!(
-                    c.parameter_normalized(&main, Param::Tone.id(), 0.5),
+                    c.parameter_normalized(main, Param::Tone.id(), 0.5),
                     None,
                     "tone normalized ({when})"
                 );
@@ -283,7 +283,7 @@ pub fn parameter_conversion_is_the_formats_own<F: Format>() {
             let plain = plain.unwrap_or_else(|| panic!("tone plain at {n} ({when}): none"));
             assert_close::<F>(plain, want[i], &format!("tone plain at {n} ({when})"));
             let back = c
-                .parameter_normalized(&main, Param::Tone.id(), plain)
+                .parameter_normalized(main, Param::Tone.id(), plain)
                 .unwrap_or_else(|| panic!("tone normalized at {plain} ({when}): none"));
             assert!(
                 (back.get() - n).abs() < 1e-9,
@@ -292,12 +292,12 @@ pub fn parameter_conversion_is_the_formats_own<F: Format>() {
             );
         }
         assert_eq!(
-            c.parameter_plain(&main, spec::UNLISTED, Normalized::of(0.5)),
+            c.parameter_plain(main, spec::UNLISTED, Normalized::of(0.5)),
             None,
             "an unlisted id has a plain value ({when})"
         );
         assert_eq!(
-            c.parameter_normalized(&main, spec::UNLISTED, 0.5),
+            c.parameter_normalized(main, spec::UNLISTED, 0.5),
             None,
             "an unlisted id has a normalized value ({when})"
         );
@@ -322,13 +322,13 @@ pub fn parameter_round_trip<F: Format>() {
 pub fn unlisted_parameter_is_none<F: Format>() {
     let loaded = F::load();
     assert_eq!(
-        loaded.parameter(&main_thread(), spec::UNLISTED),
+        loaded.parameter(main_thread(), spec::UNLISTED),
         None,
         "loaded"
     );
     let a = activate(loaded, BLOCK);
     assert_eq!(
-        a.controller().parameter(&main_thread(), spec::UNLISTED),
+        a.controller().parameter(main_thread(), spec::UNLISTED),
         None,
         "active"
     );
@@ -380,7 +380,7 @@ pub fn automation_segment_and_step<F: Format>() {
         BLOCK,
         &ProcessContext::new().params(&points),
     );
-    tutti_plugin_types::Control::flush_edits(a.controller_mut(), &main_thread());
+    tutti_plugin_types::Control::flush_edits(a.controller_mut(), main_thread());
     let t = transcript::<F, _>(a.controller_mut());
     let sent: Vec<(u32, f64)> = t.of(Kind::Param).map(|e| (e.offset, e.value)).collect();
     let level = Param::Level.id().get();
@@ -456,7 +456,7 @@ pub fn arrival_is_ordered_and_sized<F: Format>() {
     }
     // The control side's tick: a host that tells its listeners of the block's
     // parameters writes the unit here, and the transcript would show it.
-    tutti_plugin_types::Control::flush_edits(a.controller_mut(), &main_thread());
+    tutti_plugin_types::Control::flush_edits(a.controller_mut(), main_thread());
     let t = transcript::<F, _>(a.controller_mut());
     assert_eq!(t.blocks, [64, 1, 7, 33], "block sizes the host sent");
     for kind in [Kind::Param, Kind::NoteOn, Kind::NoteOff] {
@@ -607,8 +607,8 @@ fn surfaced<F: Format>(c: &mut dyn Control) -> Surfaced {
     let mut requests = Vec::new();
     let mut edits = Vec::new();
     // What the setup itself raised (its own state loads) is not the witness.
-    c.take_requests(&main, &mut requests);
-    c.take_reported_edits(&main, &mut edits);
+    c.take_requests(main, &mut requests);
+    c.take_reported_edits(main, &mut edits);
     requests.clear();
     edits.clear();
     if F::SURFACE.notices {
@@ -622,13 +622,13 @@ fn surfaced<F: Format>(c: &mut dyn Control) -> Surfaced {
             spec::NOTICE_ON_LOAD,
         );
     }
-    c.take_requests(&main, &mut requests);
-    c.take_reported_edits(&main, &mut edits);
+    c.take_requests(main, &mut requests);
+    c.take_reported_edits(main, &mut edits);
     Surfaced {
-        has_editor: c.has_editor(&main),
-        render_mode: c.render_mode_support(&main),
+        has_editor: c.has_editor(main),
+        render_mode: c.render_mode_support(main),
         reports_render_mode: c
-            .wiring(&main)
+            .wiring(main)
             .features
             .contains(tutti_plugin_types::Features::RENDER_MODE),
         requests,
@@ -679,7 +679,7 @@ pub fn a_gesture_is_reported_in_order<F: Format>() {
     let mut a = active_in::<F>(Mode::Tag);
     let main = main_thread();
     let mut setup = Vec::new();
-    a.controller_mut().take_reported_edits(&main, &mut setup);
+    a.controller_mut().take_reported_edits(main, &mut setup);
     select::<F, _>(
         a.controller_mut(),
         if F::SURFACE.selects_editor {
@@ -691,13 +691,13 @@ pub fn a_gesture_is_reported_in_order<F: Format>() {
     );
     a.silent(BLOCK);
     let mut got = Vec::new();
-    a.controller_mut().take_reported_edits(&main, &mut got);
+    a.controller_mut().take_reported_edits(main, &mut got);
     assert_eq!(got, gesture_edits(), "the gesture, in order");
 
     // One load is one gesture: nothing more arrives from a quiet block.
     a.silent(BLOCK);
     let mut more = Vec::new();
-    a.controller_mut().take_reported_edits(&main, &mut more);
+    a.controller_mut().take_reported_edits(main, &mut more);
     assert_eq!(more, [], "the gesture is reported once");
 }
 
@@ -708,16 +708,12 @@ pub fn state_round_trip<F: Format>() {
     write(&mut loaded, Param::Level, 0.75);
     write(&mut loaded, Param::Aux, 0.5);
     let saved = loaded
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("saves");
     write(&mut loaded, Param::Level, 0.125);
     write(&mut loaded, Param::Aux, 0.0);
     loaded
-        .load_state(
-            &main_thread(),
-            &saved,
-            tutti_plugin_types::StateUse::Project,
-        )
+        .load_state(main_thread(), &saved, tutti_plugin_types::StateUse::Project)
         .expect("loads");
     assert_reads::<F>(read(&loaded, Param::Level), 0.75, "level");
     assert_reads::<F>(read(&loaded, Param::Aux), 0.5, "aux");
@@ -739,15 +735,11 @@ pub fn loaded_write_survives_a_save<F: Format>() {
     set_mode::<F, _>(&mut loaded, Mode::Level);
     write(&mut loaded, Param::Level, 0.75);
     let saved = loaded
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("saves");
     let mut other = F::load();
     other
-        .load_state(
-            &main_thread(),
-            &saved,
-            tutti_plugin_types::StateUse::Project,
-        )
+        .load_state(main_thread(), &saved, tutti_plugin_types::StateUse::Project)
         .expect("loads");
     assert_eq!(read(&other, Param::Level), Some(0.75), "read");
     let out = activate(other, BLOCK).silent(BLOCK);
@@ -766,7 +758,7 @@ where
 {
     let mut loaded = F::load();
     write(&mut loaded, Param::Level, 0.75);
-    let mut fresh = loaded.reopen(&main_thread()).expect("reopens");
+    let mut fresh = loaded.reopen(main_thread()).expect("reopens");
     assert_eq!(fresh.info(), loaded.info(), "the same plugin");
     let (_, default) = Param::ALL[0];
     assert_eq!(Param::ALL[0].0, Param::Level);
@@ -791,7 +783,7 @@ pub fn corrupt_state_leaves_plugin_usable<F: Format>() {
     set_mode::<F, _>(&mut loaded, Mode::Level);
     set_level::<F, _>(&mut loaded, 0.75);
     let _refused = loaded.load_state(
-        &main_thread(),
+        main_thread(),
         b"not the plugin's state",
         tutti_plugin_types::StateUse::Project,
     );
@@ -804,14 +796,14 @@ pub fn corrupt_state_leaves_plugin_usable<F: Format>() {
 pub fn halves_of_two_activations_are_stuck<F: Format>() {
     let p = prepare(RATE, BLOCK, SampleFormat::Float32);
     let (pa, ca) = F::load()
-        .activate(&main_thread(), p)
+        .activate(main_thread(), p)
         .map_err(|r| r.reason)
         .expect("first");
     let (pb, cb) = F::load()
-        .activate(&main_thread(), p)
+        .activate(main_thread(), p)
         .map_err(|r| r.reason)
         .expect("second");
-    let stuck = <F::L as Loaded>::deactivate(&main_thread(), pa, cb);
+    let stuck = <F::L as Loaded>::deactivate(main_thread(), pa, cb);
     assert!(stuck.is_err(), "halves of two activations joined");
     drop((stuck, pb, ca));
 }

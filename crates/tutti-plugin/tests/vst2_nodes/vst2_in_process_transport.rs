@@ -101,7 +101,7 @@ fn read_capture() -> ProcessCapture {
 fn load() -> (PluginNode<Vst2Loaded>, PluginHandle) {
     let path = tutti_fixtures::vst2_probe();
     let (client, handle) = load_client::<Vst2Loaded>(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::pumped_work(),
         path,
         &Load::new(),
@@ -369,7 +369,7 @@ fn plugin_set_meter_reaches_an_in_process_vst2() {
     let _lock = lock_probe();
     reset_probe();
     let plugin = tutti_plugin::catalog::Plugin::open(
-        Some(&main_thread()),
+        Some(main_thread()),
         &tutti_fixtures::pumped_work(),
         &tutti_plugin::catalog::PluginRef::file(tutti_fixtures::vst2_probe())
             .expect("a plugin file"),

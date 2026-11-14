@@ -9,7 +9,7 @@ use crate::types::{ContentScale, EditorCapabilities, WindowHandle};
 use dpi::Size;
 use std::sync::Arc;
 use tutti_clap_ffi::GuiError;
-use tutti_plugin_types::{FdId, Interest, MainThread, Ready, Wakeups};
+use tutti_plugin_types::{FdId, Interest, MainThreadMarker, Ready, Wakeups};
 
 fn gui_error(error: GuiError) -> ClapError {
     ClapError::EditorError(error.to_string())
@@ -31,7 +31,7 @@ impl ClapLoaded {
     /// embedded window API is unsupported, or if `create`/`set_parent` fails.
     pub(crate) fn embed_editor(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         parent: WindowHandle,
         scale: ContentScale,
     ) -> Result<Size> {
@@ -78,7 +78,7 @@ impl ClapLoaded {
     /// support a floating window, or if `create` fails.
     pub fn open_floating_editor_with(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         transient: Option<WindowHandle>,
         title: &std::ffi::CStr,
     ) -> Result<()> {
@@ -113,7 +113,7 @@ impl ClapLoaded {
     /// Side-effect-free, like its embedded sibling: `is_api_supported` is a
     /// predicate, `create` is what allocates.
     #[must_use]
-    pub fn has_floating_editor(&self, main: &MainThread) -> bool {
+    pub fn has_floating_editor(&self, main: MainThreadMarker) -> bool {
         self.plugin.has_floating_editor(main)
     }
 
@@ -129,7 +129,7 @@ impl ClapLoaded {
     /// `None` means the plugin expressed no preference, which is distinct from
     /// preferring embedded — a caller that conflates them would override a
     /// plugin that deliberately said nothing.
-    pub fn prefers_floating(&self, main: &MainThread) -> Option<bool> {
+    pub fn prefers_floating(&self, main: MainThreadMarker) -> Option<bool> {
         self.plugin.prefers_floating(main)
     }
 
@@ -149,7 +149,7 @@ impl ClapLoaded {
     /// Defaults are the honest answer before create: nothing has been asked, so
     /// nothing is claimed. A caller wanting real hints must create the editor first,
     /// which is the same order the spec requires of it.
-    pub fn editor_capabilities(&self, main: &MainThread) -> EditorCapabilities {
+    pub fn editor_capabilities(&self, main: MainThreadMarker) -> EditorCapabilities {
         if !self.flags.gui_created {
             return EditorCapabilities::default();
         }
@@ -178,7 +178,7 @@ impl ClapLoaded {
     ///
     /// Returns [`ClapError::EditorError`] if the plugin has no GUI extension or
     /// no editor is created.
-    pub fn rescale_editor(&mut self, main: &MainThread, scale: ContentScale) -> Result<bool> {
+    pub fn rescale_editor(&mut self, main: MainThreadMarker, scale: ContentScale) -> Result<bool> {
         self.plugin.rescale_gui(main, scale).map_err(gui_error)
     }
 
@@ -193,7 +193,7 @@ impl ClapLoaded {
     /// Returns [`ClapError::EditorError`] if the plugin has no GUI extension,
     /// cannot adjust the request to a usable size, lacks `set_size`, or refuses
     /// the adjusted size.
-    pub fn resize_editor(&mut self, main: &MainThread, requested: Size) -> Result<Size> {
+    pub fn resize_editor(&mut self, main: MainThreadMarker, requested: Size) -> Result<Size> {
         self.plugin.resize_gui(main, requested).map_err(gui_error)
     }
 
@@ -224,7 +224,7 @@ impl ClapLoaded {
     /// has none: the thread a drop runs on is the owner's. The per-format lane
     /// that gives the plugin a main-thread handle makes this unreachable off the
     /// main thread.
-    pub(crate) fn destroy_editor(&mut self, main: &MainThread) {
+    pub(crate) fn destroy_editor(&mut self, main: MainThreadMarker) {
         if !self.flags.gui_created {
             return;
         }
@@ -311,7 +311,7 @@ impl ClapLoaded {
     ///
     /// `on_timer` is `[main-thread]` (`ext/timer-support.h`), and a UI
     /// framework's tick need not run on the thread that loaded the plugin.
-    pub fn poll_timers(&mut self, main: &MainThread) -> usize {
+    pub fn poll_timers(&mut self, main: MainThreadMarker) -> usize {
         self.poll_timers_at(main, std::time::Instant::now())
     }
 
@@ -322,7 +322,11 @@ impl ClapLoaded {
     /// period restarts from the fire instant. An instant earlier than a timer's
     /// last fire is treated as not due. Useful for driving timers
     /// deterministically in tests; production code calls `poll_timers`.
-    pub(crate) fn poll_timers_at(&mut self, main: &MainThread, now: std::time::Instant) -> usize {
+    pub(crate) fn poll_timers_at(
+        &mut self,
+        main: MainThreadMarker,
+        now: std::time::Instant,
+    ) -> usize {
         if !self.plugin.has_on_timer() {
             // Nothing can fire, so nothing is due: the per-block pass need not
             // come back for these timers.
@@ -345,7 +349,7 @@ impl ClapLoaded {
     /// [`Self::poll_timers`]. A plugin reached here off-thread runs whatever
     /// deferred work it queued on the wrong thread, which tends to show up as a
     /// crash somewhere else entirely.
-    pub fn on_main_thread(&mut self, main: &MainThread) -> &mut Self {
+    pub fn on_main_thread(&mut self, main: MainThreadMarker) -> &mut Self {
         self.plugin.on_main_thread(main);
         self
     }
@@ -353,7 +357,7 @@ impl ClapLoaded {
     /// Calls `on_fd` for descriptor `fd` if a wake found it ready and it is
     /// still registered (an earlier callback may have unregistered it).
     /// Returns whether the plugin was called.
-    pub(crate) fn fire_fd(&mut self, main: &MainThread, fd: i32) -> bool {
+    pub(crate) fn fire_fd(&mut self, main: MainThreadMarker, fd: i32) -> bool {
         if !self.plugin.has_on_fd() {
             return false;
         }
@@ -376,7 +380,7 @@ impl ClapLoaded {
     /// Calls the plugin's `on_timer` for timer `id` if it is still registered
     /// (an earlier callback may have unregistered it), and caches the next
     /// deadline. Returns whether the plugin was called.
-    pub(crate) fn fire_timer(&mut self, main: &MainThread, id: u32) -> bool {
+    pub(crate) fn fire_timer(&mut self, main: MainThreadMarker, id: u32) -> bool {
         let on_timer = self.plugin.has_on_timer();
         let state = &self.host_state.timer;
         let registered = state

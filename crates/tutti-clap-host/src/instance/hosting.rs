@@ -5,7 +5,7 @@ use std::path::Path;
 
 use tutti_plugin_types::bundle::{ModuleKind, native_module_path};
 use tutti_plugin_types::{
-    InProcess, Load, MainThread, MainWorkHandle, Origin, OutOfProcess, PluginResult,
+    InProcess, Load, MainThreadMarker, MainWorkHandle, Origin, OutOfProcess, PluginResult,
 };
 
 use super::ClapLoaded;
@@ -22,7 +22,7 @@ fn options(load: &Load) -> LoadOptions {
 
 impl InProcess for ClapLoaded {
     fn load_in_process(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,
@@ -44,7 +44,7 @@ impl OutOfProcess for ClapLoaded {
     type Editor = ClapEditor;
 
     fn load_served(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,
@@ -53,7 +53,7 @@ impl OutOfProcess for ClapLoaded {
     }
 
     fn load_editor(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,

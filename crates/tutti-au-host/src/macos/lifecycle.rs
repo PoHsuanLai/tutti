@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use tutti_au_ffi::{RenderNotify, Renderer};
 use tutti_plugin_types::{
-    Loaded, MainThread, PluginError, Prepare, Refused, RestartRules, Stuck, sysex_assembler,
+    Loaded, MainThreadMarker, PluginError, Prepare, Refused, RestartRules, Stuck, sysex_assembler,
 };
 use tutti_rt::ArcLend;
 
@@ -49,7 +49,7 @@ impl Loaded for AuLoaded {
     #[allow(clippy::result_large_err)]
     fn activate(
         self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         prepare: Prepare,
     ) -> Result<(AuProcessor, AuController), Refused<Self>> {
         self.initialize(prepare).map_err(|(plugin, error)| Refused {
@@ -71,7 +71,7 @@ impl Loaded for AuLoaded {
     /// activations or a unit that refuses to uninitialize (it stays
     /// initialized, and the guard retries on drop).
     fn deactivate(
-        _main: &MainThread,
+        _main: MainThreadMarker,
         mut processor: AuProcessor,
         controller: AuController,
     ) -> Result<Self, Stuck<AuProcessor, AuController>> {

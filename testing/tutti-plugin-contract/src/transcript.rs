@@ -21,7 +21,7 @@ pub use tutti_shared_plugin::transcript::{
 /// When the plugin's log overflowed.
 pub fn transcript<F: Format, C: Control + ?Sized>(c: &mut C) -> Transcript {
     let state = c
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("the plugin saves");
     Transcript::parse(&F::extract_blob(&state)).complete()
 }
@@ -32,11 +32,11 @@ pub fn transcript<F: Format, C: Control + ?Sized>(c: &mut C) -> Transcript {
 /// setup has read the mode.
 pub fn set_mode<F: Format, C: Control + ?Sized>(c: &mut C, mode: Mode) {
     let state = c
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("the plugin saves");
     let patched = F::embed_blob(&state, &patch_mode(F::extract_blob(&state), mode));
     c.load_state(
-        &main_thread(),
+        main_thread(),
         &patched,
         tutti_plugin_types::StateUse::Project,
     )
@@ -47,11 +47,11 @@ pub fn set_mode<F: Format, C: Control + ?Sized>(c: &mut C, mode: Mode) {
 /// the component itself and not a controller that a host delivers separately.
 pub fn set_level<F: Format, C: Control + ?Sized>(c: &mut C, level: f64) {
     let state = c
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("the plugin saves");
     let patched = F::embed_blob(&state, &patch_level(F::extract_blob(&state), level));
     c.load_state(
-        &main_thread(),
+        main_thread(),
         &patched,
         tutti_plugin_types::StateUse::Project,
     )
@@ -64,7 +64,7 @@ pub fn set_level<F: Format, C: Control + ?Sized>(c: &mut C, level: f64) {
 /// raises one.
 pub fn select<F: Format, C: Control + ?Sized>(c: &mut C, editor: u32, notice: u32) {
     let state = c
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("the plugin saves");
     let mut blob = F::extract_blob(&state);
     let at = MAGIC.len();
@@ -72,7 +72,7 @@ pub fn select<F: Format, C: Control + ?Sized>(c: &mut C, editor: u32, notice: u3
     blob[at..at + 4].copy_from_slice(&(u32::from(mode) | editor << 8 | notice << 16).to_le_bytes());
     let patched = F::embed_blob(&state, &blob);
     c.load_state(
-        &main_thread(),
+        main_thread(),
         &patched,
         tutti_plugin_types::StateUse::Project,
     )
@@ -83,7 +83,7 @@ pub fn select<F: Format, C: Control + ?Sized>(c: &mut C, editor: u32, notice: u3
 /// keeping the rest of the word, through the state like [`set_mode`].
 pub fn select_tail<F: Format, C: Control + ?Sized>(c: &mut C, tail: u32) {
     let state = c
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("the plugin saves");
     let mut blob = F::extract_blob(&state);
     let at = MAGIC.len();
@@ -93,7 +93,7 @@ pub fn select_tail<F: Format, C: Control + ?Sized>(c: &mut C, tail: u32) {
     blob[at..at + 4].copy_from_slice(&(kept | tail << 24).to_le_bytes());
     let patched = F::embed_blob(&state, &blob);
     c.load_state(
-        &main_thread(),
+        main_thread(),
         &patched,
         tutti_plugin_types::StateUse::Project,
     )
@@ -107,7 +107,7 @@ pub fn select_tail<F: Format, C: Control + ?Sized>(c: &mut C, tail: u32) {
 #[must_use]
 pub fn state_with_rings<F: Format>(rings: u32, tail: u32) -> Vec<u8> {
     let state = F::load()
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("the plugin saves");
     let mut blob = F::extract_blob(&state);
     let at = MAGIC.len();
@@ -124,7 +124,7 @@ pub fn state_with_rings<F: Format>(rings: u32, tail: u32) -> Vec<u8> {
 #[must_use]
 pub fn state_with_fault<F: Format>(fault: u32) -> Vec<u8> {
     let state = F::load()
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("the plugin saves");
     let mut blob = F::extract_blob(&state);
     blob[MAGIC.len()] = blob[MAGIC.len()] & 0x0F | (fault as u8) << 4;

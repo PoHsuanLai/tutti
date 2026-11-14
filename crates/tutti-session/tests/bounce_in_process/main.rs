@@ -1,7 +1,7 @@
 //! The shared plugin hosted in this process, bounced, on the process's main thread.
 //!
 //! A bounce forks the plugin, and an in-process plugin forks on the main thread only
-//! (`MainThread::new` asks the OS): the default harness runs every test on a thread it
+//! (`MainThreadMarker::new` asks the OS): the default harness runs every test on a thread it
 //! spawns, so this target sets `harness = false` and owns `main()`
 //! (`tutti_fixtures::main_thread_cases`). It is a binary of its own, not a module of
 //! `instrument`: the shared plugin's entry points do not link into the binary that links the
@@ -54,7 +54,7 @@ fn an_in_process_instrument_without_a_live_render_mode_bounces_its_clip() {
         .expect("the state is the plugin's own");
     let main = tutti_fixtures::main_thread();
     let node = session
-        .add_plugin_blocking(&main, request)
+        .add_plugin_blocking(main, request)
         .expect("the shared plugin loads in process");
     session.graph().connect(node, Root).unwrap();
     let on = tutti_midi_runtime::TimedMidiEvent::new(

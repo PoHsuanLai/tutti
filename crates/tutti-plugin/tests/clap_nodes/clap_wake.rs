@@ -67,7 +67,7 @@ fn in_process_the_next_block_after_a_request_from_another_thread_runs_the_plugin
     probe.set(ClapSwitch::NoteOutPorts, 0);
 
     let (client, _handle) = tutti_plugin_host::load_client::<ClapLoaded>(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         tutti_fixtures::clap_probe(),
         &Load::new(),

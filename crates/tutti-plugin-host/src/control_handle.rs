@@ -10,7 +10,7 @@ use crate::{
 use dpi::Size;
 use std::sync::Arc;
 use tutti_plugin_types::BlockCounts;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 use tutti_plugin_types::{
     AnyThread, AutomationMode, AutomationModeError, Control, EditorCapabilities, EditorError,
     Health, PluginError, PluginFailure, StateError, TerminationReason, WindowHandle,
@@ -39,7 +39,7 @@ pub trait MainThreadControl: Send + Sync {
 
     /// The editor's tick, which an in-process plugin pairs with the pump of
     /// what the plugin changed about itself.
-    fn editor_idle(&self, main: &MainThread);
+    fn editor_idle(&self, main: MainThreadMarker);
 
     /// One non-blocking pass over what the plugin asked the host to wait on:
     /// its descriptors looked at and its timers checked against the clock, and
@@ -47,7 +47,7 @@ pub trait MainThreadControl: Send + Sync {
     /// ([`service_now`](crate::service_now)). The wait the plugin
     /// server's main loop blocks in, as an in-process host without a loop of its
     /// own can make it, between frames. A plugin that is lost is not asked.
-    fn service_wakeups(&self, main: &MainThread) {
+    fn service_wakeups(&self, main: MainThreadMarker) {
         self.lend(&mut |control| crate::service_now(control, main));
     }
 }
@@ -57,7 +57,7 @@ impl<C: Control + Clone + Send + Sync> MainThreadControl for C {
         f(&mut self.clone());
     }
 
-    fn editor_idle(&self, main: &MainThread) {
+    fn editor_idle(&self, main: MainThreadMarker) {
         self.lend(&mut |control| control.editor_idle(main));
     }
 }
@@ -496,7 +496,7 @@ impl PluginHandle {
     /// to the user rather than leaving the plugin silently at defaults.
     /// [`StateError::NoStateRoute`] when this handle carries no main-thread
     /// route.
-    pub fn load_state(&self, main: &MainThread, data: &[u8]) -> Result<(), StateError> {
+    pub fn load_state(&self, main: MainThreadMarker, data: &[u8]) -> Result<(), StateError> {
         let Some(control) = self.control.as_deref() else {
             return Err(StateError::NoStateRoute);
         };
@@ -520,7 +520,7 @@ impl PluginHandle {
     ///
     /// [`PresetError::Unsupported`] when this handle carries no route to
     /// presets; [`PresetError::Lost`] when the plugin is gone.
-    pub fn presets(&self, main: &MainThread) -> Result<Vec<Preset>, PresetError> {
+    pub fn presets(&self, main: MainThreadMarker) -> Result<Vec<Preset>, PresetError> {
         let control = self.control.as_deref().ok_or(PresetError::Unsupported)?;
         lent(control, |c| c.presets(main)).ok_or(PresetError::Lost)
     }
@@ -533,7 +533,7 @@ impl PluginHandle {
     /// [`PresetError::Unsupported`] when this handle carries no route to
     /// presets, [`PresetError::Refused`] when the plugin declined (leave the
     /// UI selection where it was), [`PresetError::Lost`] when it is gone.
-    pub fn load_preset(&self, main: &MainThread, id: &PresetId) -> Result<(), PresetError> {
+    pub fn load_preset(&self, main: MainThreadMarker, id: &PresetId) -> Result<(), PresetError> {
         let control = self.control.as_deref().ok_or(PresetError::Unsupported)?;
         match lent(control, |c| c.load_preset(main, id)) {
             Some(true) => Ok(()),
@@ -545,7 +545,7 @@ impl PluginHandle {
     /// The preset the plugin considers current, when it will say. `None` means
     /// the format has no query for it, the plugin declined, or this handle has
     /// no route — never "the first one". See [`PresetId`].
-    pub fn current_preset(&self, main: &MainThread) -> Option<PresetId> {
+    pub fn current_preset(&self, main: MainThreadMarker) -> Option<PresetId> {
         lent(self.control.as_deref()?, |c| c.current_preset(main))?
     }
 
@@ -568,7 +568,7 @@ impl PluginHandle {
     /// [`EditorWindow::open_editor`](tutti_plugin_types::EditorWindow::open_editor).
     pub fn open_editor(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         parent: WindowHandle,
         scale: ContentScale,
     ) -> Result<Size, EditorError> {
@@ -590,7 +590,7 @@ impl PluginHandle {
     /// route, and otherwise any error of
     /// [`EditorWindow::open_floating_editor`](tutti_plugin_types::EditorWindow::open_floating_editor),
     /// such as a format without floating editors.
-    pub fn open_floating_editor(&self, main: &MainThread) -> Result<(), EditorError> {
+    pub fn open_floating_editor(&self, main: MainThreadMarker) -> Result<(), EditorError> {
         let control = self.editor_route()?;
         Self::editor_call(control, |c| c.open_floating_editor(main))
     }
@@ -605,7 +605,7 @@ impl PluginHandle {
     /// [`EditorWindow::set_editor_scale`](tutti_plugin_types::EditorWindow::set_editor_scale).
     pub fn set_editor_scale(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         scale: ContentScale,
     ) -> Result<(), EditorError> {
         let control = self.editor_route()?;
@@ -620,7 +620,11 @@ impl PluginHandle {
     /// [`EditorError::KeysUnsupported`] for a format that takes no keys in its editor, and
     /// otherwise any error of
     /// [`EditorWindow::editor_key`](tutti_plugin_types::EditorWindow::editor_key).
-    pub fn editor_key(&self, main: &MainThread, event: KeyEvent) -> Result<KeyUse, EditorError> {
+    pub fn editor_key(
+        &self,
+        main: MainThreadMarker,
+        event: KeyEvent,
+    ) -> Result<KeyUse, EditorError> {
         let control = self.editor_route()?;
         Self::editor_call(control, |c| c.editor_key(main, event))
     }
@@ -630,7 +634,7 @@ impl PluginHandle {
     /// A no-op without an editor route, so a caller tearing a window down need
     /// not first ask whether there was one. Returns `&Self` for chaining with
     /// the other editor calls.
-    pub fn close_editor(&self, main: &MainThread) -> &Self {
+    pub fn close_editor(&self, main: MainThreadMarker) -> &Self {
         if let Some(control) = self.control.as_deref() {
             let _ = lent(control, |c| c.close_editor(main));
         }
@@ -651,7 +655,7 @@ impl PluginHandle {
     /// Like [`close_editor`](Self::close_editor), a no-op without an editor:
     /// this is driven from a per-frame system that should not branch on a
     /// capability that cannot change after load.
-    pub fn editor_idle(&self, main: &MainThread) -> &Self {
+    pub fn editor_idle(&self, main: MainThreadMarker) -> &Self {
         if let Some(control) = self.control.as_deref() {
             control.service_wakeups(main);
             control.editor_idle(main);
@@ -668,14 +672,18 @@ impl PluginHandle {
     /// route, and otherwise any error of
     /// [`EditorWindow::set_editor_size`](tutti_plugin_types::EditorWindow::set_editor_size),
     /// such as an editor that cannot be resized.
-    pub fn set_editor_size(&self, main: &MainThread, requested: Size) -> Result<Size, EditorError> {
+    pub fn set_editor_size(
+        &self,
+        main: MainThreadMarker,
+        requested: Size,
+    ) -> Result<Size, EditorError> {
         let control = self.editor_route()?;
         Self::editor_call(control, |c| c.set_editor_size(main, requested))
     }
 
     /// What this editor supports: resizing, DPI scaling and the rest.
     /// [`EditorCapabilities::default`] when this handle has no editor route.
-    pub fn editor_capabilities(&self, main: &MainThread) -> EditorCapabilities {
+    pub fn editor_capabilities(&self, main: MainThreadMarker) -> EditorCapabilities {
         self.control
             .as_deref()
             .and_then(|control| lent(control, |c| c.editor_capabilities(main)))
@@ -722,7 +730,7 @@ impl PluginHandle {
     /// plugin has not asked" are the same answer to a poll — nothing to do —
     /// whereas `set_editor_size` is a request that deserves to be told it went
     /// nowhere.
-    pub fn poll_editor_resize_request(&self, main: &MainThread) -> Option<Size> {
+    pub fn poll_editor_resize_request(&self, main: MainThreadMarker) -> Option<Size> {
         lent(self.control.as_deref()?, |c| {
             c.poll_editor_resize_request(main)
         })?
@@ -748,7 +756,7 @@ impl PluginHandle {
     /// route to the plugin or the plugin is lost, [`Dropped`](Delivered::Dropped)
     /// when a served plugin's queue was full; a format with no place for it
     /// takes it and drops it, which is [`Yes`](Delivered::Yes).
-    pub fn set_track_info(&self, main: &MainThread, info: &TrackInfo) -> Delivered {
+    pub fn set_track_info(&self, main: MainThreadMarker, info: &TrackInfo) -> Delivered {
         let Some(control) = self.control.as_deref() else {
             return Delivered::PluginDead;
         };
@@ -799,24 +807,24 @@ mod tests {
     }
 
     impl EditorWindow for FakePresets {
-        fn has_editor(&self, _main: &MainThread) -> bool {
+        fn has_editor(&self, _main: MainThreadMarker) -> bool {
             false
         }
         fn open_editor(
             &mut self,
-            _main: &MainThread,
+            _main: MainThreadMarker,
             _parent: WindowHandle,
             _scale: ContentScale,
         ) -> tutti_plugin_types::PluginResult<Size> {
             Err(PluginError::Editor(EditorError::PluginError("none".into())))
         }
-        fn close_editor(&mut self, _main: &MainThread) {}
-        fn editor_idle(&mut self, _main: &MainThread) {}
+        fn close_editor(&mut self, _main: MainThreadMarker) {}
+        fn editor_idle(&mut self, _main: MainThreadMarker) {}
 
         /// The default capabilities: this surface reports no resize support.
         fn editor_capabilities(
             &mut self,
-            _main: &tutti_plugin_types::MainThread,
+            _main: tutti_plugin_types::MainThreadMarker,
         ) -> tutti_plugin_types::EditorCapabilities {
             tutti_plugin_types::EditorCapabilities::default()
         }
@@ -824,7 +832,7 @@ mod tests {
         /// Not supported here.
         fn set_editor_size(
             &mut self,
-            _main: &tutti_plugin_types::MainThread,
+            _main: tutti_plugin_types::MainThreadMarker,
             _requested: dpi::Size,
         ) -> tutti_plugin_types::PluginResult<dpi::Size> {
             Err(tutti_plugin_types::PluginError::Editor(
@@ -837,7 +845,7 @@ mod tests {
         /// Nothing asked: this surface never queues a resize request.
         fn poll_editor_resize_request(
             &mut self,
-            _main: &tutti_plugin_types::MainThread,
+            _main: tutti_plugin_types::MainThreadMarker,
         ) -> Option<dpi::Size> {
             None
         }
@@ -847,25 +855,28 @@ mod tests {
         fn info(&self) -> &PluginDescriptor {
             unreachable!("the preset tests never ask")
         }
-        fn render_mode_support(&self, _main: &MainThread) -> tutti_plugin_types::RenderModeSupport {
+        fn render_mode_support(
+            &self,
+            _main: MainThreadMarker,
+        ) -> tutti_plugin_types::RenderModeSupport {
             unreachable!("the preset tests never ask")
         }
-        fn set_track_info(&mut self, _main: &MainThread, _info: &TrackInfo) -> Delivered {
+        fn set_track_info(&mut self, _main: MainThreadMarker, _info: &TrackInfo) -> Delivered {
             self.track
         }
-        fn wiring(&self, _main: &MainThread) -> LoadedPlugin {
+        fn wiring(&self, _main: MainThreadMarker) -> LoadedPlugin {
             LoadedPlugin::default()
         }
-        fn parameters(&self, _main: &MainThread) -> Vec<ParameterInfo> {
+        fn parameters(&self, _main: MainThreadMarker) -> Vec<ParameterInfo> {
             Vec::new()
         }
-        fn parameter(&self, _main: &MainThread, _id: ParamId) -> Option<Normalized> {
+        fn parameter(&self, _main: MainThreadMarker, _id: ParamId) -> Option<Normalized> {
             None
         }
-        fn set_parameter(&mut self, _main: &MainThread, _id: ParamId, _value: Normalized) {}
+        fn set_parameter(&mut self, _main: MainThreadMarker, _id: ParamId, _value: Normalized) {}
         fn parameter_plain(
             &self,
-            _main: &MainThread,
+            _main: MainThreadMarker,
             _id: ParamId,
             _value: Normalized,
         ) -> Option<f64> {
@@ -873,7 +884,7 @@ mod tests {
         }
         fn parameter_normalized(
             &self,
-            _main: &MainThread,
+            _main: MainThreadMarker,
             _id: ParamId,
             _plain: f64,
         ) -> Option<Normalized> {
@@ -881,23 +892,23 @@ mod tests {
         }
         fn save_state(
             &mut self,
-            _main: &MainThread,
+            _main: MainThreadMarker,
             _: tutti_plugin_types::StateUse,
         ) -> tutti_plugin_types::PluginResult<Vec<u8>> {
             Ok(Vec::new())
         }
         fn load_state(
             &mut self,
-            _main: &MainThread,
+            _main: MainThreadMarker,
             _bytes: &[u8],
             _: tutti_plugin_types::StateUse,
         ) -> tutti_plugin_types::PluginResult<()> {
             Ok(())
         }
-        fn presets(&mut self, _main: &MainThread) -> Vec<Preset> {
+        fn presets(&mut self, _main: MainThreadMarker) -> Vec<Preset> {
             self.listed.clone()
         }
-        fn load_preset(&mut self, _main: &MainThread, _id: &PresetId) -> bool {
+        fn load_preset(&mut self, _main: MainThreadMarker, _id: &PresetId) -> bool {
             self.accepts
         }
         fn dropped_reported_edits(&self) -> u64 {
@@ -1032,7 +1043,7 @@ mod tests {
     #[test]
     fn no_preset_route_is_not_an_empty_preset_list() {
         assert_eq!(
-            handle_with(None).presets(&tutti_fixtures::main_thread()),
+            handle_with(None).presets(tutti_fixtures::main_thread()),
             Err(PresetError::Unsupported),
             "a handle with no preset capability must be unsupported, not an empty list"
         );
@@ -1043,7 +1054,7 @@ mod tests {
             track: Delivered::Yes,
         }));
         assert_eq!(
-            empty.presets(&tutti_fixtures::main_thread()),
+            empty.presets(tutti_fixtures::main_thread()),
             Ok(Vec::new()),
             "a capability that listed nothing must report an empty list"
         );
@@ -1058,7 +1069,7 @@ mod tests {
         let id = PresetId::Number(0);
 
         assert_eq!(
-            handle_with(None).load_preset(&tutti_fixtures::main_thread(), &id),
+            handle_with(None).load_preset(tutti_fixtures::main_thread(), &id),
             Err(PresetError::Unsupported),
             "no route must stay distinct from a refusal"
         );
@@ -1069,7 +1080,7 @@ mod tests {
             track: Delivered::Yes,
         }));
         assert_eq!(
-            refusing.load_preset(&tutti_fixtures::main_thread(), &id),
+            refusing.load_preset(tutti_fixtures::main_thread(), &id),
             Err(PresetError::Refused),
             "a refusal must report a present route that said no"
         );
@@ -1080,7 +1091,7 @@ mod tests {
             track: Delivered::Yes,
         }));
         assert_eq!(
-            accepting.load_preset(&tutti_fixtures::main_thread(), &id),
+            accepting.load_preset(tutti_fixtures::main_thread(), &id),
             Ok(()),
             "an accepted load must be Ok"
         );
@@ -1104,7 +1115,7 @@ mod tests {
             track: Delivered::Yes,
         }));
         assert_eq!(
-            handle.presets(&tutti_fixtures::main_thread()),
+            handle.presets(tutti_fixtures::main_thread()),
             Ok(listed),
             "the handle must not reorder or renumber what the plugin listed"
         );
@@ -1115,7 +1126,7 @@ mod tests {
 
     impl MainThreadControl for Lost {
         fn lend(&self, _f: &mut dyn FnMut(&mut dyn Control)) {}
-        fn editor_idle(&self, _main: &MainThread) {}
+        fn editor_idle(&self, _main: MainThreadMarker) {}
     }
 
     /// What a track the host tells the plugin comes to is told by the handle:
@@ -1134,15 +1145,15 @@ mod tests {
             }))
         };
         assert_eq!(
-            with(Delivered::Yes).set_track_info(&main, &info),
+            with(Delivered::Yes).set_track_info(main, &info),
             Delivered::Yes
         );
         assert_eq!(
-            with(Delivered::Dropped).set_track_info(&main, &info),
+            with(Delivered::Dropped).set_track_info(main, &info),
             Delivered::Dropped
         );
         assert_eq!(
-            handle_with(None).set_track_info(&main, &info),
+            handle_with(None).set_track_info(main, &info),
             Delivered::PluginDead,
             "no route"
         );
@@ -1151,7 +1162,7 @@ mod tests {
             LoadedPlugin::default(),
         );
         assert_eq!(
-            lost.set_track_info(&main, &info),
+            lost.set_track_info(main, &info),
             Delivered::PluginDead,
             "a route to a plugin that is lost"
         );

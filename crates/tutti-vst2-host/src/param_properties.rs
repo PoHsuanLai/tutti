@@ -44,7 +44,7 @@
 
 use vst::api;
 
-use tutti_plugin_types::{MainThread, Normalized, ParamId, ParamMapping};
+use tutti_plugin_types::{MainThreadMarker, Normalized, ParamId, ParamMapping};
 
 use crate::loaded::Vst2Loaded;
 
@@ -465,7 +465,7 @@ impl Vst2Loaded {
     /// plugin declines.
     pub fn midi_program(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         channel: i32,
         program_index: i32,
     ) -> Option<(MidiProgram, i32)> {
@@ -487,7 +487,7 @@ impl Vst2Loaded {
     ///
     /// Empty when unsupported, which is not distinguishable from "supports zero
     /// programs" and does not need to be: both mean there is nothing to show.
-    pub fn midi_programs(&self, main: &MainThread, channel: i32) -> Vec<MidiProgram> {
+    pub fn midi_programs(&self, main: MainThreadMarker, channel: i32) -> Vec<MidiProgram> {
         let Some((first, serviced)) = self.midi_program(main, channel, 0) else {
             return Vec::new();
         };
@@ -532,7 +532,11 @@ impl Vst2Loaded {
     /// index 0 literally. (The three plugins measured here answer `-1`, which
     /// needs no disambiguation — but a `-1`-only guard is not enough, because
     /// vst-rs's own fall-through answers `0`.)
-    pub fn current_midi_program(&self, main: &MainThread, channel: i32) -> Option<MidiProgram> {
+    pub fn current_midi_program(
+        &self,
+        main: MainThreadMarker,
+        channel: i32,
+    ) -> Option<MidiProgram> {
         if !(0..NUM_MIDI_CHANNELS).contains(&channel) {
             return None;
         }
@@ -551,7 +555,7 @@ impl Vst2Loaded {
     /// Returns the category plus the plugin's count of used categories.
     pub fn midi_program_category(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         channel: i32,
         category_index: i32,
     ) -> Option<(MidiProgramCategory, i32)> {
@@ -568,7 +572,7 @@ impl Vst2Loaded {
     /// last read them, via `effHasMidiProgramsChanged`.
     ///
     /// A cache-invalidation signal, so it is `true` only on the spec'd `1`.
-    pub fn midi_programs_changed(&self, main: &MainThread, channel: i32) -> bool {
+    pub fn midi_programs_changed(&self, main: MainThreadMarker, channel: i32) -> bool {
         if !(0..NUM_MIDI_CHANNELS).contains(&channel) {
             return false;
         }
@@ -582,7 +586,7 @@ impl Vst2Loaded {
     /// number.
     pub fn midi_key_name(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         channel: i32,
         program_index: i32,
         key_number: i32,
@@ -606,7 +610,7 @@ impl Vst2Loaded {
     /// for it rather than render a blank pad.
     pub fn midi_key_names(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         channel: i32,
         program_index: i32,
     ) -> Vec<MidiKeyName> {

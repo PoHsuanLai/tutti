@@ -56,7 +56,7 @@ fn a_removed_vst2_node_is_dropped_on_the_control_side() {
     let main = tutti_fixtures::main_thread();
     let path = tutti_fixtures::vst2_probe().to_path_buf();
     let (unit, handle) = load_client::<Vst2Loaded>(
-        &main,
+        main,
         &tutti_fixtures::pumped_work(),
         &path,
         &Load::new(),

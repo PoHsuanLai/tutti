@@ -42,7 +42,7 @@ impl Parts {
     /// # Errors
     ///
     /// The plugin's refusal.
-    pub fn initialize_component(&mut self, main: &MainThread) -> Result<(), Vst3Error> {
+    pub fn initialize_component(&mut self, main: MainThreadMarker) -> Result<(), Vst3Error> {
         let _scope = self.scoped(main);
         let host = self.host_context()?;
         // SAFETY: `host` is the live host application, which `self` keeps
@@ -78,7 +78,7 @@ impl Parts {
     /// # Errors
     ///
     /// The plugin's refusal.
-    pub fn initialize_controller(&mut self, main: &MainThread) -> Result<(), Vst3Error> {
+    pub fn initialize_controller(&mut self, main: MainThreadMarker) -> Result<(), Vst3Error> {
         let _scope = self.scoped(main);
         let host = self.host_context()?;
         if let ControllerLink::Separate(ctrl) = &self.controller {
@@ -128,7 +128,7 @@ impl Parts {
     /// the first and refused the second would be wired one way only, which
     /// surfaces much later as an editor that does not track the processor.
     #[must_use]
-    pub fn connect_controller(&self, main: &MainThread) -> bool {
+    pub fn connect_controller(&self, main: MainThreadMarker) -> bool {
         let _scope = self.scoped(main);
         let ControllerLink::Separate(ctrl) = &self.controller else {
             return false;
@@ -172,7 +172,7 @@ impl Parts {
     }
 
     /// Gives the controller the host's component handler.
-    pub fn attach_component_handler(&self, main: &MainThread) {
+    pub fn attach_component_handler(&self, main: MainThreadMarker) {
         let _scope = self.scoped(main);
         let Some(ctrl) = self.controller.get() else {
             return;
@@ -197,7 +197,7 @@ impl Parts {
     ///
     /// [`Vst3Error::Busy`] while an [`AudioSide`] exists; otherwise the plugin's
     /// refusal, after which a failed activation leaves the plugin inactive.
-    pub fn set_active(&mut self, main: &MainThread, active: bool) -> Result<(), Vst3Error> {
+    pub fn set_active(&mut self, main: MainThreadMarker, active: bool) -> Result<(), Vst3Error> {
         let _scope = self.scoped(main);
         let mut state = self.shared.lock_for_control()?;
         // SAFETY: a plain call on a live component, under the claim, with no
@@ -287,8 +287,8 @@ impl Drop for Parts {
         drop(state);
         // Drop has no token and may run on any thread: the editor is detached
         // only on the thread the plugin was made on (`release_editor`).
-        let here = self.home.here().copied();
-        self.release_editor(here.as_ref());
+        let here = self.home.here();
+        self.release_editor(here);
         // Registered with the run loop outside any editor (a plugin may do so
         // from `initialize`): gone with the plugin.
         self.purge_run_loop();

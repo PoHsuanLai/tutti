@@ -26,7 +26,7 @@
 //!   into and one reader takes whole since its last take (a level meter's lane).
 //! - **`Doorbell`** — wakes one parked thread from the audio thread (a futex wake only
 //!   if a sleeper is parked), with no wake-up lost between the sleeper's check and its park.
-//! - **`MainThread`** — proof that the holder is on the process's main thread, made only
+//! - **`MainThreadMarker`** — proof that the holder is on the process's main thread, made only
 //!   where the OS says so (`!Send`, `!Sync`); what a plugin's main-thread entries take.
 //! - **`request_priority`** — asks the OS to raise the calling thread's priority and returns
 //!   what it granted (never real time on Linux), or the refusal.
@@ -72,8 +72,8 @@
 //!   control register with `asm!`, which has no safe spelling; its `# Soundness`
 //!   docs say what it does and does not guarantee.
 //! - `monotonic_ns` (`clock.rs`): the OS clock calls.
-//! - `MainThread::new` (`main_thread/`): the OS's "is this the main thread" query,
-//!   one module per OS, and `MainThread::new_unchecked`, whose `# Safety` names the
+//! - `MainThreadMarker::new` (`main_thread/`): the OS's "is this the main thread" query,
+//!   one module per OS, and `MainThreadMarker::new_unchecked`, whose `# Safety` names the
 //!   caller's duty (a test harness's constructor).
 //!
 //! `arc-lend`'s `ArcLend` (an external crate) holds the rest: an `AtomicPtr` to an `Arc::into_raw`
@@ -204,7 +204,7 @@ pub use fault_latch::{Drained, FaultLatch};
 pub use handoff::{Hand, Rt, handoff};
 pub use job_gate::JobGate;
 pub use level_cell::{LevelReader, LevelSpan, LevelWriter, level_cell};
-pub use main_thread::MainThread;
+pub use main_thread::MainThreadMarker;
 pub use packed_atomic::PackedAtomic;
 pub use pos_ring::{
     MAX_POS_RING_FRAMES, MAX_POS_RING_POSITION, PosClaim, PosFrame, PosReader, PosRing, PosWriter,

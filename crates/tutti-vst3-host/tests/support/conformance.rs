@@ -244,7 +244,7 @@ pub fn accepts_midi(path: &Path) -> bool {
 pub fn first_parameter_id(path: &Path) -> Option<u32> {
     let inst = Active::<f32>::load(path, 48_000.0, 512).ok()?;
     inst.loaded()
-        .parameter_ids(&main_thread())
+        .parameter_ids(main_thread())
         .first()
         .map(|id| id.get())
 }
@@ -306,7 +306,7 @@ pub fn require_sample(bundle: &str) -> Vst3Loaded {
         )
     });
     Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),
@@ -423,7 +423,7 @@ pub fn drive_blocks_in_mode<T: Vst3Sample + Default + Copy>(
     // Register the plugin's parameter ids so unknown-id and out-of-range
     // param queues are reported. `hc_configure` (below, per block) resets only
     // the event log, not the parameter table, so registering once is enough.
-    for id in inst.loaded().parameter_ids(&main_thread()) {
+    for id in inst.loaded().parameter_ids(main_thread()) {
         let _hc = hostcheck_lock();
         unsafe { hc_add_parameter(id.get() as c_uint) };
     }
@@ -546,7 +546,7 @@ pub fn probe_path() -> PathBuf {
 pub fn require_twin() -> Vst3Loaded {
     let module = tutti_fixtures::vst3_cpp_module();
     Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &module,
         LoadOptions::new(),

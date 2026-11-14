@@ -54,7 +54,7 @@ impl Probe {
     fn load(&self) -> ClapLoaded {
         let path = Path::new(tutti_fixtures::clap_probe());
         ClapLoaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             path,
             LoadOptions::new().library(path),
@@ -86,7 +86,7 @@ impl Probe {
             b"tutti_test_plugin_hostext_command\0",
             |f| unsafe { f(cmd, a, b) },
         );
-        inst.on_main_thread(&main_thread());
+        inst.on_main_thread(main_thread());
     }
 
     fn process_command(&self, cmd: u32) {
@@ -117,7 +117,7 @@ fn call<F: Copy>(name: &[u8], f: impl FnOnce(F)) {
 /// Tells the plugin its track, which an in-process plugin always takes.
 fn set_track(inst: &mut ClapLoaded, info: &TrackInfo) {
     assert_eq!(
-        inst.set_track_info(&main_thread(), info),
+        inst.set_track_info(main_thread(), info),
         Delivered::Yes,
         "an in-process plugin takes the track"
     );
@@ -125,7 +125,7 @@ fn set_track(inst: &mut ClapLoaded, info: &TrackInfo) {
 
 fn requests(inst: &mut ClapLoaded) -> Vec<Request> {
     let mut out = Vec::new();
-    inst.take_requests(&main_thread(), &mut out);
+    inst.take_requests(main_thread(), &mut out);
     out
 }
 

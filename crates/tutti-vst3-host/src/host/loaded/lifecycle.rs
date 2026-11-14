@@ -1,7 +1,7 @@
 //! Loading, initialization and the plugin's requests and notifications.
 
 use super::*;
-use tutti_plugin_types::{MainThread, MainWorkHandle};
+use tutti_plugin_types::{MainThreadMarker, MainWorkHandle};
 
 impl Vst3Loaded {
     /// Reads a plugin's metadata without initializing it.
@@ -92,7 +92,7 @@ impl Vst3Loaded {
     /// cannot be created; returns [`Vst3Error::PluginError`] if
     /// `IPluginBase::initialize` fails.
     pub fn load(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: impl AsRef<Path>,
         options: LoadOptions,
@@ -209,7 +209,7 @@ impl Vst3Loaded {
     /// [`Vst3Processor::process`](crate::Vst3Processor::process).
     pub fn poll_plugin_notifications(
         &mut self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         mut on_event: impl FnMut(PluginNotification),
     ) -> RestartOutcome {
         // `kIoChanged` is deliberately NOT acted on here. The spec requires
@@ -293,7 +293,7 @@ impl Vst3Loaded {
     /// `kMidiCCAssignmentChanged` restart, then disarm.
     ///
     /// No observable effect if the plugin doesn't implement `IMidiLearn`.
-    pub fn arm_midi_learn(&mut self, _main: &MainThread, armed: bool) {
+    pub fn arm_midi_learn(&mut self, _main: MainThreadMarker, armed: bool) {
         self.midi_learn.arm(armed);
     }
 
@@ -304,7 +304,7 @@ impl Vst3Loaded {
         self.midi_learn.is_armed()
     }
 
-    pub(super) fn initialize(&mut self, main: &MainThread) -> Result<()> {
+    pub(super) fn initialize(&mut self, main: MainThreadMarker) -> Result<()> {
         self.plugin
             .initialize_component(main)
             .map_err(|e| Vst3Error::PluginError {
@@ -405,7 +405,7 @@ impl Vst3Loaded {
     /// and publishes it, so the Processor routes against it from its next
     /// block. Call it when the plugin raised
     /// [`Request::MidiCcAssignmentChanged`](tutti_plugin_types::Request::MidiCcAssignmentChanged). Allocates.
-    pub(crate) fn rebuild_midi_cc_mapping(&mut self, main: &MainThread) {
+    pub(crate) fn rebuild_midi_cc_mapping(&mut self, main: MainThreadMarker) {
         self.midi_cc
             .publish(MidiCcCell(MidiCcMapping::query(main, &self.plugin)));
         self.midi_cc.reclaim();

@@ -152,7 +152,7 @@ fn load_probe() -> Active<f32> {
     // The artifact is a bare dylib, so it serves as both bundle and library —
     // the host dlopens it directly, no `.clap` bundle structure needed.
     let loaded = ClapLoaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         path,
         LoadOptions::new().library(path),
@@ -824,7 +824,7 @@ fn param_output_burst_does_not_allocate() {
     reset_probe();
     let mut inst = load_probe();
     assert!(
-        inst.loaded().parameter_count(&main_thread()) <= OUTPUT_QUEUES as usize,
+        inst.loaded().parameter_count(main_thread()) <= OUTPUT_QUEUES as usize,
         "the probe's parameter count sets the reservation; the burst assumes the floor"
     );
     let mut bufs = StereoBufs::new();
@@ -954,7 +954,7 @@ fn output_events_past_the_room_are_refused_not_grown() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     reset_probe();
     let mut inst = load_probe();
-    assert!(inst.loaded().parameter_count(&main_thread()) <= OUTPUT_QUEUES as usize);
+    assert!(inst.loaded().parameter_count(main_thread()) <= OUTPUT_QUEUES as usize);
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
     let ctx = ClapProcessContext {
@@ -1285,7 +1285,7 @@ fn exactly_sixteen_channels_per_side_does_not_allocate() {
     set_wide_layout(WideLayout::Exactly16);
     let mut inst = load_probe();
     assert_eq!(
-        inst.loaded().num_input_channels(&main_thread()),
+        inst.loaded().num_input_channels(main_thread()),
         16,
         "the host must see the wide layout the plugin reported"
     );
@@ -1309,7 +1309,7 @@ fn twenty_channels_per_side_does_not_allocate() {
     set_wide_layout(WideLayout::Wide20);
     let mut inst = load_probe();
     assert_eq!(
-        inst.loaded().num_input_channels(&main_thread()),
+        inst.loaded().num_input_channels(main_thread()),
         20,
         "the host must see the wide layout the plugin reported"
     );
@@ -1329,7 +1329,7 @@ fn two_twelve_channel_ports_per_side_do_not_allocate() {
     set_wide_layout(WideLayout::Split12Plus12);
     let mut inst = load_probe();
     assert_eq!(
-        inst.loaded().num_input_channels(&main_thread()),
+        inst.loaded().num_input_channels(main_thread()),
         24,
         "two 12-channel ports must sum to 24 on the host side"
     );

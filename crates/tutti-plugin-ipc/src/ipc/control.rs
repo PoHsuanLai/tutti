@@ -1,7 +1,7 @@
 //! [`Control`] over the bridge, for a plugin loaded ([`Ipc`]) or active
 //! ([`IpcController`]): the same calls either way, answered by the bridge.
 //!
-//! None of them reads its [`MainThread`] token: the bridge answers from any
+//! None of them reads its [`MainThreadMarker`] token: the bridge answers from any
 //! thread, and the token is the in-process trait's
 //! proof, not a hop. A caller with no token uses the bridge directly
 //! ([`Ipc::bridge`]).
@@ -9,10 +9,10 @@
 use dpi::Size;
 use tutti_plugin_types::{
     AnyThread, AutomationMode, AutomationModeError, BlockCounts, ContentScale, Control, Delivered,
-    EditorCapabilities, EditorPresence, EditorWindow, Features, Health, LoadedPlugin, MainThread,
-    Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError, PluginFailure, PluginResult,
-    Preset, PresetId, ProcessWake, RenderMode, RenderModeSupport, Request, SampleRate, StateError,
-    StateUse, TerminationReason, TrackInfo, WindowHandle,
+    EditorCapabilities, EditorPresence, EditorWindow, Features, Health, LoadedPlugin,
+    MainThreadMarker, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError,
+    PluginFailure, PluginResult, Preset, PresetId, ProcessWake, RenderMode, RenderModeSupport,
+    Request, SampleRate, StateError, StateUse, TerminationReason, TrackInfo, WindowHandle,
 };
 
 use super::{Ipc, IpcController};
@@ -89,65 +89,65 @@ macro_rules! served_control {
         }
 
         impl EditorWindow for $ty {
-            fn has_editor(&self, _main: &MainThread) -> bool {
+            fn has_editor(&self, _main: MainThreadMarker) -> bool {
                 !matches!(self.link.descriptor.editor, EditorPresence::Absent)
             }
 
             fn open_editor(
                 &mut self,
-                main: &MainThread,
+                main: MainThreadMarker,
                 parent: WindowHandle,
                 scale: ContentScale,
             ) -> PluginResult<Size> {
                 Ok(self.link.bridge.open_editor(main, parent, scale)?)
             }
 
-            fn open_floating_editor(&mut self, main: &MainThread) -> PluginResult<()> {
+            fn open_floating_editor(&mut self, main: MainThreadMarker) -> PluginResult<()> {
                 Ok(self.link.bridge.open_floating_editor(main)?)
             }
 
             fn set_editor_scale(
                 &mut self,
-                main: &MainThread,
+                main: MainThreadMarker,
                 scale: ContentScale,
             ) -> PluginResult<()> {
                 Ok(self.link.bridge.set_editor_scale(main, scale)?)
             }
 
-            fn close_editor(&mut self, main: &MainThread) {
+            fn close_editor(&mut self, main: MainThreadMarker) {
                 let _ = self.link.bridge.close_editor(main);
             }
 
-            fn editor_idle(&mut self, main: &MainThread) {
+            fn editor_idle(&mut self, main: MainThreadMarker) {
                 self.link.bridge.editor_idle(main);
             }
 
-            fn wakeups(&mut self, main: &MainThread, out: &mut tutti_plugin_types::Wakeups) {
+            fn wakeups(&mut self, main: MainThreadMarker, out: &mut tutti_plugin_types::Wakeups) {
                 self.link.bridge.wakeups(main, out);
             }
 
             fn wake(
                 &mut self,
-                main: &MainThread,
+                main: MainThreadMarker,
                 ready: &[tutti_plugin_types::Ready],
                 now: std::time::Instant,
             ) {
                 self.link.bridge.wake(main, ready, now);
             }
 
-            fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities {
+            fn editor_capabilities(&mut self, main: MainThreadMarker) -> EditorCapabilities {
                 self.link.bridge.editor_capabilities(main)
             }
 
             fn set_editor_size(
                 &mut self,
-                main: &MainThread,
+                main: MainThreadMarker,
                 requested: Size,
             ) -> PluginResult<Size> {
                 Ok(self.link.bridge.set_editor_size(main, requested)?)
             }
 
-            fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<Size> {
+            fn poll_editor_resize_request(&mut self, main: MainThreadMarker) -> Option<Size> {
                 self.link.bridge.poll_editor_resize_request(main)
             }
         }
@@ -157,25 +157,25 @@ macro_rules! served_control {
                 &self.link.descriptor
             }
 
-            fn wiring(&self, _main: &MainThread) -> LoadedPlugin {
+            fn wiring(&self, _main: MainThreadMarker) -> LoadedPlugin {
                 self.link.loaded.clone()
             }
 
-            fn parameters(&self, _main: &MainThread) -> Vec<ParameterInfo> {
+            fn parameters(&self, _main: MainThreadMarker) -> Vec<ParameterInfo> {
                 AnyThread::parameter_descriptors(self).unwrap_or_default()
             }
 
-            fn parameter(&self, _main: &MainThread, id: ParamId) -> Option<Normalized> {
+            fn parameter(&self, _main: MainThreadMarker, id: ParamId) -> Option<Normalized> {
                 AnyThread::parameter_value(self, id)
             }
 
-            fn set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
+            fn set_parameter(&mut self, _main: MainThreadMarker, id: ParamId, value: Normalized) {
                 AnyThread::set_parameter_value(self, id, value);
             }
 
             fn parameter_plain(
                 &self,
-                _main: &MainThread,
+                _main: MainThreadMarker,
                 id: ParamId,
                 value: Normalized,
             ) -> Option<f64> {
@@ -184,7 +184,7 @@ macro_rules! served_control {
 
             fn parameter_normalized(
                 &self,
-                _main: &MainThread,
+                _main: MainThreadMarker,
                 id: ParamId,
                 plain: f64,
             ) -> Option<Normalized> {
@@ -193,7 +193,7 @@ macro_rules! served_control {
 
             fn parameter_text(
                 &self,
-                _main: &MainThread,
+                _main: MainThreadMarker,
                 id: ParamId,
                 value: Normalized,
             ) -> Option<String> {
@@ -202,7 +202,7 @@ macro_rules! served_control {
 
             fn parameter_value_from_text(
                 &self,
-                _main: &MainThread,
+                _main: MainThreadMarker,
                 id: ParamId,
                 text: &str,
             ) -> Option<Normalized> {
@@ -211,7 +211,7 @@ macro_rules! served_control {
 
             fn save_state(
                 &mut self,
-                _main: &MainThread,
+                _main: MainThreadMarker,
                 state_use: StateUse,
             ) -> PluginResult<Vec<u8>> {
                 self.link
@@ -222,7 +222,7 @@ macro_rules! served_control {
 
             fn load_state(
                 &mut self,
-                main: &MainThread,
+                main: MainThreadMarker,
                 bytes: &[u8],
                 state_use: StateUse,
             ) -> PluginResult<()> {
@@ -232,27 +232,27 @@ macro_rules! served_control {
                     .map_err(PluginError::StateFailed)
             }
 
-            fn presets(&mut self, _main: &MainThread) -> Vec<Preset> {
+            fn presets(&mut self, _main: MainThreadMarker) -> Vec<Preset> {
                 self.link.bridge.presets().unwrap_or_default()
             }
 
-            fn load_preset(&mut self, _main: &MainThread, id: &PresetId) -> bool {
+            fn load_preset(&mut self, _main: MainThreadMarker, id: &PresetId) -> bool {
                 !self.link.bridge.is_crashed() && self.link.bridge.load_preset(id.clone())
             }
 
-            fn current_preset(&mut self, _main: &MainThread) -> Option<PresetId> {
+            fn current_preset(&mut self, _main: MainThreadMarker) -> Option<PresetId> {
                 self.link.bridge.current_preset()
             }
 
             /// Advisory only: the outcome `AnyThread::set_automation_mode`
             /// reports has no `Control` form.
-            fn set_automation_state(&mut self, _main: &MainThread, mode: AutomationMode) {
+            fn set_automation_state(&mut self, _main: MainThreadMarker, mode: AutomationMode) {
                 let _ = AnyThread::set_automation_mode(self, mode);
             }
 
             /// What the plugin re-reported since the last call (a latency or
             /// a tail), as the requests the lifecycle answers by re-reading.
-            fn take_requests(&mut self, _main: &MainThread, out: &mut Vec<Request>) {
+            fn take_requests(&mut self, _main: MainThreadMarker, out: &mut Vec<Request>) {
                 let mut asked = self
                     .link
                     .events
@@ -266,7 +266,7 @@ macro_rules! served_control {
             /// from it: queued ([`Yes`](Delivered::Yes)), refused because the
             /// queue is full ([`Dropped`](Delivered::Dropped)) or because the
             /// plugin is gone ([`PluginDead`](Delivered::PluginDead)).
-            fn set_track_info(&mut self, _main: &MainThread, info: &TrackInfo) -> Delivered {
+            fn set_track_info(&mut self, _main: MainThreadMarker, info: &TrackInfo) -> Delivered {
                 self.link.bridge.set_track_info(info)
             }
 
@@ -279,7 +279,7 @@ macro_rules! served_control {
             /// `Live` from here wherever the plugin has a mode: the server
             /// tells it or activates it again itself, so the host never
             /// reactivates a served plugin for its mode.
-            fn render_mode_support(&self, _main: &MainThread) -> RenderModeSupport {
+            fn render_mode_support(&self, _main: MainThreadMarker) -> RenderModeSupport {
                 if self.link.loaded.features.contains(Features::RENDER_MODE) {
                     RenderModeSupport::Live
                 } else {
@@ -287,7 +287,7 @@ macro_rules! served_control {
                 }
             }
 
-            fn set_render_mode(&mut self, _main: &MainThread, mode: RenderMode) -> bool {
+            fn set_render_mode(&mut self, _main: MainThreadMarker, mode: RenderMode) -> bool {
                 AnyThread::set_render_mode(self, mode)
             }
 

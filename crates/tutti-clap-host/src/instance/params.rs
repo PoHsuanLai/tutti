@@ -9,7 +9,7 @@ use crate::events::ParamBounds;
 use crate::events::{ClapEvent, InputEventList, OutputEventList};
 use crate::types::{ClapParamFlags, ClapParamInfo};
 use crate::types::{Color, ParamAutomationState};
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 
 fn color_to_clap(color: Color) -> clap_sys::color::clap_color {
     clap_sys::color::clap_color {
@@ -23,14 +23,14 @@ fn color_to_clap(color: Color) -> clap_sys::color::clap_color {
 impl ClapLoaded {
     /// Number of parameters the plugin exposes. Returns 0 if the plugin
     /// does not implement `CLAP_EXT_PARAMS`.
-    pub fn parameter_count(&self, main: &MainThread) -> usize {
+    pub fn parameter_count(&self, main: MainThreadMarker) -> usize {
         self.plugin.param_count(main) as usize
     }
 
     /// Current value of a parameter in its own declared range, or `None` if the
     /// plugin does not support the extension or rejects the ID. The normalized
     /// reading is [`Control::parameter`](tutti_plugin_types::Control::parameter).
-    pub fn plain_value(&self, main: &MainThread, id: u32) -> Option<f64> {
+    pub fn plain_value(&self, main: MainThreadMarker, id: u32) -> Option<f64> {
         self.plugin.param_value(main, id)
     }
 
@@ -40,7 +40,11 @@ impl ClapLoaded {
     /// inside; the crate boundary hands out the shared
     /// [`ParameterInfo`](tutti_plugin_types::ParameterInfo) via
     /// [`parameter_list`](Self::parameter_list).
-    pub(crate) fn parameter_info(&self, main: &MainThread, index: u32) -> Option<ClapParamInfo> {
+    pub(crate) fn parameter_info(
+        &self,
+        main: MainThreadMarker,
+        index: u32,
+    ) -> Option<ClapParamInfo> {
         let info = self.plugin.param_info(main, index)?;
         Some(ClapParamInfo {
             id: info.id,
@@ -68,7 +72,7 @@ impl ClapLoaded {
     /// for every id but one, so automation looks right everywhere the user
     /// checks. A short list is a visible symptom; a selectively-wrong map is
     /// not.
-    pub(crate) fn native_parameters(&self, main: &MainThread) -> Vec<ClapParamInfo> {
+    pub(crate) fn native_parameters(&self, main: MainThreadMarker) -> Vec<ClapParamInfo> {
         let count = self.parameter_count(main) as u32;
         let mut params = Vec::with_capacity(count as usize);
         for i in 0..count {
@@ -95,7 +99,7 @@ impl ClapLoaded {
     /// default here would silently rescale a parameter the plugin never
     /// described — the same class of quiet wrongness the internal
     /// `parameters` enumeration truncates to avoid.
-    pub fn parameter_range(&self, main: &MainThread, id: u32) -> Option<(f64, f64)> {
+    pub fn parameter_range(&self, main: MainThreadMarker, id: u32) -> Option<(f64, f64)> {
         let count = self.parameter_count(main) as u32;
         for i in 0..count {
             let info = self.parameter_info(main, i)?;
@@ -109,7 +113,7 @@ impl ClapLoaded {
     /// The declared bounds and steppedness for one parameter: what a
     /// normalized value is denormalized against. [`None`] as for
     /// [`parameter_range`](Self::parameter_range).
-    pub(crate) fn parameter_bounds(&self, main: &MainThread, id: u32) -> Option<ParamBounds> {
+    pub(crate) fn parameter_bounds(&self, main: MainThreadMarker, id: u32) -> Option<ParamBounds> {
         let count = self.parameter_count(main) as u32;
         for i in 0..count {
             let info = self.parameter_info(main, i)?;
@@ -131,7 +135,7 @@ impl ClapLoaded {
     /// crosses the crate boundary. CLAP has no unit string, so `unit` is empty;
     /// `step_count` comes from the `STEPPED` flag plus the declared span, since
     /// CLAP reports steppedness as a flag and the count only via `min`/`max`.
-    pub fn parameter_list(&self, main: &MainThread) -> Vec<tutti_plugin_types::ParameterInfo> {
+    pub fn parameter_list(&self, main: MainThreadMarker) -> Vec<tutti_plugin_types::ParameterInfo> {
         self.native_parameters(main)
             .into_iter()
             .map(project_param_info)
@@ -146,7 +150,12 @@ impl ClapLoaded {
     /// normalization concept. `Control::parameter_text` denormalizes against
     /// [`parameter_range`](Self::parameter_range) before calling this, the same
     /// conversion its `set_parameter` applies.
-    pub fn value_to_text(&self, main: &MainThread, param_id: u32, value: f64) -> Option<String> {
+    pub fn value_to_text(
+        &self,
+        main: MainThreadMarker,
+        param_id: u32,
+        value: f64,
+    ) -> Option<String> {
         self.plugin.param_value_to_text(main, param_id, value)
     }
 
@@ -157,7 +166,7 @@ impl ClapLoaded {
     ///
     /// The answer is **plain**, in the parameter's declared range — see
     /// [`value_to_text`](Self::value_to_text). `Control` re-normalizes it.
-    pub fn text_to_value(&self, main: &MainThread, param_id: u32, text: &str) -> Option<f64> {
+    pub fn text_to_value(&self, main: MainThreadMarker, param_id: u32, text: &str) -> Option<f64> {
         self.plugin.param_text_to_value(main, param_id, text)
     }
 
@@ -169,7 +178,7 @@ impl ClapLoaded {
     ///
     /// Goes through the same enumeration as `parameter_list`, so the two cannot
     /// drift about which parameters exist.
-    pub fn param_requires_process(&self, main: &MainThread, param_id: u32) -> bool {
+    pub fn param_requires_process(&self, main: MainThreadMarker, param_id: u32) -> bool {
         self.native_parameters(main)
             .into_iter()
             .find(|info| info.id == param_id)
@@ -213,7 +222,7 @@ impl ClapLoaded {
     /// (`flush` is an audio-thread entry then).
     pub fn flush_params(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         input_events: Vec<ClapEvent>,
     ) -> Vec<ClapEvent> {
         let mut input_list = InputEventList::from_events(input_events);
@@ -241,7 +250,7 @@ impl ClapLoaded {
     /// # Panics
     ///
     /// As for [`flush_params`](Self::flush_params).
-    pub fn set_plain_value(&mut self, main: &MainThread, id: u32, value: f64) {
+    pub fn set_plain_value(&mut self, main: MainThreadMarker, id: u32, value: f64) {
         self.flush_params(main, vec![ClapEvent::param_value(0, id, value)]);
     }
 
@@ -250,7 +259,7 @@ impl ClapLoaded {
     /// `CLAP_EXT_PARAM_INDICATION`.
     pub fn set_param_automation(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         param_id: u32,
         state: ParamAutomationState,
         color: Option<Color>,

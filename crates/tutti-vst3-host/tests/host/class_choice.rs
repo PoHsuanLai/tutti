@@ -28,7 +28,7 @@ fn a_load_by_class_id_picks_that_class() {
     assert_ne!(Some(&id), classes.first().map(|c| &c.0));
 
     let loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new().class_id(&id),
@@ -51,7 +51,7 @@ fn an_unknown_class_id_is_refused_naming_the_classes() {
         classes[0].1.as_str(),
     ] {
         let err = Vst3Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             &path,
             LoadOptions::new().class_id(wanted),

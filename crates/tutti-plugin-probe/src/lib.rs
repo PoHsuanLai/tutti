@@ -7,7 +7,7 @@
 #![forbid(unsafe_code)]
 
 use std::path::Path;
-use tutti_plugin_types::{MainThread, PluginDescriptor};
+use tutti_plugin_types::{MainThreadMarker, PluginDescriptor};
 
 mod measure;
 
@@ -27,7 +27,7 @@ pub use measure::{
 ///
 /// The loader's own reason, as text: the file is missing, the format is not
 /// compiled in, or the file would not open.
-pub fn describe(main: &MainThread, path: &Path) -> Result<Vec<PluginDescriptor>, String> {
+pub fn describe(main: MainThreadMarker, path: &Path) -> Result<Vec<PluginDescriptor>, String> {
     if !path.exists() {
         return Err(format!("Plugin not found: {}", path.display()));
     }
@@ -105,7 +105,7 @@ fn vst3(path: &Path) -> Result<Vec<PluginDescriptor>, String> {
 /// activated, and the instance is dropped. A shell's sub-plugins are each loaded
 /// the same way.
 #[cfg(feature = "vst2")]
-fn vst2(main: &MainThread, path: &Path) -> Result<Vec<PluginDescriptor>, String> {
+fn vst2(main: MainThreadMarker, path: &Path) -> Result<Vec<PluginDescriptor>, String> {
     use tutti_vst2_host::Vst2Loaded;
     Vst2Loaded::describe_all(main, path).map_err(|e| e.to_string())
 }
@@ -134,7 +134,7 @@ fn au(path: &Path) -> Result<Vec<PluginDescriptor>, String> {
 ///
 /// As [`describe`], or a plugin that refused `state`.
 pub fn describe_measured(
-    main: &MainThread,
+    main: MainThreadMarker,
     path: &Path,
     state: Option<&[u8]>,
 ) -> Result<Vec<PluginDescriptor>, String> {

@@ -1,4 +1,4 @@
-//! `MainThread::new` against the OS's main thread.
+//! `MainThreadMarker::new` against the OS's main thread.
 //!
 //! The default harness runs every test on a thread it spawns, never the
 //! process's main thread, so this target sets `harness = false` and owns
@@ -7,16 +7,16 @@
 //! `<case> --exact` runs that case alone and exits non-zero when it panics. (This
 //! crate names no workspace crate, so it cannot use `tutti_fixtures::main_thread_cases`.)
 
-use tutti_rt::MainThread;
+use tutti_rt::MainThreadMarker;
 
 /// **The process's main thread holds a token.**
 fn the_main_thread_holds_a_token() {
-    assert!(MainThread::new().is_some());
+    assert!(MainThreadMarker::new().is_some());
 }
 
 /// **A thread the process spawns holds none.**
 fn a_spawned_thread_holds_no_token() {
-    let held = std::thread::spawn(|| MainThread::new().is_some())
+    let held = std::thread::spawn(|| MainThreadMarker::new().is_some())
         .join()
         .expect("the probe thread runs");
     assert!(!held);
@@ -25,11 +25,11 @@ fn a_spawned_thread_holds_no_token() {
 /// **The token is the main thread's alone, from the first query on**: asking
 /// from a spawned thread first leaves the answer on the main thread unchanged.
 fn the_answer_does_not_depend_on_who_asked_first() {
-    let spawned = std::thread::spawn(|| MainThread::new().is_some())
+    let spawned = std::thread::spawn(|| MainThreadMarker::new().is_some())
         .join()
         .expect("the probe thread runs");
     assert!(!spawned);
-    assert!(MainThread::new().is_some());
+    assert!(MainThreadMarker::new().is_some());
 }
 
 const CASES: &[(&str, fn())] = &[

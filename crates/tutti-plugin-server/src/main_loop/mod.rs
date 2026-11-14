@@ -40,7 +40,7 @@
 
 use std::time::{Duration, Instant};
 
-use tutti_plugin_types::{BridgeError, BridgeResult, MainThread, Ready, Wakeups};
+use tutti_plugin_types::{BridgeError, BridgeResult, MainThreadMarker, Ready, Wakeups};
 
 use crate::render::RenderThread;
 use crate::session::{Reaction, Session};
@@ -117,7 +117,7 @@ pub(crate) use sys::{
 pub(crate) fn serve(
     session: &mut Session,
     transport: &mut dyn Transport,
-    main: &MainThread,
+    main: MainThreadMarker,
     render: &RenderThread,
 ) -> BridgeResult<()> {
     serve_every(
@@ -135,7 +135,7 @@ pub(crate) fn serve_every(
     session: &mut Session,
     transport: &mut dyn Transport,
     backend: &mut Native,
-    main: &MainThread,
+    main: MainThreadMarker,
     render: &RenderThread,
     period: Duration,
 ) -> BridgeResult<()> {

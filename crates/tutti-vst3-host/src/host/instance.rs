@@ -13,7 +13,7 @@
 //! negotiated arrangements, the input and output staging, and the sample width
 //! `T`.
 
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 use vst3::Steinberg::Vst::{SpeakerArr, SpeakerArrangement};
 
 use tutti_plugin_types::{PointPool, RtMidiEvents};
@@ -123,7 +123,7 @@ impl<T: Vst3Sample> Staged<T> {
     // boxing it would add an allocation to a path that must return the plugin.
     #[allow(clippy::result_large_err)]
     pub(super) fn stage(
-        main: &MainThread,
+        main: MainThreadMarker,
         mut loaded: Vst3Loaded,
         sample_rate: SampleRate,
         block_size: usize,
@@ -301,7 +301,7 @@ impl<T: Vst3Sample> Staged<T> {
     /// ran another. Reconciling on the accepting branch too is not belt-and-
     /// braces: a plugin may accept the arrangement and still restructure its
     /// buses in the same call, and one exit path is one thing to keep true.
-    fn negotiate_bus_arrangements(&mut self, main: &MainThread) -> Result<()> {
+    fn negotiate_bus_arrangements(&mut self, main: MainThreadMarker) -> Result<()> {
         let plugin = &self.loaded.plugin;
 
         // A bus whose width has no canonical arrangement makes the whole
@@ -389,7 +389,7 @@ impl<T: Vst3Sample> Staged<T> {
     /// receives and what the conformance observer is told cannot drift — a
     /// second, hand-built copy for the observer would agree with `ProcessData`
     /// by construction and hide exactly the mismatch the check exists to find.
-    fn apply_process_setup(&mut self, main: &MainThread) -> Result<()> {
+    fn apply_process_setup(&mut self, main: MainThreadMarker) -> Result<()> {
         let setup = self.audio.config.process_setup(T::VST3_SYMBOLIC_SIZE);
         // `Ok(false)` is `kResultFalse`, which the SDK lets a plugin answer.
         self.loaded
@@ -412,7 +412,7 @@ impl<T: Vst3Sample> Staged<T> {
     /// all — leaves event buses inactive: a plugin that honours the inactive
     /// default then receives no events while one that ignores it works, which
     /// presents as a plugin quirk rather than a host bug.
-    fn activate_buses(&mut self, main: &MainThread) -> Result<()> {
+    fn activate_buses(&mut self, main: MainThreadMarker) -> Result<()> {
         let plugin = &self.loaded.plugin;
         for (media, direction) in [
             (MediaType::Audio, BusDirection::Input),
@@ -463,7 +463,7 @@ impl<T: Vst3Sample> Staged<T> {
         Ok(())
     }
 
-    fn set_active(&mut self, main: &MainThread, active: bool) -> Result<()> {
+    fn set_active(&mut self, main: MainThreadMarker, active: bool) -> Result<()> {
         let result = self.loaded.plugin.set_active(main, active);
         // `kResultFalse` is a *refusal*, not a "didn't implement it". A plugin
         // whose licence check, dongle, or device claim fails reports it here,
@@ -636,14 +636,14 @@ mod scratch_resolution_tests {
         let main = tutti_fixtures::main_thread();
         let library = tutti_fixtures::cdylib("tutti_shared_plugin", "tutti-shared-plugin");
         let loaded = Vst3Loaded::load(
-            &main,
+            main,
             &tutti_fixtures::detached_work(),
             &library,
             crate::LoadOptions::new(),
         )
         .expect("the shared plugin loads");
         let mut staged =
-            Staged::<f32>::stage(&main, loaded, SampleRate::SR_48K, 64, ProcessMode::Realtime)
+            Staged::<f32>::stage(main, loaded, SampleRate::SR_48K, 64, ProcessMode::Realtime)
                 .unwrap_or_else(|(_, error)| panic!("the plugin stages: {error}"));
         let (buses_in, buses_out) = (
             staged.audio.input.buses.num_buses(),

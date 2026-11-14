@@ -62,16 +62,16 @@
 //! `no_run`: the load needs a real VST2 binary on disk.
 //!
 //! ```rust,no_run
-//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let main = tutti_plugin_types::MainThreadMarker::new().expect("on the UI thread");
 //! # let (_collector, work) = tutti_plugin_types::MainWork::new();
 //! use tutti_plugin_types::{Loaded, MaxBlock, Prepare, SampleRate, Samples};
 //! use tutti_vst2_host::{Vst2ProcessContext, Vst2Loaded};
 //!
-//! let plugin = Vst2Loaded::load(&main, &work, "path/to/plugin.vst")?;
+//! let plugin = Vst2Loaded::load(main, &work, "path/to/plugin.vst")?;
 //! let (inputs_width, outputs_width) = plugin.pins();
 //!
 //! // The rate, block size and precision are the activation's.
-//! let Ok((mut processor, controller)) = plugin.activate(&main, Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512)))) else {
+//! let Ok((mut processor, controller)) = plugin.activate(main, Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512)))) else {
 //!     panic!("the plugin refused to run");
 //! };
 //!
@@ -89,7 +89,7 @@
 //!     processor.process_f32(&in_refs, &mut out_refs, 512, &ctx);
 //!
 //! // Ending it rejoins the halves.
-//! let Ok(_plugin) = Vst2Loaded::deactivate(&main, processor, controller) else {
+//! let Ok(_plugin) = Vst2Loaded::deactivate(main, processor, controller) else {
 //!     panic!("the plugin would not stop");
 //! };
 //! # Ok::<(), tutti_vst2_host::Vst2Error>(())
@@ -112,17 +112,17 @@
 //! # use tutti_plugin_types::{Control, Normalized};
 //! # use tutti_vst2_host::Vst2Loaded;
 //! # fn ex() -> tutti_vst2_host::Result<()> {
-//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let main = tutti_plugin_types::MainThreadMarker::new().expect("on the UI thread");
 //! # let (_collector, work) = tutti_plugin_types::MainWork::new();
-//! let mut plugin = Vst2Loaded::load(&main, &work, "/usr/lib/vst/MyPlugin.so")?;
+//! let mut plugin = Vst2Loaded::load(main, &work, "/usr/lib/vst/MyPlugin.so")?;
 //!
-//! for info in plugin.parameters(&main) {
+//! for info in plugin.parameters(main) {
 //!     println!("{}: {} ({:?})", info.id(), info.qualified_name(), info.bounds());
 //! }
 //!
 //! // A normalized `0..=1` value, written to the parameter at position 0.
-//! let first = plugin.parameters(&main)[0].id();
-//! plugin.set_parameter(&main, first, Normalized::of(0.5));
+//! let first = plugin.parameters(main)[0].id();
+//! plugin.set_parameter(main, first, Normalized::of(0.5));
 //! # Ok(()) }
 //! ```
 //!
@@ -133,20 +133,20 @@
 //! # use tutti_plugin_types::ContentScale;
 //! # use tutti_vst2_host::{Vst2Loaded, WindowHandle};
 //! # fn ex(window: &impl raw_window_handle::HasWindowHandle) -> Result<(), Box<dyn std::error::Error>> {
-//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let main = tutti_plugin_types::MainThreadMarker::new().expect("on the UI thread");
 //! # let (_collector, work) = tutti_plugin_types::MainWork::new();
-//! # let mut plugin = Vst2Loaded::load(&main, &work, "/usr/lib/vst/MyPlugin.so")?;
+//! # let mut plugin = Vst2Loaded::load(main, &work, "/usr/lib/vst/MyPlugin.so")?;
 //! // Chunk-based if the plugin declares `preset_chunks`, else the per-parameter
 //! // fallback; `load_state` reads the header back and reports a refusal rather
 //! // than swallowing it.
-//! let saved = plugin.save_state(&main, StateUse::Project).expect("saves");
-//! plugin.load_state(&main, &saved, StateUse::Project).expect("restores");
+//! let saved = plugin.save_state(main, StateUse::Project).expect("saves");
+//! plugin.load_state(main, &saved, StateUse::Project).expect("restores");
 //!
 //! // The editor is the same `AEffect` the audio path drives, hence in-process.
 //! // VST2 has no content scale: the argument is accepted and ignored.
-//! let size = plugin.open_editor(&main, WindowHandle::from_window(window)?, ContentScale::IDENTITY)?;
+//! let size = plugin.open_editor(main, WindowHandle::from_window(window)?, ContentScale::IDENTITY)?;
 //! println!("editor is {size:?}");
-//! plugin.close_editor(&main);
+//! plugin.close_editor(main);
 //! # Ok(()) }
 //! ```
 //!
@@ -186,7 +186,7 @@
 //! allocate or lock, and are meant for the audio thread; a block the plugin cannot
 //! take (a channel shorter than the block, a 32-bit block for a 64-bit activation)
 //! is an error and renders nothing. Loading, the editor, and the activation and
-//! rejoin belong on the main thread, and take a `tutti_plugin_types::MainThread`
+//! rejoin belong on the main thread, and take a `tutti_plugin_types::MainThreadMarker`
 //! as proof. The plugin is not
 //! thread-safe: the Controller and the Processor are the two threads it is
 //! reached from, and nothing else touches it. A Processor that outlives its

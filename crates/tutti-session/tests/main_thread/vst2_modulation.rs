@@ -25,7 +25,7 @@ fn vst2_probe() -> std::path::PathBuf {
 
 /// This process's main thread. Each test is its own process under nextest, so
 /// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
+fn main_thread() -> tutti_plugin_types::MainThreadMarker {
     tutti_fixtures::main_thread()
 }
 
@@ -38,7 +38,7 @@ fn session_with_probe() -> (Session, NodeKey) {
         .expect("a detached session builds");
     let node = s
         .add_plugin_blocking(
-            &main_thread(),
+            main_thread(),
             PluginLoadRequest::new(PluginRef::file(vst2_probe()).expect("a plugin file")),
         )
         .expect("the in-process VST2 loads");
@@ -131,7 +131,7 @@ fn a_plugin_gui_edit_becomes_the_knob() {
     s.plugin(node)
         .expect("the plugin's handle")
         .handle()
-        .editor_idle(&main_thread());
+        .editor_idle(main_thread());
     update(&mut s, Instant::now());
 
     let state = s.mod_state();
@@ -261,7 +261,7 @@ fn a_plugin_echoing_the_lane_keeps_its_knob() {
             .expect("the plugin's handle")
             .handle()
             .clone();
-        handle.editor_idle(&main_thread());
+        handle.editor_idle(main_thread());
         update(&mut s, Instant::now());
         assert_eq!(
             s.mod_state().lane(p0.key()).expect("a lane").1.knob(),

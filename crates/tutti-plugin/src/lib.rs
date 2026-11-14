@@ -358,8 +358,8 @@ mod host;
 pub use tutti_plugin_ipc::BridgeConfig;
 
 // The main-thread token the editor, state and polling entries take; a host
-// makes it once, on its UI thread, with `MainThread::new`.
-pub use tutti_plugin_types::MainThread;
+// makes it once, on its UI thread, with `MainThreadMarker::new`.
+pub use tutti_plugin_types::MainThreadMarker;
 // `PluginClient::set_automation_state` takes this, so callers must be able to
 // name it without depending on tutti-plugin-types directly.
 pub use tutti_plugin_types::AutomationMode;

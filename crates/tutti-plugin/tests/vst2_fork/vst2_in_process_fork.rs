@@ -146,7 +146,7 @@ fn load() -> (PluginNode<Vst2Loaded>, PluginHandle) {
 fn load_with(tempo: tutti_transport::TempoReader) -> (PluginNode<Vst2Loaded>, PluginHandle) {
     let path = tutti_fixtures::vst2_probe();
     let (client, handle) = load_client::<Vst2Loaded>(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::pumped_work(),
         path,
         &Load::new(),
@@ -203,7 +203,7 @@ fn a_chunk_plugin_forks_with_the_live_chunk_and_renders_offline() {
     let _env = ProbeEnv::new(true);
     let (client, handle) = load();
     handle
-        .load_state(&main_thread(), &chunk_state(&[7, 1, 2]))
+        .load_state(main_thread(), &chunk_state(&[7, 1, 2]))
         .expect("the probe takes a chunk");
 
     let key = NodeKey(1);
@@ -239,19 +239,19 @@ fn a_plugin_without_chunks_forks_with_its_program_and_parameters() {
     let _env = ProbeEnv::new(false);
     let (client, handle) = load();
     let program_1 = handle
-        .presets(&main_thread())
+        .presets(main_thread())
         .expect("the VST2 path carries presets")
         .into_iter()
         .map(|p| p.id)
         .find(|id| *id == PresetId::Number(1))
         .expect("the probe declares two programs");
-    assert_eq!(handle.load_preset(&main_thread(), &program_1), Ok(()));
+    assert_eq!(handle.load_preset(main_thread(), &program_1), Ok(()));
     handle
         .any_thread()
         .set_parameter_value(ParamId::new(0), Normalized::of(0.75));
 
     let fork = client
-        .fork_instance(&main_thread(), ForkMode::Live)
+        .fork_instance(main_thread(), ForkMode::Live)
         .expect("the probe forks");
     let key = NodeKey(2);
     let (mut editor, exec) = Editor::new(prepare_at(SAMPLE_RATE));
@@ -351,7 +351,7 @@ fn a_plugin_handed_back_by_into_client_forks() {
     reset_probe();
     let _env = ProbeEnv::new(true);
     let plugin = tutti_plugin::catalog::Plugin::open(
-        Some(&main_thread()),
+        Some(main_thread()),
         &tutti_fixtures::pumped_work(),
         &tutti_plugin::catalog::PluginRef::file(tutti_fixtures::vst2_probe())
             .expect("a plugin file"),
@@ -360,7 +360,7 @@ fn a_plugin_handed_back_by_into_client_forks() {
     .expect("the probe opens");
     let handle = plugin.handle().clone();
     handle
-        .load_state(&main_thread(), &chunk_state(&[5]))
+        .load_state(main_thread(), &chunk_state(&[5]))
         .expect("the probe takes a chunk");
     let Err(plugin) = plugin.into_client() else {
         panic!("an in-process VST2 plugin is not a PluginClient");
@@ -463,7 +463,7 @@ fn a_live_fork_keeps_the_live_render_mode() {
     ] {
         assert!(client.set_render_mode(mode));
         let fork = client
-            .fork_instance(&main_thread(), ForkMode::Live)
+            .fork_instance(main_thread(), ForkMode::Live)
             .expect("forks");
         let key = NodeKey(7);
         let (mut editor, exec) = Editor::new(prepare_at(SAMPLE_RATE));
@@ -491,7 +491,7 @@ fn a_second_instance_of_another_plugin_is_a_mismatch() {
     let (client, handle) = load();
     env.set("TUTTI_VST2_PROBE_UNIQUE_ID", "4242");
     let err = client
-        .fork_instance(&main_thread(), ForkMode::Live)
+        .fork_instance(main_thread(), ForkMode::Live)
         .expect_err("a different plugin is not a fork");
     match err {
         PluginForkError::Mismatch {
@@ -516,12 +516,12 @@ fn a_live_program_out_of_the_second_instances_range_is_a_named_error() {
     let mut env = ProbeEnv::new(true);
     let (client, handle) = load();
     assert_eq!(
-        handle.load_preset(&main_thread(), &PresetId::Number(1)),
+        handle.load_preset(main_thread(), &PresetId::Number(1)),
         Ok(())
     );
     env.set("TUTTI_VST2_PROBE_PROGRAMS", "1");
     let err = client
-        .fork_instance(&main_thread(), ForkMode::Live)
+        .fork_instance(main_thread(), ForkMode::Live)
         .expect_err("program 1 does not exist in the second instance");
     assert!(
         matches!(err, PluginForkError::LoadState(_)),

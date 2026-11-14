@@ -4,7 +4,7 @@
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 
 use tutti_rt::{DrainMark, DrainWatch};
 
@@ -178,7 +178,7 @@ impl Vst3Controller {
     /// Applies the values the Processor reported from the plugin's
     /// `outputParameterChanges` to the controller. They are not queued back to
     /// the Processor: the plugin made them.
-    fn apply_reports(&mut self, main: &MainThread) {
+    fn apply_reports(&mut self, main: MainThreadMarker) {
         let mut reported = Vec::new();
         self.reports.drain(|edit| {
             if let Edit::Param { id, value } = edit {
@@ -248,14 +248,14 @@ impl Wraps for Vst3Controller {
     /// Processor, which puts it in the next block's `inputParameterChanges`: a
     /// plugin whose component is separate from its controller has no other way
     /// to hear of it.
-    fn queue_write(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
+    fn queue_write(&mut self, _main: MainThreadMarker, id: ParamId, value: Normalized) {
         self.queue_edit(id, value);
     }
 
     /// The writes queued before are stale. The writes the state or the program
     /// carried (the plugin keeps them in `carried`) are queued to the Processor,
     /// which the component's own stream did not hold.
-    fn after_restore(&mut self, _main: &MainThread) {
+    fn after_restore(&mut self, _main: MainThreadMarker) {
         self.reset_edits();
         for (id, value) in std::mem::take(&mut self.loaded_mut().carried) {
             self.queue_edit(id, value);
@@ -266,7 +266,7 @@ impl Wraps for Vst3Controller {
     /// component's stream, which does not hold them.
     fn save_with_pending(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         _state_use: tutti_plugin_types::StateUse,
     ) -> PluginResult<Vec<u8>> {
         let undrained = self.undrained();
@@ -279,7 +279,7 @@ impl Wraps for Vst3Controller {
     /// processor wrote to `outputParameterChanges` since the last call (each a
     /// change with no gesture around it: the processor is not a hand on a knob),
     /// which is not queued back: the plugin made it.
-    fn collect_reports(&mut self, main: &MainThread, out: &mut Vec<ParamEdit>, from: usize) {
+    fn collect_reports(&mut self, main: MainThreadMarker, out: &mut Vec<ParamEdit>, from: usize) {
         let reported: Vec<_> = out[from..]
             .iter()
             .filter_map(|edit| match *edit {
@@ -302,7 +302,7 @@ impl Wraps for Vst3Controller {
     /// controller (`setParamNormalized`, on this thread, as the portal's
     /// "Processor and Controller" section has it), retries what the ring
     /// refused, oldest first, and lets the retired midi-mapping tables go.
-    fn tick(&mut self, main: &MainThread) {
+    fn tick(&mut self, main: MainThreadMarker) {
         self.apply_reports(main);
         self.loaded_mut().midi_cc.reclaim();
         // A tick is a control-side moment: plugins whose last holder was a
@@ -327,11 +327,11 @@ impl Controller for Vst3Controller {
     type Loaded = Vst3Loaded;
     type Processor = ProcessorAny;
 
-    fn latency(&self, main: &MainThread) -> Samples {
+    fn latency(&self, main: MainThreadMarker) -> Samples {
         Samples(self.loaded().latency_samples(main) as usize)
     }
 
-    fn tail(&self, main: &MainThread) -> PluginTail {
+    fn tail(&self, main: MainThreadMarker) -> PluginTail {
         PluginTail::from_vst3_samples(self.loaded().tail_samples(main))
     }
 }
@@ -359,7 +359,7 @@ impl Vst3Loaded {
     #[allow(clippy::result_large_err)]
     pub fn activate_typed<T: Vst3Sample>(
         mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         prepare: Prepare,
     ) -> std::result::Result<(Vst3Processor<T>, Vst3Controller), Refused<Self>> {
         // `maxSamplesPerBlock` is an `i32`, narrower than a `MaxBlock`'s `u32`.
@@ -445,7 +445,7 @@ impl Vst3Loaded {
     /// activation.
     #[allow(clippy::result_large_err)]
     fn rejoin<P>(
-        main: &MainThread,
+        main: MainThreadMarker,
         mut processor: P,
         mut controller: Vst3Controller,
         shell_of: impl Fn(&P) -> &Arc<Shell>,
@@ -492,7 +492,7 @@ impl Vst3Loaded {
     /// The halves come back, with the reason, when they are of two activations.
     #[allow(clippy::result_large_err)]
     pub fn deactivate_typed<T: Vst3Sample>(
-        main: &MainThread,
+        main: MainThreadMarker,
         processor: Vst3Processor<T>,
         controller: Vst3Controller,
     ) -> Result<Vst3Loaded, (Vst3Processor<T>, Vst3Controller, PluginError)> {
@@ -509,7 +509,7 @@ impl Vst3Loaded {
     /// `setActive(0)`, if the plugin is active. The Processor has stopped
     /// processing by now (`rejoin` stops it, and sends `setProcessing(0)` only
     /// if it was on), so it is not told twice.
-    fn deactivate_plugin(&mut self, main: &MainThread) {
+    fn deactivate_plugin(&mut self, main: MainThreadMarker) {
         if !self.active.is_active() {
             return;
         }
@@ -546,7 +546,7 @@ impl Loaded for Vst3Loaded {
 
     fn activate(
         self,
-        main: &MainThread,
+        main: MainThreadMarker,
         prepare: Prepare,
     ) -> Result<(ProcessorAny, Vst3Controller), Refused<Self>> {
         match prepare.format() {
@@ -560,7 +560,7 @@ impl Loaded for Vst3Loaded {
     }
 
     fn deactivate(
-        main: &MainThread,
+        main: MainThreadMarker,
         processor: ProcessorAny,
         controller: Vst3Controller,
     ) -> Result<Self, Stuck<ProcessorAny, Vst3Controller>> {
@@ -582,7 +582,7 @@ impl Loaded for Vst3Loaded {
     /// Loads the plugin again from where it came, state and all, and drops the
     /// old instance (`kReloadComponent`). The new instance is built first, so a
     /// refusal leaves the old one in place.
-    fn rebuild(mut self, main: &MainThread) -> Result<Self, Refused<Self>> {
+    fn rebuild(mut self, main: MainThreadMarker) -> Result<Self, Refused<Self>> {
         let state = self
             .save_state(main, tutti_plugin_types::StateUse::Project)
             .ok();

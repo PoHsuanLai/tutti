@@ -21,7 +21,7 @@ use tutti_rt::RequestWord;
 
 use crate::{
     AudioBufferMut, ChannelLayout, ContentScale, Control, Controller, EditDrain, EditSink,
-    EditorError, EditorWindow, FdId, Layout, Loaded, LoadedPlugin, MainThread, Normalized,
+    EditorError, EditorWindow, FdId, Layout, Loaded, LoadedPlugin, MainThreadMarker, Normalized,
     ParamEdit, ParamId, ParameterInfo, PluginBus, PluginDescriptor, PluginError, PluginIo,
     PluginResult, PluginTail, Prepare, Processor, Refused, RenderMode, RenderModeSupport, Request,
     RescanScope, RestartRules, SampleRate, Samples, Stuck, TimerId, WindowHandle, edits,
@@ -507,24 +507,24 @@ macro_rules! fake_control {
                 &self.descriptor
             }
 
-            fn wiring(&self, _main: &MainThread) -> LoadedPlugin {
+            fn wiring(&self, _main: MainThreadMarker) -> LoadedPlugin {
                 self.shared.wiring()
             }
 
-            fn parameters(&self, _main: &MainThread) -> Vec<ParameterInfo> {
+            fn parameters(&self, _main: MainThreadMarker) -> Vec<ParameterInfo> {
                 self.values
                     .iter()
                     .map(|&(id, _)| ParameterInfo::new(id, "p"))
                     .collect()
             }
 
-            fn parameter(&self, _main: &MainThread, id: ParamId) -> Option<Normalized> {
+            fn parameter(&self, _main: MainThreadMarker, id: ParamId) -> Option<Normalized> {
                 self.values.iter().find(|(k, _)| *k == id).map(|&(_, v)| v)
             }
 
             fn parameter_plain(
                 &self,
-                _main: &MainThread,
+                _main: MainThreadMarker,
                 _id: ParamId,
                 value: Normalized,
             ) -> Option<f64> {
@@ -533,14 +533,14 @@ macro_rules! fake_control {
 
             fn parameter_normalized(
                 &self,
-                _main: &MainThread,
+                _main: MainThreadMarker,
                 _id: ParamId,
                 plain: f64,
             ) -> Option<Normalized> {
                 Normalized::new(plain)
             }
 
-            fn set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
+            fn set_parameter(&mut self, _main: MainThreadMarker, id: ParamId, value: Normalized) {
                 self.shared.log.push(Call::SetParameter(id));
                 set_value(&mut self.values, id, value);
                 let set: fn(&mut Self, ParamId, Normalized) = $set;
@@ -549,7 +549,7 @@ macro_rules! fake_control {
 
             fn save_state(
                 &mut self,
-                _main: &MainThread,
+                _main: MainThreadMarker,
                 _: $crate::StateUse,
             ) -> PluginResult<Vec<u8>> {
                 self.shared.log.push(Call::SaveState);
@@ -558,7 +558,7 @@ macro_rules! fake_control {
 
             fn load_state(
                 &mut self,
-                _main: &MainThread,
+                _main: MainThreadMarker,
                 bytes: &[u8],
                 _: $crate::StateUse,
             ) -> PluginResult<()> {
@@ -567,37 +567,37 @@ macro_rules! fake_control {
                 Ok(())
             }
 
-            fn flush_edits(&mut self, main: &MainThread) {
-                let flush: fn(&mut Self, &MainThread) = $flush;
+            fn flush_edits(&mut self, main: MainThreadMarker) {
+                let flush: fn(&mut Self, MainThreadMarker) = $flush;
                 flush(self, main);
             }
 
-            fn rebuild_midi_mapping(&mut self, _main: &MainThread) {
+            fn rebuild_midi_mapping(&mut self, _main: MainThreadMarker) {
                 self.shared.log.push(Call::RebuildMidiMapping);
             }
 
-            fn rescan_parameters(&mut self, _main: &MainThread, scope: RescanScope) {
+            fn rescan_parameters(&mut self, _main: MainThreadMarker, scope: RescanScope) {
                 self.shared.log.push(Call::RescanParameters(scope));
             }
 
-            fn run_main_thread(&mut self, _main: &MainThread) {
+            fn run_main_thread(&mut self, _main: MainThreadMarker) {
                 self.shared.log.push(Call::RunMainThread);
             }
 
-            fn run_timer(&mut self, _main: &MainThread, id: TimerId) {
+            fn run_timer(&mut self, _main: MainThreadMarker, id: TimerId) {
                 self.shared.log.push(Call::RunTimer(id));
             }
 
-            fn service_fd(&mut self, _main: &MainThread, id: FdId) {
+            fn service_fd(&mut self, _main: MainThreadMarker, id: FdId) {
                 self.shared.log.push(Call::ServiceFd(id));
             }
 
             /// The fake never asks for anything.
-            fn take_requests(&mut self, _main: &MainThread, _out: &mut Vec<Request>) {}
+            fn take_requests(&mut self, _main: MainThreadMarker, _out: &mut Vec<Request>) {}
 
             /// As [`FakePlugin::take_render_mode`] set it; at activation by
             /// default, as VST3 takes it.
-            fn render_mode_support(&self, _main: &MainThread) -> RenderModeSupport {
+            fn render_mode_support(&self, _main: MainThreadMarker) -> RenderModeSupport {
                 match self.shared.render_mode_support.load(Ordering::Relaxed) {
                     1 => RenderModeSupport::Live,
                     2 => RenderModeSupport::Unsupported,
@@ -607,7 +607,7 @@ macro_rules! fake_control {
 
             /// Takes the mode where the fake is [`RenderModeSupport::Live`],
             /// recording it for [`FakePlugin::told_render_mode`].
-            fn set_render_mode(&mut self, main: &MainThread, mode: RenderMode) -> bool {
+            fn set_render_mode(&mut self, main: MainThreadMarker, mode: RenderMode) -> bool {
                 if self.render_mode_support(main) != RenderModeSupport::Live {
                     return false;
                 }
@@ -617,7 +617,7 @@ macro_rules! fake_control {
             }
 
             /// The fake reports no edits outside a block.
-            fn take_reported_edits(&mut self, _main: &MainThread, _out: &mut Vec<ParamEdit>) {}
+            fn take_reported_edits(&mut self, _main: MainThreadMarker, _out: &mut Vec<ParamEdit>) {}
 
             /// `0`: the fake reports edits in `ProcessOutput`, like CLAP and VST3.
             fn dropped_reported_edits(&self) -> u64 {
@@ -627,13 +627,13 @@ macro_rules! fake_control {
 
         /// The fake has an editor only when the test gave it one.
         impl EditorWindow for $ty {
-            fn has_editor(&self, _main: &MainThread) -> bool {
+            fn has_editor(&self, _main: MainThreadMarker) -> bool {
                 self.shared.editor.load(Ordering::Relaxed)
             }
 
             fn open_editor(
                 &mut self,
-                _main: &MainThread,
+                _main: MainThreadMarker,
                 _parent: WindowHandle,
                 _scale: ContentScale,
             ) -> PluginResult<Size> {
@@ -648,7 +648,7 @@ macro_rules! fake_control {
 
             fn set_editor_scale(
                 &mut self,
-                _main: &MainThread,
+                _main: MainThreadMarker,
                 scale: ContentScale,
             ) -> PluginResult<()> {
                 if !self.shared.takes_scale.load(Ordering::Relaxed) {
@@ -660,18 +660,18 @@ macro_rules! fake_control {
                 Ok(())
             }
 
-            fn close_editor(&mut self, _main: &MainThread) {
+            fn close_editor(&mut self, _main: MainThreadMarker) {
                 self.shared.log.push(Call::CloseEditor);
             }
 
-            fn editor_idle(&mut self, _main: &MainThread) {
+            fn editor_idle(&mut self, _main: MainThreadMarker) {
                 self.shared.log.push(Call::EditorIdle);
             }
 
             /// The default capabilities: this surface reports no resize support.
             fn editor_capabilities(
                 &mut self,
-                _main: &crate::MainThread,
+                _main: MainThreadMarker,
             ) -> crate::EditorCapabilities {
                 crate::EditorCapabilities::default()
             }
@@ -679,7 +679,7 @@ macro_rules! fake_control {
             /// Not supported here.
             fn set_editor_size(
                 &mut self,
-                _main: &crate::MainThread,
+                _main: MainThreadMarker,
                 _requested: dpi::Size,
             ) -> crate::PluginResult<dpi::Size> {
                 Err(crate::PluginError::Editor(crate::EditorError::PluginError(
@@ -688,10 +688,7 @@ macro_rules! fake_control {
             }
 
             /// What the test asked the plugin to request, once.
-            fn poll_editor_resize_request(
-                &mut self,
-                _main: &crate::MainThread,
-            ) -> Option<dpi::Size> {
+            fn poll_editor_resize_request(&mut self, _main: MainThreadMarker) -> Option<dpi::Size> {
                 match self.shared.resize_request.swap(0, Ordering::Relaxed) {
                     0 => None,
                     packed => {
@@ -739,7 +736,7 @@ impl Loaded for FakeLoaded {
 
     fn activate(
         self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         prepare: Prepare,
     ) -> Result<(FakeProcessor, FakeController), Refused<Self>> {
         let shared = self.shared.clone();
@@ -778,7 +775,7 @@ impl Loaded for FakeLoaded {
     }
 
     fn deactivate(
-        _main: &MainThread,
+        _main: MainThreadMarker,
         processor: FakeProcessor,
         controller: FakeController,
     ) -> Result<Self, Stuck<FakeProcessor, FakeController>> {
@@ -813,7 +810,7 @@ impl Loaded for FakeLoaded {
         })
     }
 
-    fn rebuild(self, _main: &MainThread) -> Result<Self, Refused<Self>> {
+    fn rebuild(self, _main: MainThreadMarker) -> Result<Self, Refused<Self>> {
         self.shared.log.push(Call::Rebuild);
         assert!(
             !self.shared.panic_in_rebuild.load(Ordering::Relaxed),
@@ -833,7 +830,7 @@ impl Controller for FakeController {
     type Loaded = FakeLoaded;
     type Processor = FakeProcessor;
 
-    fn latency(&self, _main: &MainThread) -> Samples {
+    fn latency(&self, _main: MainThreadMarker) -> Samples {
         self.shared.log.push(Call::Latency);
         assert!(
             !self.shared.panic_in_latency.load(Ordering::Relaxed),
@@ -842,7 +839,7 @@ impl Controller for FakeController {
         Samples(self.shared.latency.load(Ordering::Relaxed))
     }
 
-    fn tail(&self, _main: &MainThread) -> PluginTail {
+    fn tail(&self, _main: MainThreadMarker) -> PluginTail {
         self.shared.log.push(Call::Tail);
         self.shared.tail()
     }

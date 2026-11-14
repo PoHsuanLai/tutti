@@ -2,7 +2,7 @@
 //! serves while the host is quiet, and the editor on the served instance.
 //!
 //! The host is a script of messages and silences on the control connection, so
-//! the loop runs on the test's own thread (it holds the `MainThread` token)
+//! the loop runs on the test's own thread (it holds the `MainThreadMarker` token)
 //! against real time: a silence is slept out in `wait_readable`, as the
 //! socket's would be. The audio connection is a real one in the same sense: the
 //! render thread serves it, over an in-memory pair of channels that the host's
@@ -261,12 +261,12 @@ fn run_ticking(fixture: &mut Fixture, script: &mut Script, tick: Duration) {
         &mut fixture.session,
         script,
         &mut Native::default(),
-        &main,
+        main,
         &render,
         tick,
     );
     // As the server ends: the plugin goes home, then the render thread stops.
-    fixture.session.drop_plugin(&main);
+    fixture.session.drop_plugin(main);
     drop(render.stop());
     // A script that ends ends in `recv`'s refusal; any other end is a failure.
     assert!(

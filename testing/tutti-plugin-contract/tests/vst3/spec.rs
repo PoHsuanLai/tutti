@@ -120,12 +120,12 @@ fn output_parameter_changes_reach_the_controller<F: Format<L = Vst3Loaded>>() {
     let main = main_thread();
     let before = a
         .controller()
-        .parameter(&main, Param::Aux.id())
+        .parameter(main, Param::Aux.id())
         .map(Normalized::get);
-    a.controller_mut().flush_edits(&main);
+    a.controller_mut().flush_edits(main);
     let after = a
         .controller()
-        .parameter(&main, Param::Aux.id())
+        .parameter(main, Param::Aux.id())
         .map(Normalized::get);
     assert_eq!(before, Some(0.25), "nothing is delivered before the tick");
     let want = f64::from(key) / 127.0;
@@ -145,7 +145,7 @@ fn an_editors_edit_reaches_the_processor<F: Format<L = Vst3Loaded>>() {
     select::<F, _>(a.controller_mut(), 0, 1);
     let main = main_thread();
     let mut edits = Vec::new();
-    a.controller_mut().take_reported_edits(&main, &mut edits);
+    a.controller_mut().take_reported_edits(main, &mut edits);
     let changes: Vec<_> = edits
         .iter()
         .filter_map(|e| e.value().map(|v| (e.id(), v)))
@@ -175,7 +175,7 @@ fn a_parameter_written_while_not_processing_is_flushed<F: Format<L = Vst3Loaded>
     let mut a = active::<F>();
     let main = main_thread();
     a.controller_mut()
-        .set_parameter(&main, Param::Aux.id(), Normalized::clamped(0.9));
+        .set_parameter(main, Param::Aux.id(), Normalized::clamped(0.9));
     assert!(
         !a.processor().flush_parameters().unwrap(),
         "it is processing"

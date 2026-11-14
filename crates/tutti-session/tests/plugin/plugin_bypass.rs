@@ -45,7 +45,7 @@ fn set_server() {
     }
 }
 
-fn main_thread() -> tutti_plugin_types::MainThread {
+fn main_thread() -> tutti_plugin_types::MainThreadMarker {
     tutti_fixtures::main_thread()
 }
 
@@ -91,7 +91,7 @@ fn rig(mode: NodeMode) -> Rig {
         .expect("an offline session builds");
     let plugin = s
         .add_plugin_blocking(
-            &main_thread(),
+            main_thread(),
             PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
         )
         .expect("the reference CLAP plugin loads");

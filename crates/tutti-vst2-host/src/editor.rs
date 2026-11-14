@@ -1,14 +1,14 @@
 //! Editor window lifecycle.
 //!
 //! The editor is the instance's own (`PluginInstance::open_editor` and its siblings, each
-//! taking a `&MainThread`): VST2 fuses the editor and the audio processor into one `AEffect`,
+//! taking a `MainThreadMarker`): VST2 fuses the editor and the audio processor into one `AEffect`,
 //! so there is no second object to hold.
 
 use crate::error::{Result, Vst2Error};
 use crate::loaded::Vst2Loaded;
 use crate::types::WindowHandle;
 use dpi::Size;
-use tutti_plugin_types::{EditorUnit, MainThread};
+use tutti_plugin_types::{EditorUnit, MainThreadMarker};
 
 /// `width` by `height` as an `ERect` extent counts them: device pixels on Windows and
 /// X11, points on macOS, which is how the window system counts its own windows. The one
@@ -37,10 +37,10 @@ impl Vst2Loaded {
     ///
     /// Main thread only; platform GUI toolkits require it, and on macOS a call
     /// from another thread crashes inside the plugin's UI code, which the
-    /// `&MainThread` proves the caller is not on.
+    /// `MainThreadMarker` proves the caller is not on.
     pub(crate) fn open_editor_in(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         parent: WindowHandle,
     ) -> Result<Size> {
         if !self.instance.has_editor() {

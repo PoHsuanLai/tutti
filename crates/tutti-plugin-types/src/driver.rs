@@ -16,8 +16,8 @@ use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::{
-    Control, Controller, Effect, Event, HostOp, Layout, Loaded, LoadedPlugin, MainThread, Notice,
-    PluginError, Prepare, Refused, Reply, SampleRate, State, Stuck, step,
+    Control, Controller, Effect, Event, HostOp, Layout, Loaded, LoadedPlugin, MainThreadMarker,
+    Notice, PluginError, Prepare, Refused, Reply, SampleRate, State, Stuck, step,
 };
 
 /// The main thread's end of the Processor's trip to the realtime thread.
@@ -252,7 +252,7 @@ impl<L: Loaded> Lifecycle<L> {
         &mut self,
         effect: Effect,
         hand: &mut Hand<L::Processor>,
-        main: &MainThread,
+        main: MainThreadMarker,
     ) -> Reply {
         match effect {
             Effect::CallActivate(prepare) => self.activate(main, prepare),
@@ -280,7 +280,7 @@ impl<L: Loaded> Lifecycle<L> {
     }
 
     /// The effects that act on a plugin where it is.
-    fn apply_in_place(&mut self, effect: Effect, main: &MainThread) -> Reply {
+    fn apply_in_place(&mut self, effect: Effect, main: MainThreadMarker) -> Reply {
         match effect {
             Effect::CallActivate(_)
             | Effect::CallDeactivate
@@ -395,7 +395,7 @@ impl<L: Loaded> Lifecycle<L> {
         }
     }
 
-    fn activate(&mut self, main: &MainThread, prepare: Prepare) -> Reply {
+    fn activate(&mut self, main: MainThreadMarker, prepare: Prepare) -> Reply {
         let plugin = match std::mem::replace(self, Self::Poisoned) {
             Self::Loaded(plugin) | Self::Refused { plugin, .. } => plugin,
             other => {
@@ -424,7 +424,7 @@ impl<L: Loaded> Lifecycle<L> {
         }
     }
 
-    fn deactivate(&mut self, main: &MainThread) -> Reply {
+    fn deactivate(&mut self, main: MainThreadMarker) -> Reply {
         let (controller, processor) = match std::mem::replace(self, Self::Poisoned) {
             Self::Active {
                 seat: Seat::Held(processor),
@@ -457,7 +457,7 @@ impl<L: Loaded> Lifecycle<L> {
         }
     }
 
-    fn rebuild(&mut self, main: &MainThread) -> Reply {
+    fn rebuild(&mut self, main: MainThreadMarker) -> Reply {
         let (plugin, rate) = match std::mem::replace(self, Self::Poisoned) {
             Self::Loaded(plugin) => (plugin, None),
             Self::Refused { plugin, rate } => (plugin, rate),
@@ -506,7 +506,7 @@ impl<L: Loaded> Lifecycle<L> {
         mut state: State,
         event: Event,
         hand: &mut Hand<L::Processor>,
-        main: &MainThread,
+        main: MainThreadMarker,
         mut notify: impl FnMut(Notice),
     ) -> State {
         if matches!(event, Event::Tick) && self.trade(hand, &state) {
@@ -522,7 +522,7 @@ impl<L: Loaded> Lifecycle<L> {
         state: State,
         event: Event,
         hand: &mut Hand<L::Processor>,
-        main: &MainThread,
+        main: MainThreadMarker,
         notify: &mut dyn FnMut(Notice),
     ) -> State {
         if matches!(event, Event::Tick) {

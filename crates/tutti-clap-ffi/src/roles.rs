@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, TryLockError};
 use std::thread::ThreadId;
 
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 
 /// The thread roles of one plugin instance.
 #[derive(Debug)]
@@ -105,11 +105,11 @@ impl ThreadRoles {
 
     /// Roles with the calling thread as the main thread and no audio claim.
     /// The token proves the caller is on the process's main thread, so the
-    /// thread recorded here is the one every `&MainThread` entry runs on: this
+    /// thread recorded here is the one every `MainThreadMarker` entry runs on: this
     /// is the one place the main thread is named, and the `thread-check`
     /// answer, the host shims and `Plugin`'s drop all read it.
     #[must_use]
-    pub fn new(_main: &MainThread) -> Self {
+    pub fn new(_main: MainThreadMarker) -> Self {
         Self {
             main: std::thread::current().id(),
             audio: AtomicU64::new(NO_AUDIO_THREAD),

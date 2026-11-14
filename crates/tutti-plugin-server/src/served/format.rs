@@ -7,7 +7,7 @@
 //! it: the pool it serves a plugin's thread-pool extension on, what it drops
 //! unread, and how a write waiting for a block is delivered early.
 
-use tutti_plugin_types::{Lifecycle, MainThread, OutOfProcess, ParamEdit, Request};
+use tutti_plugin_types::{Lifecycle, MainThreadMarker, OutOfProcess, ParamEdit, Request};
 
 /// What the server does to a loaded plugin of format `Self`, beyond what the
 /// format's [`OutOfProcess::load_served`] and its `Control` give.
@@ -22,7 +22,11 @@ pub(crate) trait ServerSide: OutOfProcess {
     /// and drops what else the plugin queued that the server has no use for, so
     /// a bounded queue the plugin fills holds no backlog (VST3's progress and
     /// unit news).
-    fn take_edits(lifecycle: &mut Lifecycle<Self>, main: &MainThread, out: &mut Vec<ParamEdit>) {
+    fn take_edits(
+        lifecycle: &mut Lifecycle<Self>,
+        main: MainThreadMarker,
+        out: &mut Vec<ParamEdit>,
+    ) {
         if let Some(control) = lifecycle.control() {
             control.take_reported_edits(main, out);
         }
@@ -35,7 +39,11 @@ pub(crate) trait ServerSide: OutOfProcess {
     /// descriptors); taking it again would serve a period-0 timer on every
     /// pass. The default takes it again, for a format whose take is only what
     /// the plugin raised.
-    fn take_raised(lifecycle: &mut Lifecycle<Self>, main: &MainThread, out: &mut Vec<Request>) {
+    fn take_raised(
+        lifecycle: &mut Lifecycle<Self>,
+        main: MainThreadMarker,
+        out: &mut Vec<Request>,
+    ) {
         if let Some(control) = lifecycle.control() {
             control.take_requests(main, out);
         }
@@ -46,7 +54,7 @@ pub(crate) trait ServerSide: OutOfProcess {
     /// this a save right after a write would read the old value until the next
     /// block. The default retries what a full edit ring refused, which is all a
     /// format that applies a write at once needs.
-    fn settle_edits(lifecycle: &mut Lifecycle<Self>, main: &MainThread) {
+    fn settle_edits(lifecycle: &mut Lifecycle<Self>, main: MainThreadMarker) {
         if let Some(control) = lifecycle.control() {
             control.flush_edits(main);
         }
@@ -56,7 +64,7 @@ pub(crate) trait ServerSide: OutOfProcess {
 #[cfg(feature = "clap")]
 pub(in crate::served) mod clap {
     use tutti_clap_host::ClapLoaded;
-    use tutti_plugin_types::{Control, Lifecycle, MainThread, Request, Seat};
+    use tutti_plugin_types::{Control, Lifecycle, MainThreadMarker, Request, Seat};
 
     use super::ServerSide;
 
@@ -142,7 +150,7 @@ pub(in crate::served) mod clap {
         /// only what the plugin raised is taken again.
         fn take_raised(
             lifecycle: &mut Lifecycle<Self>,
-            _main: &MainThread,
+            _main: MainThreadMarker,
             out: &mut Vec<Request>,
         ) {
             match lifecycle {
@@ -160,7 +168,7 @@ pub(in crate::served) mod clap {
         /// to the queue. Only what was pending is flushed, at the moment it is
         /// asked for, so a value the plugin or its editor has since moved is not
         /// re-asserted by every write.
-        fn settle_edits(lifecycle: &mut Lifecycle<Self>, main: &MainThread) {
+        fn settle_edits(lifecycle: &mut Lifecycle<Self>, main: MainThreadMarker) {
             if let Some(control) = lifecycle.control() {
                 control.flush_edits(main);
             }
@@ -198,7 +206,11 @@ pub(in crate::served) mod clap {
 impl ServerSide for tutti_vst3_host::Vst3Loaded {
     /// The edits the plugin made go to the host; the progress and unit news it
     /// queues are dropped unread, so the host's bounded queue holds no backlog.
-    fn take_edits(lifecycle: &mut Lifecycle<Self>, main: &MainThread, out: &mut Vec<ParamEdit>) {
+    fn take_edits(
+        lifecycle: &mut Lifecycle<Self>,
+        main: MainThreadMarker,
+        out: &mut Vec<ParamEdit>,
+    ) {
         if let Some(control) = lifecycle.control() {
             control.take_reported_edits(main, out);
         }

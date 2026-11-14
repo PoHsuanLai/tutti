@@ -106,7 +106,7 @@ mod clap {
 
         let main = tutti_fixtures::main_thread();
         let plugin = Plugin::open(
-            Some(&main),
+            Some(main),
             &tutti_fixtures::detached_work(),
             &asked,
             SampleRate::of(RATE),
@@ -130,7 +130,7 @@ fn auto_hosts_a_vst2_plugin_in_process() {
     std::fs::copy(tutti_fixtures::vst2_probe(), &staged).expect("stage the probe as a .vst");
     let main = tutti_fixtures::main_thread();
     let plugin = Plugin::open(
-        Some(&main),
+        Some(main),
         &tutti_fixtures::detached_work(),
         &PluginRef::file(&staged).expect("a plugin file"),
         SampleRate::of(RATE),

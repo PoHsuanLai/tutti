@@ -4,7 +4,7 @@
 //! Both are what a `PluginHandle` holds beside the main-thread
 //! [`Control`](crate::Control): a handle is cloned into pool jobs and
 //! polled from any thread, so these calls take no
-//! [`MainThread`](crate::MainThread).
+//! [`MainThreadMarker`](crate::MainThreadMarker).
 
 use crate::{
     AutomationMode, AutomationModeError, BlockCounts, Normalized, ParamId, ParameterInfo,

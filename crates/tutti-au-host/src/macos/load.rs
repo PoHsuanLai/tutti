@@ -9,7 +9,7 @@ use std::path::Path;
 
 use tutti_au_ffi::declared_components;
 use tutti_plugin_types::{
-    EditorPresence, Load, LoadStage, MainThread, MainWorkHandle, Origin, PluginClass,
+    EditorPresence, Load, LoadStage, MainThreadMarker, MainWorkHandle, Origin, PluginClass,
     PluginDescriptor, PluginError, PluginResult, SampleRate,
 };
 
@@ -152,7 +152,7 @@ impl AuLoaded {
     /// units, or the chosen unit is not registered, `Instantiation` when the component cannot be
     /// created, `Initialization` for a bus no channel layout holds.
     pub fn load(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,

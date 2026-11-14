@@ -17,7 +17,7 @@ publish = false
 # into a shipped binary.
 [dependencies]
 tutti-ump = { path = "../../crates/tutti-ump", default-features = false }
-# `MainThread`, the token `main_thread` makes: one type at the bottom of the
+# `MainThreadMarker`, the token `main_thread` makes: one type at the bottom of the
 # workspace, which no test meets twice (`tutti-rt` names no workspace crate).
 tutti-rt = { path = "../../crates/tutti-rt" }
 tutti-midi-protocol = { path = "../../crates/tutti-midi-protocol" }

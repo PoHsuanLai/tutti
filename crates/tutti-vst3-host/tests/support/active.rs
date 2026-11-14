@@ -12,7 +12,7 @@ use std::path::Path;
 use tutti_fixtures::{Activation, main_thread};
 
 use tutti_plugin_types::{
-    Control, MainThread, MaxBlock, Normalized, ParamId, PluginError, Prepare, RenderMode,
+    Control, MainThreadMarker, MaxBlock, Normalized, ParamId, PluginError, Prepare, RenderMode,
     SampleFormat, SampleRate, Samples,
 };
 use tutti_vst3_host::{
@@ -32,7 +32,7 @@ impl<T: Vst3Sample> Activation for Typed<T> {
     type Controller = Vst3Controller;
 
     fn activate(
-        main: &MainThread,
+        main: MainThreadMarker,
         loaded: Vst3Loaded,
         prepare: Prepare,
     ) -> Result<(Vst3Processor<T>, Vst3Controller), (Option<Vst3Loaded>, PluginError)> {
@@ -42,7 +42,7 @@ impl<T: Vst3Sample> Activation for Typed<T> {
     }
 
     fn deactivate(
-        main: &MainThread,
+        main: MainThreadMarker,
         processor: Vst3Processor<T>,
         controller: Vst3Controller,
     ) -> Result<Vst3Loaded, PluginError> {
@@ -195,7 +195,7 @@ impl<T: Vst3Sample> ActiveExt<T> for Active<T> {
         mode: ProcessMode,
     ) -> Result<Self, LoadError> {
         let loaded = Vst3Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             path,
             LoadOptions::new(),
@@ -215,7 +215,7 @@ impl<T: Vst3Sample> ActiveExt<T> for Active<T> {
             .expect("the bundle exports a class under that name");
         drop(library);
         let loaded = Vst3Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             path,
             LoadOptions::new().class_id(id),
@@ -322,13 +322,13 @@ pub trait ParamExt {
 
 impl ParamExt for Vst3Loaded {
     fn get_parameter(&self, id: u32) -> f64 {
-        Control::parameter(self, &main_thread(), ParamId::new(id)).map_or(0.0, Normalized::get)
+        Control::parameter(self, main_thread(), ParamId::new(id)).map_or(0.0, Normalized::get)
     }
 
     fn set_parameter(&mut self, id: u32, value: f64) {
         Control::set_parameter(
             self,
-            &main_thread(),
+            main_thread(),
             ParamId::new(id),
             Normalized::clamped(value),
         );
@@ -337,13 +337,13 @@ impl ParamExt for Vst3Loaded {
 
 impl ParamExt for Vst3Controller {
     fn get_parameter(&self, id: u32) -> f64 {
-        Control::parameter(self, &main_thread(), ParamId::new(id)).map_or(0.0, Normalized::get)
+        Control::parameter(self, main_thread(), ParamId::new(id)).map_or(0.0, Normalized::get)
     }
 
     fn set_parameter(&mut self, id: u32, value: f64) {
         Control::set_parameter(
             self,
-            &main_thread(),
+            main_thread(),
             ParamId::new(id),
             Normalized::clamped(value),
         );
@@ -371,13 +371,13 @@ pub trait StateExt {
 
 impl StateExt for Vst3Loaded {
     fn get_state(&mut self) -> Result<Vec<u8>, PluginError> {
-        Control::save_state(self, &main_thread(), tutti_plugin_types::StateUse::Project)
+        Control::save_state(self, main_thread(), tutti_plugin_types::StateUse::Project)
     }
 
     fn set_state(&mut self, bytes: &[u8]) -> Result<(), PluginError> {
         Control::load_state(
             self,
-            &main_thread(),
+            main_thread(),
             bytes,
             tutti_plugin_types::StateUse::Project,
         )
@@ -386,13 +386,13 @@ impl StateExt for Vst3Loaded {
 
 impl StateExt for Vst3Controller {
     fn get_state(&mut self) -> Result<Vec<u8>, PluginError> {
-        Control::save_state(self, &main_thread(), tutti_plugin_types::StateUse::Project)
+        Control::save_state(self, main_thread(), tutti_plugin_types::StateUse::Project)
     }
 
     fn set_state(&mut self, bytes: &[u8]) -> Result<(), PluginError> {
         Control::load_state(
             self,
-            &main_thread(),
+            main_thread(),
             bytes,
             tutti_plugin_types::StateUse::Project,
         )

@@ -13,7 +13,7 @@ use vst3::Steinberg::{
 use vst3::{ComPtr, ComWrapper};
 
 use dpi::Size;
-use tutti_plugin_types::{ContentScale, EditorUnit, MainThread, WindowHandle};
+use tutti_plugin_types::{ContentScale, EditorUnit, MainThreadMarker, WindowHandle};
 
 use crate::com::HostPlugFrame;
 use crate::error::{Vst3Error, check, is_ok};
@@ -153,7 +153,7 @@ pub fn platform_type_refused(result: i32) -> bool {
 /// Split out of `close_editor_unchecked` so the ordering is reachable from a
 /// test without a loaded plugin: the state this runs on can only be built by
 /// `open_editor`, but the sequence itself is what needs pinning.
-pub fn detach_view(_main: &MainThread, view: &ComPtr<IPlugView>) {
+pub fn detach_view(_main: MainThreadMarker, view: &ComPtr<IPlugView>) {
     // SAFETY: `view` is a live view; null is the documented "no frame" argument.
     unsafe {
         view.setFrame(std::ptr::null_mut());
@@ -188,7 +188,7 @@ pub fn detach_view(_main: &MainThread, view: &ComPtr<IPlugView>) {
 /// Returns `false` if no editor is open. Main/UI thread.
 #[must_use]
 pub fn send_key_down(
-    _main: &MainThread,
+    _main: MainThreadMarker,
     view: &ComPtr<IPlugView>,
     key: u16,
     virtual_key: i16,
@@ -203,7 +203,7 @@ pub fn send_key_down(
 /// that forwards one without the other leaves plugins holding keys down.
 #[must_use]
 pub fn send_key_up(
-    _main: &MainThread,
+    _main: MainThreadMarker,
     view: &ComPtr<IPlugView>,
     key: u16,
     virtual_key: i16,
@@ -220,7 +220,7 @@ pub fn send_key_up(
 /// modifier-qualified scroll have nowhere to go — a caller with either must
 /// handle it host-side. Main/UI thread.
 #[must_use]
-pub fn send_wheel(_main: &MainThread, view: &ComPtr<IPlugView>, distance: f32) -> bool {
+pub fn send_wheel(_main: MainThreadMarker, view: &ComPtr<IPlugView>, distance: f32) -> bool {
     // SAFETY: a plain call on a live view.
     is_ok(unsafe { view.onWheel(distance) })
 }
@@ -229,7 +229,7 @@ pub fn send_wheel(_main: &MainThread, view: &ComPtr<IPlugView>, distance: f32) -
 ///
 /// Unlike the key forwarders this has no consumed/not-consumed answer — it is
 /// a notification, and the spec defines no meaning for a refusal.
-pub fn set_view_focus(_main: &MainThread, view: &ComPtr<IPlugView>, focused: bool) {
+pub fn set_view_focus(_main: MainThreadMarker, view: &ComPtr<IPlugView>, focused: bool) {
     // SAFETY: a plain call on a live view.
     unsafe {
         view.onFocus(u8::from(focused));
@@ -333,7 +333,7 @@ impl Editor {
     }
 
     /// Withdraws the frame and removes the view.
-    pub(crate) fn close(self, main: &MainThread) {
+    pub(crate) fn close(self, main: MainThreadMarker) {
         detach_view(main, &self.view);
     }
 

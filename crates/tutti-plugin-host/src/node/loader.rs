@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use tutti_plugin_types::{MainThread, MainWorkHandle};
+use tutti_plugin_types::{MainThreadMarker, MainWorkHandle};
 
 use parking_lot::Mutex;
 
@@ -47,7 +47,7 @@ const MAX_BLOCK_SIZE: usize = 4096;
 /// Returns [`BridgeError::LoadFailed`] when the library cannot be opened or
 /// the plugin fails to initialize.
 pub fn load_client<F>(
-    main: &MainThread,
+    main: MainThreadMarker,
     work: &MainWorkHandle,
     path: &Path,
     load: &Load,
@@ -68,7 +68,7 @@ where
 ///
 /// As [`load_client`].
 pub fn load_client_restoring<F>(
-    main: &MainThread,
+    main: MainThreadMarker,
     work: &MainWorkHandle,
     path: &Path,
     load: &Load,
@@ -152,7 +152,7 @@ struct Wired<H: Loaded> {
 /// `spares` is how many parameter addresses beyond the plugin's list the
 /// node's delivery may learn.
 fn wire<H>(
-    main: &MainThread,
+    main: MainThreadMarker,
     mut inner: Instance<H>,
     rt: tutti_rt::Rt<H::Processor>,
     origin: Option<Reload>,

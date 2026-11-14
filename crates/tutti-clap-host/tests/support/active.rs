@@ -14,8 +14,8 @@ use tutti_clap_host::{
 };
 use tutti_fixtures::{Activation, Whole};
 use tutti_plugin_types::{
-    AudioBufferMut, MainThread, MaxBlock, PluginError, Prepare, Sample, SampleFormat, SampleRate,
-    Samples,
+    AudioBufferMut, MainThreadMarker, MaxBlock, PluginError, Prepare, Sample, SampleFormat,
+    SampleRate, Samples,
 };
 
 /// A sample width a suite names with a type (`Active<f32>`, `AudioBuffer32`):
@@ -53,7 +53,7 @@ impl<T: Width> Activation for Clap<T> {
     type Controller = ClapController;
 
     fn activate(
-        main: &MainThread,
+        main: MainThreadMarker,
         loaded: ClapLoaded,
         prepare: Prepare,
     ) -> Result<(ClapProcessor, ClapController), (Option<ClapLoaded>, PluginError)> {
@@ -61,7 +61,7 @@ impl<T: Width> Activation for Clap<T> {
     }
 
     fn deactivate(
-        main: &MainThread,
+        main: MainThreadMarker,
         processor: ClapProcessor,
         controller: ClapController,
     ) -> Result<ClapLoaded, PluginError> {

@@ -34,14 +34,14 @@ fn plugin_with_editor(editor: u32) -> Vst3Loaded {
     let main = main_thread();
     let module = tutti_fixtures::vst3_module();
     let mut plugin = Vst3Loaded::load(
-        &main,
+        main,
         &tutti_fixtures::detached_work(),
         &module,
         LoadOptions::new(),
     )
     .unwrap_or_else(|e| panic!("the shared plugin at {} loads: {e:?}", module.display()));
     let mut state = plugin
-        .save_state(&main, tutti_plugin_types::StateUse::Project)
+        .save_state(main, tutti_plugin_types::StateUse::Project)
         .expect("the plugin saves");
     // The plugin's blob is in the state verbatim; the second byte of its mode
     // word, 4 bytes after the magic, is the editor behaviour.
@@ -52,7 +52,7 @@ fn plugin_with_editor(editor: u32) -> Vst3Loaded {
         + 4;
     state[at..at + 4].copy_from_slice(&(editor << 8).to_le_bytes());
     plugin
-        .load_state(&main, &state, tutti_plugin_types::StateUse::Project)
+        .load_state(main, &state, tutti_plugin_types::StateUse::Project)
         .expect("the plugin takes its configuration");
     plugin
 }
@@ -67,7 +67,7 @@ fn pixels(size: Size) -> PhysicalSize<u32> {
 fn open(plugin: &mut Vst3Loaded) -> Result<PhysicalSize<u32>, tutti_plugin_types::PluginError> {
     plugin
         .open_editor(
-            &main_thread(),
+            main_thread(),
             StandInWindow.handle(),
             ContentScale::IDENTITY,
         )
@@ -99,16 +99,16 @@ fn editor_open_close_pairs_attach_and_remove() {
     let main = main_thread();
 
     // Nothing is open: a close does not reach the view.
-    plugin.close_editor(&main);
+    plugin.close_editor(main);
     for cycle in 0..3 {
         let size = open(&mut plugin).unwrap_or_else(|e| panic!("cycle {cycle}: {e:?}"));
         assert_eq!(size, OPEN, "cycle {cycle}: the view's own size");
         assert_eq!(run_loop_holds(&plugin), registered(), "cycle {cycle}: open");
-        plugin.close_editor(&main);
+        plugin.close_editor(main);
         assert_eq!(run_loop_holds(&plugin), (0, 0), "cycle {cycle}: closed");
     }
     // A close with nothing open is a no-op, not a stray `removed`.
-    plugin.close_editor(&main);
+    plugin.close_editor(main);
 }
 
 /// A plugin with no editor is refused cleanly, and nothing is left open.
@@ -117,7 +117,7 @@ fn editorless_plugin_is_refused_cleanly() {
     let mut plugin = plugin_with_editor(NONE);
     open(&mut plugin).expect_err("the plugin offers no view, so open_editor must fail");
     // A close afterwards is a no-op, not a `removed` without an `attached`.
-    plugin.close_editor(&main_thread());
+    plugin.close_editor(main_thread());
 }
 
 /// The host asks `isPlatformTypeSupported` before `attached`, and a view that
@@ -130,7 +130,7 @@ fn supported_platform_type_still_opens() {
         open(&mut plugin).expect("the view supports this platform's type"),
         OPEN
     );
-    plugin.close_editor(&main_thread());
+    plugin.close_editor(main_thread());
 }
 
 /// `has_editor()` agrees with whether an editor opens, in both states.
@@ -144,9 +144,9 @@ fn supported_platform_type_still_opens() {
 fn has_editor_agrees_with_opening_one() {
     for (editor, expected) in [(NONE, false), (TIDY, true)] {
         let mut plugin = plugin_with_editor(editor);
-        let claims = plugin.has_editor(&main_thread());
+        let claims = plugin.has_editor(main_thread());
         let opened = open(&mut plugin).is_ok();
-        plugin.close_editor(&main_thread());
+        plugin.close_editor(main_thread());
         assert_eq!(
             claims,
             opened,
@@ -170,21 +170,21 @@ fn editor_resize_respects_capabilities() {
     let main = main_thread();
     assert_eq!(open(&mut plugin).expect("the view opens"), OPEN);
     assert!(
-        plugin.editor_capabilities(&main).resize.resizable,
+        plugin.editor_capabilities(main).resize.resizable,
         "the view says it resizes"
     );
 
     let absurd = PhysicalSize::new(10_000, 10_000);
     assert_eq!(
         plugin
-            .check_editor_size_constraint(&main, absurd.into())
+            .check_editor_size_constraint(main, absurd.into())
             .map(pixels),
         Some(LARGEST),
         "the view clamps an oversized request to its largest"
     );
     assert_eq!(
         plugin
-            .resize_editor(&main, absurd.into())
+            .resize_editor(main, absurd.into())
             .map(pixels)
             .expect("a snapped size is legal"),
         LARGEST,
@@ -194,7 +194,7 @@ fn editor_resize_respects_capabilities() {
     let tiny = PhysicalSize::new(10, 10);
     assert_eq!(
         plugin
-            .resize_editor(&main, tiny.into())
+            .resize_editor(main, tiny.into())
             .map(pixels)
             .expect("a snapped size is legal"),
         SMALLEST,
@@ -204,13 +204,13 @@ fn editor_resize_respects_capabilities() {
     let within = PhysicalSize::new(400, 300);
     assert_eq!(
         plugin
-            .resize_editor(&main, within.into())
+            .resize_editor(main, within.into())
             .map(pixels)
             .expect("an in-range size is legal"),
         within,
         "a request within the limits is granted as asked"
     );
-    plugin.close_editor(&main);
+    plugin.close_editor(main);
 }
 
 /// A closed editor reports no pending resize request, and an open one reports
@@ -226,25 +226,25 @@ fn a_closed_editor_reports_no_resize_request() {
     let main = main_thread();
 
     assert_eq!(
-        plugin.poll_editor_resize_request(&main).map(pixels),
+        plugin.poll_editor_resize_request(main).map(pixels),
         None,
         "an editor that was never opened reported a pending resize"
     );
     open(&mut plugin).expect("the view opens");
     assert_eq!(
-        plugin.poll_editor_resize_request(&main).map(pixels),
+        plugin.poll_editor_resize_request(main).map(pixels),
         Some(REQUESTED),
         "the view asked its frame for 300x150 when attached"
     );
 
-    plugin.close_editor(&main);
+    plugin.close_editor(main);
 
     // The next open queues its request again; closing before it is taken must
     // drop it.
     open(&mut plugin).expect("the view opens again");
-    plugin.close_editor(&main);
+    plugin.close_editor(main);
     assert_eq!(
-        plugin.poll_editor_resize_request(&main).map(pixels),
+        plugin.poll_editor_resize_request(main).map(pixels),
         None,
         "a closed editor still reported a pending resize request: it would be \
          applied to whichever editor is opened next"
@@ -255,7 +255,7 @@ fn a_closed_editor_reports_no_resize_request() {
 /// UTF-16 character, the virtual key and the modifier bits.
 fn keys_received(plugin: &mut Vst3Loaded) -> Vec<(Kind, u32, u32, i16)> {
     let state = plugin
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("the plugin saves");
     let transcript = Transcript::parse(&find_blob(&state)).complete();
     transcript
@@ -288,18 +288,18 @@ fn editor_accepts_keyboard_wheel_and_focus() {
     let a = |state| key(state, typed("a"), Code::KeyA, Modifiers::empty());
     let key_use = |plugin: &mut Vst3Loaded, event| {
         plugin
-            .editor_key(&main, event)
+            .editor_key(main, event)
             .expect("a key is never an error")
     };
 
     // Before the editor exists every forwarder declines rather than reaching
     // through a missing view.
     assert_eq!(key_use(&mut plugin, a(KeyState::Down)), KeyUse::Ignored);
-    assert!(!plugin.send_wheel(&main, 1.0));
-    plugin.set_editor_focus(&main, true);
+    assert!(!plugin.send_wheel(main, 1.0));
+    plugin.set_editor_focus(main, true);
 
     open(&mut plugin).expect("the view opens");
-    plugin.set_editor_focus(&main, true);
+    plugin.set_editor_focus(main, true);
 
     assert_eq!(key_use(&mut plugin, a(KeyState::Down)), KeyUse::Used, "a");
     assert_eq!(
@@ -347,16 +347,16 @@ fn editor_accepts_keyboard_wheel_and_focus() {
         "the view received the translated keys, and the unwritable one not at all"
     );
 
-    assert!(plugin.send_wheel(&main, 1.0), "a wheel step forward");
+    assert!(plugin.send_wheel(main, 1.0), "a wheel step forward");
     assert!(
-        !plugin.send_wheel(&main, -1.0),
+        !plugin.send_wheel(main, -1.0),
         "a wheel step back is declined"
     );
 
-    plugin.set_editor_focus(&main, false);
-    plugin.close_editor(&main);
+    plugin.set_editor_focus(main, false);
+    plugin.close_editor(main);
 
     // And the forwarders decline again once it is gone.
     assert_eq!(key_use(&mut plugin, a(KeyState::Down)), KeyUse::Ignored);
-    assert!(!plugin.send_wheel(&main, 1.0));
+    assert!(!plugin.send_wheel(main, 1.0));
 }

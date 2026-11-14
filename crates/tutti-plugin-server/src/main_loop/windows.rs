@@ -5,7 +5,7 @@
 //! wait and the pump together, without touching the loop's logic.
 
 use crate::transport::Transport;
-use tutti_plugin_types::{BridgeResult, MainThread, Ready, Wakeups};
+use tutti_plugin_types::{BridgeResult, MainThreadMarker, Ready, Wakeups};
 
 pub(crate) type Listener = interprocess::local_socket::Listener;
 pub(crate) type Stream = interprocess::local_socket::Stream;
@@ -30,7 +30,7 @@ impl Native {
     pub(crate) fn wait(
         &mut self,
         transport: &mut dyn Transport,
-        main: &MainThread,
+        main: MainThreadMarker,
         timeout: std::time::Duration,
         _wakeups: &Wakeups,
         ready: &mut Vec<Ready>,
@@ -42,7 +42,7 @@ impl Native {
     }
 
     /// Pumps the window system's events: none yet.
-    fn pump(&mut self, _main: &MainThread) {}
+    fn pump(&mut self, _main: MainThreadMarker) {}
 }
 
 /// Waits up to `timeout` for `stream` to hold bytes: `Ok(true)` when a read now

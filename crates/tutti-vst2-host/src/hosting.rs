@@ -5,7 +5,7 @@ use std::path::Path;
 
 use tutti_plugin_types::bundle::{ModuleKind, native_module_path};
 use tutti_plugin_types::{
-    InProcess, Load, LoadStage, MainThread, MainWorkHandle, Origin, PluginError, PluginResult,
+    InProcess, Load, LoadStage, MainThreadMarker, MainWorkHandle, Origin, PluginError, PluginResult,
 };
 
 use crate::control::plugin_error;
@@ -17,7 +17,7 @@ impl InProcess for Vst2Loaded {
     /// Also refuses a [`Load::plugin`] that is not `vst2.<uniqueID>` of a plugin the
     /// file holds: a shell's sub-plugin, or the one plugin of a file that is no shell.
     fn load_in_process(
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         path: &Path,
         load: &Load,

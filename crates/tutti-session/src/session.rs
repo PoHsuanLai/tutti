@@ -357,7 +357,7 @@ pub enum RootTopologyStatus {
 /// the session says so once
 /// (`Session::retired_plugins`). What does need the main thread (an editor,
 /// loading an in-process plugin, restoring state) takes the proof
-/// (`MainThread`), or is the view's (`Session::main`).
+/// (`MainThreadMarker`), or is the view's (`Session::main`).
 ///
 /// ```
 /// use tutti_types::MaxBlock;
@@ -493,8 +493,8 @@ impl Drop for Session {
     /// counts what it never ran (`tutti_plugin_types::MainWork::stranded`, with the `plugin` feature).
     fn drop(&mut self) {
         #[cfg(feature = "plugin")]
-        if let Some(main) = tutti_plugin_types::MainThread::new() {
-            self.main_work.run(&main);
+        if let Some(main) = tutti_plugin_types::MainThreadMarker::new() {
+            self.main_work.run(main);
         }
     }
 }
@@ -510,7 +510,7 @@ impl Session {
     /// drains the same way; off it the plugins' closes go to a collector that is
     /// going away, which runs them at once on the main thread, and otherwise counts
     /// them as stranded (`tutti_plugin_types::MainWork::stranded`, with the `plugin` feature).
-    pub fn close(self, main: &tutti_rt::MainThread) {
+    pub fn close(self, main: tutti_rt::MainThreadMarker) {
         #[cfg(feature = "plugin")]
         {
             let mut session = self;
@@ -695,10 +695,10 @@ impl Session {
                 self.graph.collect();
                 // Closes a plugin that was dropped off its own thread (a pool thread at an
                 // export's end, say): it handed the close to this session's collector, which
-                // runs on the process's main thread (`MainThread::new` is `Some` only there).
+                // runs on the process's main thread (`MainThreadMarker::new` is `Some` only there).
                 #[cfg(feature = "plugin")]
-                if let Some(main) = tutti_plugin_types::MainThread::new() {
-                    self.main_work.run(&main);
+                if let Some(main) = tutti_plugin_types::MainThreadMarker::new() {
+                    self.main_work.run(main);
                 }
                 self.report_event_losses(out);
                 self.report_silenced(out);

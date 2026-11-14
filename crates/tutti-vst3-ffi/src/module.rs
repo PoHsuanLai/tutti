@@ -14,7 +14,7 @@ use vst3::Steinberg::{
 };
 use vst3::{ComPtr, ComWrapper, Interface};
 
-use tutti_plugin_types::{LoadStage, MainThread, MainWorkHandle};
+use tutti_plugin_types::{LoadStage, MainThreadMarker, MainWorkHandle};
 
 use crate::com::{BStream, HostApplication};
 use crate::error::{Vst3Error, check};
@@ -408,7 +408,7 @@ impl Module {
     /// `IAudioProcessor`.
     pub fn create_plugin(
         self: &Arc<Self>,
-        main: &MainThread,
+        main: MainThreadMarker,
         work: &MainWorkHandle,
         cid: &[i8; 16],
     ) -> Result<Plugin, CreateError> {

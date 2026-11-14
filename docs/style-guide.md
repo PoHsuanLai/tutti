@@ -99,7 +99,7 @@ until it is un-parked. `vendor/` is third-party and never restyled.
   definition that only its impls need. `#[non_exhaustive]` follows
   `CLAUDE.md`'s decision per type (not on `Message` while unpublished).
 - **T11. Send and Sync** (`C-SEND-SYNC`): a type that should cross threads
-  does, and a type that must not (`MainThread`, a `Loan`) is `!Send` by
+  does, and a type that must not (`MainThreadMarker`, a `Loan`) is `!Send` by
   construction, with a test or a `static_assertions`-style check.
 - **T12. No `Deref` for delegation** (`C-DEREF`): `Deref` only for smart
   pointers; a wrapper exposes what it wraps by methods.

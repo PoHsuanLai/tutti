@@ -3,7 +3,7 @@
 //! All native plugin formats (VST2, VST3, CLAP, AU) require that the calls
 //! other than the real-time audio path (the editor, state, parameter
 //! enumeration, timers and the run loop) run on the host's main/UI thread. The
-//! rule is in the types: an entry that must run there takes a `&`[`MainThread`],
+//! rule is in the types: an entry that must run there takes a `&`[`MainThreadMarker`],
 //! `tutti_rt`'s proof that the holder is on the OS's main thread, and runs no
 //! check of its own.
 //!
@@ -29,10 +29,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-pub use tutti_rt::MainThread;
+pub use tutti_rt::MainThreadMarker;
 
 /// Work a thread that is not the main thread hands to it.
-type Work = Box<dyn FnOnce(&MainThread) + Send>;
+type Work = Box<dyn FnOnce(MainThreadMarker) + Send>;
 
 /// Work that found no collector and no main thread to run it.
 static STRANDED: AtomicU64 = AtomicU64::new(0);
@@ -42,13 +42,13 @@ static STRANDED: AtomicU64 = AtomicU64::new(0);
 /// thread.
 ///
 /// ```
-/// use tutti_plugin_types::{MainThread, MainWork};
+/// use tutti_plugin_types::{MainThreadMarker, MainWork};
 ///
-/// let main = MainThread::new().expect("on the main thread");
+/// let main = MainThreadMarker::new().expect("on the main thread");
 /// let (work, handle) = MainWork::new();
 /// std::thread::spawn(move || handle.defer(|_main| {})).join().unwrap();
-/// assert_eq!(work.run(&main), 1);
-/// assert_eq!(work.run(&main), 0, "and once");
+/// assert_eq!(work.run(main), 1);
+/// assert_eq!(work.run(main), 0, "and once");
 /// ```
 #[derive(Debug)]
 pub struct MainWork {
@@ -73,7 +73,7 @@ impl MainWork {
 
     /// Runs the work handed over so far, on the calling (main) thread, and says
     /// how many ran. Work that defers more work leaves it for the next call.
-    pub fn run(&self, main: &MainThread) -> usize {
+    pub fn run(&self, main: MainThreadMarker) -> usize {
         let arrived: Vec<Work> = self.queue.try_iter().collect();
         let ran = arrived.len();
         for work in arrived {
@@ -101,9 +101,9 @@ impl Drop for MainWork {
         if pending.is_empty() {
             return;
         }
-        if let Some(main) = MainThread::new() {
+        if let Some(main) = MainThreadMarker::new() {
             for work in pending {
-                work(&main);
+                work(main);
             }
         } else {
             STRANDED.fetch_add(pending.len() as u64, Ordering::Relaxed);
@@ -140,12 +140,12 @@ impl MainWorkHandle {
     /// (in its `Processor`) is never dropped on the audio thread, and its
     /// deferral here never runs there. The in-process VST2 suite pins it:
     /// `tutti-plugin-host/tests/node/vst2_in_process_retire.rs`.
-    pub fn defer(&self, work: impl FnOnce(&MainThread) + Send + 'static) {
+    pub fn defer(&self, work: impl FnOnce(MainThreadMarker) + Send + 'static) {
         let Err(gone) = self.queue.send(Box::new(work)) else {
             return;
         };
-        match MainThread::new() {
-            Some(main) => (gone.0)(&main),
+        match MainThreadMarker::new() {
+            Some(main) => (gone.0)(main),
             None => {
                 STRANDED.fetch_add(1, Ordering::Relaxed);
                 // Dropping the work would drop what it holds on this thread, and a

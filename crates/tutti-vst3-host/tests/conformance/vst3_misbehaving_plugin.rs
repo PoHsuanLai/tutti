@@ -239,7 +239,7 @@ fn refused_activation_is_an_error_not_a_silent_success() {
     let path = probe_path();
 
     let loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),
@@ -267,7 +267,7 @@ fn a_refused_activation_leaves_the_plugin_loadable_again() {
         let _m = Misbehaviour::set(misbehave::SET_ACTIVE_FAILS);
         let path = probe_path();
         let loaded = Vst3Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             &path,
             LoadOptions::new(),
@@ -280,7 +280,7 @@ fn a_refused_activation_leaves_the_plugin_loadable_again() {
     let _m = Misbehaviour::behaving();
     let path = probe_path();
     let loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),
@@ -309,7 +309,7 @@ fn a_lied_about_latency_does_not_destabilise_the_host() {
     let path = probe_path();
 
     let loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),
@@ -319,7 +319,7 @@ fn a_lied_about_latency_does_not_destabilise_the_host() {
         .activate_at::<f32>(SAMPLE_RATE, BLOCK)
         .expect("a plugin that merely lies about latency still activates");
 
-    let reported = inst.loaded().latency_samples(&main_thread());
+    let reported = inst.loaded().latency_samples(main_thread());
     assert_eq!(
         reported, LIED_LATENCY_SAMPLES,
         "the probe should be reporting its inflated latency; if this is 0 the \
@@ -360,7 +360,7 @@ fn an_overreported_bus_count_does_not_run_the_host_off_the_end() {
     let path = probe_path();
 
     let loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),
@@ -429,7 +429,7 @@ fn a_refused_arrangement_is_reported_as_the_plugin_kept_it() {
     let baseline_main_in = {
         let _m = Misbehaviour::behaving();
         let loaded = Vst3Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             &path,
             LoadOptions::new(),
@@ -449,7 +449,7 @@ fn a_refused_arrangement_is_reported_as_the_plugin_kept_it() {
 
     let _m = Misbehaviour::set(misbehave::ARRANGEMENT_REFUSED);
     let loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),
@@ -510,7 +510,7 @@ fn a_failing_process_call_is_contained() {
     let behaving = {
         let _m = Misbehaviour::behaving();
         let loaded = Vst3Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             &path,
             LoadOptions::new(),
@@ -529,7 +529,7 @@ fn a_failing_process_call_is_contained() {
 
     let _m = Misbehaviour::set(misbehave::PROCESS_FAILS);
     let loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),
@@ -580,7 +580,7 @@ fn a_plugin_that_writes_nothing_does_not_leak_previous_audio() {
     let tagged = {
         let _m = Misbehaviour::behaving();
         let loaded = Vst3Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             &path,
             LoadOptions::new(),
@@ -600,7 +600,7 @@ fn a_plugin_that_writes_nothing_does_not_leak_previous_audio() {
     // output at all.
     let _m = Misbehaviour::set(misbehave::PROCESS_WRITES_NOTHING);
     let loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),
@@ -645,7 +645,7 @@ fn a_failing_state_roundtrip_does_not_break_the_plugin() {
     let behaving_len = {
         let _m = Misbehaviour::behaving();
         let mut loaded = Vst3Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             &path,
             LoadOptions::new(),
@@ -664,7 +664,7 @@ fn a_failing_state_roundtrip_does_not_break_the_plugin() {
 
     let _m = Misbehaviour::set(misbehave::STATE_FAILS);
     let mut loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),
@@ -719,7 +719,7 @@ fn a_refused_setup_fails_the_activation_at_the_setup_stage() {
     let path = probe_path();
     let _m = Misbehaviour::set(misbehave::SETUP_FAILS);
     let loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),
@@ -748,25 +748,25 @@ fn the_misbehaviour_switch_reaches_the_plugin() {
     let honest = {
         let _m = Misbehaviour::behaving();
         let loaded = Vst3Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             &path,
             LoadOptions::new(),
         )
         .expect("load");
-        loaded.latency_samples(&main_thread())
+        loaded.latency_samples(main_thread())
     };
 
     let lying = {
         let _m = Misbehaviour::set(misbehave::LATENCY_LIES);
         let loaded = Vst3Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             &path,
             LoadOptions::new(),
         )
         .expect("load");
-        loaded.latency_samples(&main_thread())
+        loaded.latency_samples(main_thread())
     };
 
     assert_ne!(
@@ -791,7 +791,7 @@ fn a_plugin_that_answers_64_bit_only_once_initialized_loads_as_64_bit() {
     let _m = Misbehaviour::set(misbehave::SAMPLE64_AFTER_INIT);
 
     let loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),
@@ -813,7 +813,7 @@ fn a_plugin_that_answers_64_bit_only_once_initialized_loads_as_64_bit() {
 fn a_probe_does_not_ask_an_uninitialized_component_for_its_buses() {
     let path = probe_path();
     let loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),
@@ -839,11 +839,11 @@ fn a_probe_does_not_ask_an_uninitialized_component_for_its_buses() {
 fn a_latency_that_follows_the_rate_is_valid_after_a_rate_change() {
     let _m = Misbehaviour::set(misbehave::LATENCY_FOLLOWS_RATE);
     let mut inst = Active::<f32>::load(&probe_path(), 44_100.0, BLOCK).expect("load");
-    assert_eq!(inst.loaded().latency_samples(&main_thread()), 44);
+    assert_eq!(inst.loaded().latency_samples(main_thread()), 44);
 
     inst.set_sample_rate(96_000.0).expect("rate change");
 
-    assert_eq!(inst.loaded().latency_samples(&main_thread()), 96);
+    assert_eq!(inst.loaded().latency_samples(main_thread()), 96);
 }
 
 // ── Return codes that are not refusals ───────────────────────────────────────
@@ -864,7 +864,7 @@ fn a_stateless_plugin_does_not_fail_the_state_roundtrip() {
     let path = probe_path();
 
     let mut loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),
@@ -908,7 +908,7 @@ fn a_refused_initialize_is_an_error_not_a_silent_success() {
     let path = probe_path();
 
     let loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),
@@ -938,7 +938,7 @@ fn a_refused_connection_does_not_fail_the_load() {
     let path = probe_path();
 
     let loaded = Vst3Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         &path,
         LoadOptions::new(),

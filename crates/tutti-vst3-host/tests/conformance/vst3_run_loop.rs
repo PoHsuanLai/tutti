@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tutti_fixtures::main_thread;
 
-use tutti_plugin_types::{ContentScale, Interest, MainThread, Ready, Wakeups};
+use tutti_plugin_types::{ContentScale, Interest, MainThreadMarker, Ready, Wakeups};
 use tutti_vst3_ffi::{Module, Plugin};
 
 /// `core::EDITOR_*`, from the plugin's spec.
@@ -39,7 +39,7 @@ fn create_for(module: &Arc<Module>, work: &tutti_plugin_types::MainWorkHandle) -
         .find(|c| c.category.contains("Audio"))
         .expect("an audio class");
     module
-        .create_plugin(&tutti_fixtures::main_thread(), work, &class.cid)
+        .create_plugin(tutti_fixtures::main_thread(), work, &class.cid)
         .expect("a plugin")
 }
 
@@ -56,27 +56,27 @@ fn plugin_with_editor_for(
 ) -> Plugin {
     let mut plugin = create_for(module, work);
     plugin
-        .initialize_component(&main_thread())
+        .initialize_component(main_thread())
         .expect("initialize");
-    let mut blob = plugin.component_state(&main_thread()).expect("state");
+    let mut blob = plugin.component_state(main_thread()).expect("state");
     // The second byte of the mode word, at offset 4.
     blob[4..8].copy_from_slice(&(editor << 8).to_le_bytes());
     plugin
-        .set_component_state(&main_thread(), &blob)
+        .set_component_state(main_thread(), &blob)
         .expect("load");
     plugin
 }
 
 fn try_open(
     plugin: &mut Plugin,
-    main: &MainThread,
+    main: MainThreadMarker,
 ) -> Result<Option<dpi::Size>, tutti_vst3_ffi::EditorError> {
     // The plugin ignores the handle; it is never dereferenced.
     let parent = tutti_fixtures::StandInWindow.handle();
     plugin.open_editor(main, parent, ContentScale::default())
 }
 
-fn open(plugin: &mut Plugin, main: &MainThread) {
+fn open(plugin: &mut Plugin, main: MainThreadMarker) {
     try_open(plugin, main).expect("the editor opens");
 }
 
@@ -94,9 +94,9 @@ fn a_tidy_editor_registers_and_unregisters() {
     let main = tutti_fixtures::main_thread();
     let module = module();
     let mut plugin = plugin_with_editor(&module, TIDY);
-    open(&mut plugin, &main);
+    open(&mut plugin, main);
     assert_eq!(registered(&plugin), (1, 1));
-    plugin.close_editor(&main);
+    plugin.close_editor(main);
     assert_eq!(registered(&plugin), (0, 0));
 }
 
@@ -110,10 +110,10 @@ fn the_run_loop_is_described_and_what_the_wait_found_is_run() {
     let main = tutti_fixtures::main_thread();
     let module = module();
     let mut plugin = plugin_with_editor(&module, TIDY);
-    open(&mut plugin, &main);
+    open(&mut plugin, main);
 
     let mut wakeups = Wakeups::new();
-    plugin.editor_wakeups(&main, &mut wakeups);
+    plugin.editor_wakeups(main, &mut wakeups);
     let [watch] = wakeups.watches() else {
         panic!("one descriptor registered: {:?}", wakeups.watches());
     };
@@ -121,9 +121,9 @@ fn the_run_loop_is_described_and_what_the_wait_found_is_run() {
     let deadline = wakeups.deadline().expect("one timer registered");
     let fd = watch.fd;
 
-    plugin.wake_editor_loop(&main, &[], deadline - Duration::from_micros(1));
+    plugin.wake_editor_loop(main, &[], deadline - Duration::from_micros(1));
     assert_eq!(plugin.run_loop_activity().timers_fired, 0, "not due yet");
-    plugin.wake_editor_loop(&main, &[], deadline);
+    plugin.wake_editor_loop(main, &[], deadline);
     assert_eq!(
         plugin.run_loop_activity().timers_fired,
         1,
@@ -134,18 +134,18 @@ fn the_run_loop_is_described_and_what_the_wait_found_is_run() {
         fd,
         events: Interest::WRITE,
     };
-    plugin.wake_editor_loop(&main, &[writable], deadline);
+    plugin.wake_editor_loop(main, &[writable], deadline);
     assert_eq!(plugin.run_loop_activity().fds_dispatched, 0, "not readable");
     let readable = Ready {
         fd,
         events: Interest::READ,
     };
-    plugin.wake_editor_loop(&main, &[readable], deadline);
+    plugin.wake_editor_loop(main, &[readable], deadline);
     assert_eq!(plugin.run_loop_activity().fds_dispatched, 1, "readable");
 
-    plugin.close_editor(&main);
+    plugin.close_editor(main);
     let mut after = Wakeups::new();
-    plugin.editor_wakeups(&main, &mut after);
+    plugin.editor_wakeups(main, &mut after);
     assert!(
         after.is_empty(),
         "nothing left to wait on once the editor closed"
@@ -161,13 +161,13 @@ fn a_leaked_registration_is_purged_when_the_editor_closes() {
     let main = tutti_fixtures::main_thread();
     let module = module();
     let mut plugin = plugin_with_editor(&module, LEAKY);
-    open(&mut plugin, &main);
+    open(&mut plugin, main);
     assert_eq!(registered(&plugin), (1, 1));
-    plugin.close_editor(&main);
+    plugin.close_editor(main);
     assert_eq!(registered(&plugin), (0, 0), "the leak was taken back");
 
     std::thread::sleep(Duration::from_millis(5));
-    plugin.run_editor_loop_iteration(&main);
+    plugin.run_editor_loop_iteration(main);
     let activity = plugin.run_loop_activity();
     assert_eq!(
         activity.timers_fired, 0,
@@ -183,13 +183,13 @@ fn a_dropped_plugin_leaves_nothing_in_the_run_loop() {
     let main = tutti_fixtures::main_thread();
     let module = module();
     let mut leaky = plugin_with_editor(&module, LEAKY);
-    open(&mut leaky, &main);
+    open(&mut leaky, main);
     let bystander = create(&module);
     assert_eq!(registered(&bystander), (1, 1), "one loop for the module");
     drop(leaky);
     assert_eq!(registered(&bystander), (0, 0));
     std::thread::sleep(Duration::from_millis(5));
-    bystander.run_editor_loop_iteration(&main);
+    bystander.run_editor_loop_iteration(main);
     assert_eq!(bystander.run_loop_activity().timers_fired, 0);
 }
 
@@ -201,10 +201,10 @@ fn a_failed_attach_leaves_nothing_in_the_run_loop() {
     let main = tutti_fixtures::main_thread();
     let module = module();
     let mut plugin = plugin_with_editor(&module, FAILING);
-    assert!(try_open(&mut plugin, &main).is_err());
+    assert!(try_open(&mut plugin, main).is_err());
     assert_eq!(registered(&plugin), (0, 0));
     std::thread::sleep(Duration::from_millis(5));
-    plugin.run_editor_loop_iteration(&main);
+    plugin.run_editor_loop_iteration(main);
     assert_eq!(plugin.run_loop_activity().timers_fired, 0);
 }
 
@@ -217,13 +217,13 @@ fn a_registration_from_a_later_call_is_purged_on_close() {
     let main = tutti_fixtures::main_thread();
     let module = module();
     let mut plugin = plugin_with_editor(&module, LATE);
-    open(&mut plugin, &main);
+    open(&mut plugin, main);
     assert_eq!(registered(&plugin), (0, 0), "attached registered nothing");
     plugin
-        .resize_editor(&main, dpi::PhysicalSize::new(300, 200).into())
+        .resize_editor(main, dpi::PhysicalSize::new(300, 200).into())
         .expect("resize");
     assert_eq!(registered(&plugin), (1, 1), "onSize registered");
-    plugin.close_editor(&main);
+    plugin.close_editor(main);
     assert_eq!(registered(&plugin), (0, 0));
 }
 
@@ -239,12 +239,12 @@ fn a_plugin_whose_initialize_failed_is_not_terminated() {
         .expect("the class that refuses initialize");
     let mut plugin = module
         .create_plugin(
-            &tutti_fixtures::main_thread(),
+            tutti_fixtures::main_thread(),
             &tutti_fixtures::detached_work(),
             &class.cid,
         )
         .expect("a plugin");
-    assert!(plugin.initialize_component(&main_thread()).is_err());
+    assert!(plugin.initialize_component(main_thread()).is_err());
     drop(plugin);
 }
 
@@ -271,7 +271,7 @@ fn a_plugin_dropped_off_the_main_thread_is_torn_down_on_it_later() {
     let module = module();
     let (work, handle) = tutti_plugin_types::MainWork::new();
     let mut plugin = plugin_with_editor_for(&module, TIDY, &handle);
-    open(&mut plugin, &main);
+    open(&mut plugin, main);
     let bystander = create(&module);
     assert_eq!(registered(&bystander), (1, 1));
     std::thread::spawn(move || drop(plugin)).join().unwrap();
@@ -280,7 +280,7 @@ fn a_plugin_dropped_off_the_main_thread_is_torn_down_on_it_later() {
         (1, 1),
         "nothing was torn down on the dropping thread"
     );
-    assert_eq!(work.run(&main), 1);
+    assert_eq!(work.run(main), 1);
     assert_eq!(
         registered(&bystander),
         (0, 0),
@@ -297,16 +297,16 @@ fn activate_bus_reports_a_refusal() {
     let main = tutti_fixtures::main_thread();
     let module = module();
     let mut plugin = create(&module);
-    plugin.initialize_component(&main).expect("initialize");
+    plugin.initialize_component(main).expect("initialize");
     use tutti_vst3_ffi::{BusDirection, MediaType};
     assert!(
         plugin
-            .activate_bus(&main, MediaType::Audio, BusDirection::Input, 0)
+            .activate_bus(main, MediaType::Audio, BusDirection::Input, 0)
             .is_ok()
     );
     assert!(
         plugin
-            .activate_bus(&main, MediaType::Audio, BusDirection::Input, 5)
+            .activate_bus(main, MediaType::Audio, BusDirection::Input, 5)
             .is_err()
     );
 }

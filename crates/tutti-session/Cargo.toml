@@ -63,7 +63,7 @@ tutti-plugin = { version = "0.0.1", path = "../tutti-plugin", optional = true }
 # The control handle, the node's controls and the host policy over a handle
 # (`Liveness`, `PluginParamValues`): what a hosted plugin is, whatever serves it.
 tutti-plugin-host = { version = "0.0.1", path = "../tutti-plugin-host", optional = true }
-# `MainThread`, the proof `MainSession` holds, and the editor vocabulary.
+# `MainThreadMarker`, the proof `MainSession` holds, and the editor vocabulary.
 tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types", optional = true }
 # `HasWindowHandle`, the parent a view embeds an editor into (`EditorView::open`).
 raw-window-handle = { version = "0.6", optional = true }
@@ -161,7 +161,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 # Plugins hosted in this process, through the session, on the process's main thread:
-# `MainThread::new` asks the OS, so the target owns `main()` (`harness = false`).
+# `MainThreadMarker::new` asks the OS, so the target owns `main()` (`harness = false`).
 [[test]]
 name = "main_thread"
 harness = false

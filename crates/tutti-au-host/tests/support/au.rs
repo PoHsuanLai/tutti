@@ -342,7 +342,7 @@ impl Au {
     /// The state as bytes ([`AuLoaded::class_info`]).
     pub fn get_state(
         &self,
-        _main: &tutti_plugin_types::MainThread,
+        _main: tutti_plugin_types::MainThreadMarker,
     ) -> tutti_au_host::Result<Vec<u8>> {
         self.class_info()
     }
@@ -350,7 +350,7 @@ impl Au {
     /// Restores state ([`AuLoaded::set_class_info`]).
     pub fn set_state(
         &mut self,
-        _main: &tutti_plugin_types::MainThread,
+        _main: tutti_plugin_types::MainThreadMarker,
         data: &[u8],
     ) -> tutti_au_host::Result<()> {
         self.set_class_info(data)

@@ -90,7 +90,7 @@ fn handle_with(cause: Option<PluginFailure>) -> PluginHandle {
     )
 }
 
-fn main_thread() -> tutti_plugin_types::MainThread {
+fn main_thread() -> tutti_plugin_types::MainThreadMarker {
     tutti_fixtures::main_thread()
 }
 

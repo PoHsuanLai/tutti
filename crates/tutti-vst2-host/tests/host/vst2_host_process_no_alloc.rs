@@ -353,7 +353,7 @@ fn a_rejoin_suspends_once_and_an_activation_resumes_once() {
 
     // A second activation, at another rate, is a single, real transition.
     let loaded = Vst2Loaded::load(
-        &main_thread(),
+        main_thread(),
         &tutti_fixtures::detached_work(),
         tutti_fixtures::vst2_probe(),
     )
@@ -383,7 +383,7 @@ fn a_prepare_with_no_block_cannot_be_built() {
     let _guard = lock_probe();
     let path = tutti_fixtures::vst2_probe().to_path_buf();
     reset_probe(&path);
-    let loaded = Vst2Loaded::load(&main_thread(), &tutti_fixtures::detached_work(), &path)
+    let loaded = Vst2Loaded::load(main_thread(), &tutti_fixtures::detached_work(), &path)
         .expect("the probe loads");
 
     assert!(MaxBlock::new(Samples(0)).is_none(), "no frames is no block");

@@ -281,7 +281,7 @@ pub use lifecycle::{
     step,
 };
 pub use load_stage::LoadStage;
-pub use main_thread::{MainThread, MainWork, MainWorkHandle};
+pub use main_thread::{MainThreadMarker, MainWork, MainWorkHandle};
 pub use measured::{
     LatencyVerdict, Measured, NotChecked, PROBE_FLOOR, ProbeConfig, StateHash, TailVerdict, Verdict,
 };

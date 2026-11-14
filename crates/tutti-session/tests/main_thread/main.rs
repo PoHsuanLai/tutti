@@ -2,7 +2,7 @@
 //!
 //! A plugin hosted in process is driven from the main thread: a call through its handle
 //! from any other thread hops to the session's update, and a fork for an export is made
-//! there. `MainThread::new` asks the OS, and the default harness runs every test on a
+//! there. `MainThreadMarker::new` asks the OS, and the default harness runs every test on a
 //! thread it spawns, so this target sets `harness = false` and owns `main()`, which is the
 //! main thread (`tutti_fixtures::main_thread_cases` answers the command line nextest
 //! drives it with). The reference plugins load in process; a missing server is a failure,

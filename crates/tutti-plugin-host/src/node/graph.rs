@@ -672,7 +672,7 @@ impl<F: InProcess> InProcClient<F> {
 #[cfg(test)]
 mod owed_tests {
     use tutti_fixtures::main_thread;
-    use tutti_plugin_types::{Load, MainThread};
+    use tutti_plugin_types::{Load, MainThreadMarker};
     use tutti_vst2_host::Vst2Loaded;
 
     use std::sync::atomic::Ordering;
@@ -687,7 +687,7 @@ mod owed_tests {
 
     /// The reference VST2 plugin through the generic loader.
     fn load_client(
-        main: &MainThread,
+        main: MainThreadMarker,
         path: &std::path::Path,
         rate: SampleRate,
     ) -> tutti_plugin_types::BridgeResult<(InProcClient<Vst2Loaded>, PluginHandle)> {
@@ -723,12 +723,11 @@ mod owed_tests {
     #[test]
     fn a_fork_prepared_off_the_main_thread_is_refused() {
         let main = main_thread();
-        let (client, _handle) =
-            load_client(&main, tutti_fixtures::vst2_probe(), SampleRate::SR_48K)
-                .unwrap_or_else(|e| panic!("in-process load of the probe: {e:?}"));
+        let (client, _handle) = load_client(main, tutti_fixtures::vst2_probe(), SampleRate::SR_48K)
+            .unwrap_or_else(|e| panic!("in-process load of the probe: {e:?}"));
         let fork = client
             .bind(tempo())
-            .fork_instance(&main, tutti_graph::ForkMode::Live)
+            .fork_instance(main, tutti_graph::ForkMode::Live)
             .expect("the fork loads on the main thread");
         let (fork, refused) = std::thread::spawn(move || {
             let mut fork = fork;
@@ -755,13 +754,13 @@ mod owed_tests {
     fn recall(inner: &parking_lot::Mutex<crate::node::instance::Instance<Vst2Loaded>>) {
         inner
             .lock()
-            .set_sample_rate(&main_thread(), SampleRate::SR_44K1, None)
+            .set_sample_rate(main_thread(), SampleRate::SR_44K1, None)
             .expect("the change starts");
     }
 
     /// Finishes it: the pump collects the Processor and lends the new one.
     fn pump(inner: &parking_lot::Mutex<crate::node::instance::Instance<Vst2Loaded>>) {
-        let _ = inner.lock().pump(&main_thread());
+        let _ = inner.lock().pump(main_thread());
     }
 
     /// **A block with no Processor in hand owes its values to the next.** A
@@ -774,7 +773,7 @@ mod owed_tests {
     #[test]
     fn an_unlent_block_owes_its_values_to_the_next() {
         let (client, handle) = load_client(
-            &main_thread(),
+            main_thread(),
             tutti_fixtures::vst2_probe(),
             SampleRate::SR_48K,
         )
@@ -846,7 +845,7 @@ mod owed_tests {
     #[test]
     fn an_unlent_block_cuts_the_sysex_open_in_it() {
         let (client, _handle) = load_client(
-            &main_thread(),
+            main_thread(),
             tutti_fixtures::vst2_probe(),
             SampleRate::SR_48K,
         )
@@ -889,7 +888,7 @@ mod owed_tests {
     fn a_sysex_open_across_a_reset_is_not_completed() {
         use tutti_graph::Node as _;
         let (client, _handle) = load_client(
-            &main_thread(),
+            main_thread(),
             tutti_fixtures::vst2_probe(),
             SampleRate::SR_48K,
         )

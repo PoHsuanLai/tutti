@@ -28,7 +28,7 @@ use tutti_plugin_db::PluginDb;
 use tutti_plugin_ipc::{BridgeConfig as IpcConfig, Ipc, Launched};
 use tutti_plugin_types::{
     BridgeError, BridgeResult, Control, Editor, InProcess, LatencyVerdict, Load, LoadStage,
-    MainThread, MaxBlock, Measured, NotChecked, PROBE_FLOOR, SampleRate, Samples, StateHash,
+    MainThreadMarker, MaxBlock, Measured, NotChecked, PROBE_FLOOR, SampleRate, Samples, StateHash,
     TailVerdict,
 };
 use tutti_vst2_host::Vst2Loaded;
@@ -138,7 +138,7 @@ fn vst3_cpp_is_probed_through_the_binary() {
 
 /// No editor in these tests: the served plugin is driven through `Ipc` alone.
 fn no_editor(
-    _: &MainThread,
+    _: MainThreadMarker,
     _: &tutti_plugin_types::MainWorkHandle,
     path: &Path,
     _: &Load,
@@ -247,7 +247,7 @@ fn a_vst2_shell_is_probed_as_its_sub_plugins() {
     for entry in db.plugins() {
         let plugin = PluginRef::from(&entry);
         let loaded = Vst2Loaded::load_in_process(
-            &main,
+            main,
             &tutti_fixtures::detached_work(),
             plugin.path(),
             &plugin.load(),

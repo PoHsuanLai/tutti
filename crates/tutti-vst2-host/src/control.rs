@@ -1,7 +1,7 @@
 //! The control surface of a VST2 plugin in the shared vocabulary, implemented by
 //! [`Vst2Loaded`] and, through it, by [`Vst2Controller`](crate::Vst2Controller).
 
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, EditorPresence, EditorWindow, Features, KeyEvent,
@@ -75,7 +75,7 @@ impl Control for Vst2Loaded {
 
     /// The wiring read from the plugin now: its pin counts, latency and tail are
     /// asked of the `AEffect` and the dispatcher, not remembered from load.
-    fn wiring(&self, main: &MainThread) -> LoadedPlugin {
+    fn wiring(&self, main: MainThreadMarker) -> LoadedPlugin {
         let (inputs, outputs) = self.pins();
         LoadedPlugin {
             // VST2 is single-bus: one main input bus, one main output bus.
@@ -96,7 +96,7 @@ impl Control for Vst2Loaded {
         }
     }
 
-    fn parameters(&self, _main: &MainThread) -> Vec<ParameterInfo> {
+    fn parameters(&self, _main: MainThreadMarker) -> Vec<ParameterInfo> {
         self.parameter_list()
     }
 
@@ -104,24 +104,29 @@ impl Control for Vst2Loaded {
     /// declared parameter, or the plugin exposes no `getParameter`, which VST 2.4
     /// permits for a plugin declaring no parameters: that is not a parameter at
     /// zero.
-    fn parameter(&self, _main: &MainThread, id: ParamId) -> Option<Normalized> {
+    fn parameter(&self, _main: MainThreadMarker, id: ParamId) -> Option<Normalized> {
         self.parameter_value(id)
     }
 
     /// Applied now, with `setParameter`, which the SDK allows from either thread.
     /// A write to a parameter the plugin does not have, or one it exposes no
     /// `setParameter` for, is discarded.
-    fn set_parameter(&mut self, _main: &MainThread, id: ParamId, value: Normalized) {
+    fn set_parameter(&mut self, _main: MainThreadMarker, id: ParamId, value: Normalized) {
         let _ = self.write_parameter(id, value);
     }
 
-    fn parameter_plain(&self, _main: &MainThread, id: ParamId, value: Normalized) -> Option<f64> {
+    fn parameter_plain(
+        &self,
+        _main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<f64> {
         Vst2Loaded::parameter_plain(self, id, value)
     }
 
     fn parameter_normalized(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         id: ParamId,
         plain: f64,
     ) -> Option<Normalized> {
@@ -146,7 +151,12 @@ impl Control for Vst2Loaded {
     /// `Normalized::get` did not rescale it — so a value that round-tripped
     /// through this seam compares bit-equal, and one that did not is not a value
     /// the plugin can describe anyway.
-    fn parameter_text(&self, _main: &MainThread, id: ParamId, value: Normalized) -> Option<String> {
+    fn parameter_text(
+        &self,
+        _main: MainThreadMarker,
+        id: ParamId,
+        value: Normalized,
+    ) -> Option<String> {
         self.display_if_current(id, value)
     }
 
@@ -161,18 +171,23 @@ impl Control for Vst2Loaded {
     /// after the write, since the opcode reports only acceptance.
     fn parameter_value_from_text(
         &self,
-        _main: &MainThread,
+        _main: MainThreadMarker,
         id: ParamId,
         text: &str,
     ) -> Option<Normalized> {
         self.set_parameter_from_string(id, text)
     }
 
-    fn save_state(&mut self, main: &MainThread, _: StateUse) -> PluginResult<Vec<u8>> {
+    fn save_state(&mut self, main: MainThreadMarker, _: StateUse) -> PluginResult<Vec<u8>> {
         self.read_state(main).map_err(plugin_error)
     }
 
-    fn load_state(&mut self, main: &MainThread, bytes: &[u8], _: StateUse) -> PluginResult<()> {
+    fn load_state(
+        &mut self,
+        main: MainThreadMarker,
+        bytes: &[u8],
+        _: StateUse,
+    ) -> PluginResult<()> {
         self.write_state(main, bytes).map_err(plugin_error)
     }
 
@@ -180,7 +195,7 @@ impl Control for Vst2Loaded {
     /// a position in `[0, numPrograms)` — so unlike AU's sparse selectors these
     /// are genuinely dense. Unnamed slots are kept: dropping one would renumber
     /// every program after it.
-    fn presets(&mut self, main: &MainThread) -> Vec<Preset> {
+    fn presets(&mut self, main: MainThreadMarker) -> Vec<Preset> {
         self.programs(main)
             .into_iter()
             .map(|(index, name)| Preset::new(PresetId::Number(index), name))
@@ -189,14 +204,14 @@ impl Control for Vst2Loaded {
 
     /// Switch program, bracketed by `effBeginSetProgram`/`effEndSetProgram`.
     /// `false` for an id this format cannot address.
-    fn load_preset(&mut self, main: &MainThread, id: &PresetId) -> bool {
+    fn load_preset(&mut self, main: MainThreadMarker, id: &PresetId) -> bool {
         match id.number() {
             Some(index) => self.set_program(main, index),
             None => false,
         }
     }
 
-    fn current_preset(&mut self, main: &MainThread) -> Option<PresetId> {
+    fn current_preset(&mut self, main: MainThreadMarker) -> Option<PresetId> {
         Some(PresetId::Number(self.current_program(main)))
     }
 
@@ -211,7 +226,7 @@ impl Control for Vst2Loaded {
     /// the core restarts the plugin for the I/O change
     /// ([`RestartRules::VST2`](tutti_plugin_types::RestartRules::VST2)) and reads the latency
     /// and the tail again.
-    fn take_requests(&mut self, _main: &MainThread, out: &mut Vec<Request>) {
+    fn take_requests(&mut self, _main: MainThreadMarker, out: &mut Vec<Request>) {
         // Control side, so the one warning about a plugin that grew its pins past the
         // activation (it renders silence until the restart its `audioMasterIOChanged` asks for)
         // is logged here.
@@ -221,7 +236,7 @@ impl Control for Vst2Loaded {
 
     /// `Live`: the plugin reads the mode by asking the host
     /// (`audioMasterGetCurrentProcessLevel`), whose answer changes at once.
-    fn render_mode_support(&self, _main: &MainThread) -> RenderModeSupport {
+    fn render_mode_support(&self, _main: MainThreadMarker) -> RenderModeSupport {
         RenderModeSupport::Live
     }
 
@@ -234,7 +249,7 @@ impl Control for Vst2Loaded {
     /// why a render-mode change needs no restart here, and the answer is always
     /// `true`. The store is atomic: the plugin may ask from its audio thread
     /// while the control thread sets it.
-    fn set_render_mode(&mut self, _main: &MainThread, mode: RenderMode) -> bool {
+    fn set_render_mode(&mut self, _main: MainThreadMarker, mode: RenderMode) -> bool {
         self.set_offline_render(mode.is_offline());
         true
     }
@@ -243,7 +258,7 @@ impl Control for Vst2Loaded {
     /// now on, and the time info of each block carries it in its automation flags. VST2
     /// has no push to the plugin, so there is nothing to refuse. The store is atomic: the
     /// plugin may ask from its audio thread while the control thread sets it.
-    fn set_automation_state(&mut self, _main: &MainThread, mode: AutomationMode) {
+    fn set_automation_state(&mut self, _main: MainThreadMarker, mode: AutomationMode) {
         self.host.set_automation(mode);
     }
 
@@ -253,7 +268,7 @@ impl Control for Vst2Loaded {
     /// parameter and is dropped. The queue the reports arrive in drops rather
     /// than growing when nobody drains it:
     /// [`dropped_param_changes`](Vst2Loaded::dropped_param_changes) counts them.
-    fn take_reported_edits(&mut self, _main: &MainThread, out: &mut Vec<ParamEdit>) {
+    fn take_reported_edits(&mut self, _main: MainThreadMarker, out: &mut Vec<ParamEdit>) {
         while let Some(report) = self.param_rx.pop() {
             let id = |index: i32| u32::try_from(index).ok().map(ParamId::new);
             let edit = match report {
@@ -274,7 +289,7 @@ impl Control for Vst2Loaded {
 }
 
 impl EditorWindow for Vst2Loaded {
-    fn has_editor(&self, _main: &MainThread) -> bool {
+    fn has_editor(&self, _main: MainThreadMarker) -> bool {
         self.instance.has_editor()
     }
 
@@ -283,7 +298,7 @@ impl EditorWindow for Vst2Loaded {
     /// unit of an `ERect` ([`EditorUnit::WINDOWING`](tutti_plugin_types::EditorUnit::WINDOWING): pixels, or points on macOS).
     fn open_editor(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         parent: WindowHandle,
         _scale: ContentScale,
     ) -> PluginResult<dpi::Size> {
@@ -293,7 +308,7 @@ impl EditorWindow for Vst2Loaded {
     /// Forwards the key as `effEditKeyDown` or `effEditKeyUp` and reports the plugin's 1 as
     /// [`KeyUse::Used`]. A key VST2 cannot write (a character outside ASCII, a modifier with
     /// no bit) is not sent and is [`KeyUse::Ignored`], as is any key while no editor is open.
-    fn editor_key(&mut self, main: &MainThread, event: KeyEvent) -> PluginResult<KeyUse> {
+    fn editor_key(&mut self, main: MainThreadMarker, event: KeyEvent) -> PluginResult<KeyUse> {
         let Some(code) = key_code_of(&event, ModifierConvention::HOST) else {
             return Ok(KeyUse::Ignored);
         };
@@ -304,18 +319,18 @@ impl EditorWindow for Vst2Loaded {
         Ok(if used { KeyUse::Used } else { KeyUse::Ignored })
     }
 
-    fn close_editor(&mut self, main: &MainThread) {
+    fn close_editor(&mut self, main: MainThreadMarker) {
         self.instance.close_editor(main);
     }
 
-    fn editor_idle(&mut self, main: &MainThread) {
+    fn editor_idle(&mut self, main: MainThreadMarker) {
         self.instance.idle_editor(main);
     }
 
     /// The default capabilities: this surface reports no resize support.
     fn editor_capabilities(
         &mut self,
-        _main: &tutti_plugin_types::MainThread,
+        _main: tutti_plugin_types::MainThreadMarker,
     ) -> tutti_plugin_types::EditorCapabilities {
         tutti_plugin_types::EditorCapabilities::default()
     }
@@ -323,7 +338,7 @@ impl EditorWindow for Vst2Loaded {
     /// Not supported here.
     fn set_editor_size(
         &mut self,
-        _main: &tutti_plugin_types::MainThread,
+        _main: tutti_plugin_types::MainThreadMarker,
         _requested: dpi::Size,
     ) -> PluginResult<dpi::Size> {
         Err(tutti_plugin_types::PluginError::Editor(
@@ -335,7 +350,7 @@ impl EditorWindow for Vst2Loaded {
     /// last poll, if any (`aeffectx.h`: `[index]` width, `[value]` height).
     fn poll_editor_resize_request(
         &mut self,
-        _main: &tutti_plugin_types::MainThread,
+        _main: tutti_plugin_types::MainThreadMarker,
     ) -> Option<dpi::Size> {
         self.host.take_size_request()
     }

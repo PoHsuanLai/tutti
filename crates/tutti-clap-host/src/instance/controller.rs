@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 
 use tutti_plugin_types::{
     Control, Controller, EditDrain, EditQueue, EditSink, Loaded, Normalized, ParamId, PluginError,
@@ -154,9 +154,9 @@ impl Drop for ClapController {
         // thread has no token to deactivate with: the FFI plugin then leaks
         // the instance instead (its drop).
         if let Some(mut loaded) = self.loaded.take()
-            && let Some(main) = MainThread::new()
+            && let Some(main) = MainThreadMarker::new()
         {
-            loaded.deactivate_plugin(&main);
+            loaded.deactivate_plugin(main);
         }
     }
 }
@@ -165,11 +165,11 @@ impl Controller for ClapController {
     type Loaded = ClapLoaded;
     type Processor = ClapProcessor;
 
-    fn latency(&self, main: &MainThread) -> Samples {
+    fn latency(&self, main: MainThreadMarker) -> Samples {
         Samples(self.loaded().latency_samples(main) as usize)
     }
 
-    fn tail(&self, main: &MainThread) -> PluginTail {
+    fn tail(&self, main: MainThreadMarker) -> PluginTail {
         self.loaded()
             .tail_samples(main)
             .map_or(PluginTail::Unknown, PluginTail::from_clap_samples)
@@ -203,7 +203,7 @@ impl ClapLoaded {
     // The error carries the halves and the whole plugin back, which is the point.
     #[allow(clippy::result_large_err)]
     fn rejoin(
-        main: &MainThread,
+        main: MainThreadMarker,
         mut processor: ClapProcessor,
         mut controller: ClapController,
     ) -> Result<ClapLoaded, (ClapProcessor, ClapController, PluginError)> {
@@ -252,14 +252,14 @@ impl Loaded for ClapLoaded {
 
     fn activate(
         self,
-        main: &MainThread,
+        main: MainThreadMarker,
         prepare: Prepare,
     ) -> Result<(ClapProcessor, ClapController), Refused<Self>> {
         self.activate_now(main, prepare)
     }
 
     fn deactivate(
-        main: &MainThread,
+        main: MainThreadMarker,
         processor: ClapProcessor,
         controller: ClapController,
     ) -> Result<Self, Stuck<ClapProcessor, ClapController>> {

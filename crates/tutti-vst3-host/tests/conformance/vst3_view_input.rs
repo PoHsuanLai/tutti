@@ -181,9 +181,9 @@ fn a_key_reaches_the_plugin_with_its_character_code_and_modifiers() {
     let ptr = view.as_com_ref::<IPlugView>().unwrap().to_com_ptr();
 
     // A character keystroke: character set, virtual key zero.
-    let _ = send_key_down(&main_thread(), &ptr, 'k' as char16, 0, 0b0011);
+    let _ = send_key_down(main_thread(), &ptr, 'k' as char16, 0, 0b0011);
     // A non-character keystroke: virtual key set, character zero.
-    let _ = send_key_up(&main_thread(), &ptr, 0, 42, 0b0100);
+    let _ = send_key_up(main_thread(), &ptr, 0, 42, 0b0100);
 
     assert_eq!(
         recorded(&log),
@@ -222,17 +222,17 @@ fn only_a_true_result_counts_as_consumed() {
         let ptr = view.as_com_ref::<IPlugView>().unwrap().to_com_ptr();
 
         assert_eq!(
-            send_key_down(&main_thread(), &ptr, 'a' as char16, 0, 0),
+            send_key_down(main_thread(), &ptr, 'a' as char16, 0, 0),
             expected,
             "onKeyDown returning {label} should read as consumed={expected}"
         );
         assert_eq!(
-            send_key_up(&main_thread(), &ptr, 'a' as char16, 0, 0),
+            send_key_up(main_thread(), &ptr, 'a' as char16, 0, 0),
             expected,
             "onKeyUp returning {label} should read as consumed={expected}"
         );
         assert_eq!(
-            send_wheel(&main_thread(), &ptr, 1.0),
+            send_wheel(main_thread(), &ptr, 1.0),
             expected,
             "onWheel returning {label} should read as consumed={expected}"
         );
@@ -250,7 +250,7 @@ fn wheel_distance_keeps_its_sign_and_magnitude() {
     let ptr = view.as_com_ref::<IPlugView>().unwrap().to_com_ptr();
 
     for distance in [1.0f32, -1.0, 0.5, -2.25] {
-        let _ = send_wheel(&main_thread(), &ptr, distance);
+        let _ = send_wheel(main_thread(), &ptr, distance);
     }
 
     assert_eq!(
@@ -275,8 +275,8 @@ fn both_focus_transitions_are_delivered() {
     let (view, log) = view_answering(kResultOk);
     let ptr = view.as_com_ref::<IPlugView>().unwrap().to_com_ptr();
 
-    set_view_focus(&main_thread(), &ptr, true);
-    set_view_focus(&main_thread(), &ptr, false);
+    set_view_focus(main_thread(), &ptr, true);
+    set_view_focus(main_thread(), &ptr, false);
 
     assert_eq!(
         recorded(&log),
@@ -299,7 +299,7 @@ fn the_recording_view_observes_input() {
     );
 
     let ptr = view.as_com_ref::<IPlugView>().unwrap().to_com_ptr();
-    let _ = send_key_down(&main_thread(), &ptr, 'x' as char16, 0, 0);
+    let _ = send_key_down(main_thread(), &ptr, 'x' as char16, 0, 0);
 
     assert_eq!(
         recorded(&log).len(),

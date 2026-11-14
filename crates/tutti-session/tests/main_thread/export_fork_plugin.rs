@@ -99,7 +99,7 @@ fn probe_env(key: &str, value: impl ToString) {
 
 /// This process's main thread. Each test is its own process under nextest, so
 /// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThread {
+fn main_thread() -> tutti_plugin_types::MainThreadMarker {
     tutti_fixtures::main_thread()
 }
 
@@ -120,7 +120,7 @@ fn session_with_probe_at(
     session.graph().set_sample_rate(SampleRate::of(RATE));
     let probe = session
         .add_plugin_blocking(
-            &main_thread(),
+            main_thread(),
             PluginLoadRequest::new(
                 PluginRef::file(path)
                     .expect("a plugin file")

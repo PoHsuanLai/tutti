@@ -1,7 +1,7 @@
 //! The plugin's editor: opening, closing, sizing and input.
 
 use super::*;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 
 impl Parts {
     // ── The editor ───────────────────────────────────────────────────────────
@@ -17,7 +17,7 @@ impl Parts {
 
     /// Whether the plugin offers an editor view.
     #[must_use]
-    pub fn has_editor(&self, main: &MainThread) -> bool {
+    pub fn has_editor(&self, main: MainThreadMarker) -> bool {
         let _scope = self.scoped(main);
         self.create_view().is_some()
     }
@@ -31,7 +31,7 @@ impl Parts {
     /// the view refuses, or an `attached` that fails.
     pub fn open_editor(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         parent: WindowHandle,
         scale: ContentScale,
     ) -> Result<Option<Size>, EditorError> {
@@ -62,7 +62,7 @@ impl Parts {
     }
 
     /// Detaches and releases the editor, if one is open.
-    pub fn close_editor(&mut self, main: &MainThread) {
+    pub fn close_editor(&mut self, main: MainThreadMarker) {
         self.release_editor(Some(main));
     }
 
@@ -73,7 +73,7 @@ impl Parts {
     /// [`Plugin`]'s `Drop`), so the `None` arm is only the last guard: it leaks
     /// the view rather than call it off its thread. The run loop is purged
     /// either way, so nothing of it is ever called.
-    pub(super) fn release_editor(&mut self, main: Option<&MainThread>) {
+    pub(super) fn release_editor(&mut self, main: Option<MainThreadMarker>) {
         if let Some(editor) = self.editor.take() {
             match main {
                 Some(main) => editor.close(main),
@@ -100,7 +100,7 @@ impl Parts {
 
     /// What the open editor can do; the defaults when none is open.
     #[must_use]
-    pub fn editor_capabilities(&self, main: &MainThread) -> EditorCapabilities {
+    pub fn editor_capabilities(&self, main: MainThreadMarker) -> EditorCapabilities {
         let _scope = self.scoped(main);
         let Some(editor) = &self.editor else {
             return EditorCapabilities::default();
@@ -115,14 +115,14 @@ impl Parts {
     }
 
     /// The latest size the editor asked the host for, taken.
-    pub fn take_editor_resize_request(&self, _main: &MainThread) -> Option<Size> {
+    pub fn take_editor_resize_request(&self, _main: MainThreadMarker) -> Option<Size> {
         self.editor.as_ref()?.plug_frame.take_resize_request()
     }
 
     /// The size the open editor snaps `requested` to; `None` with no editor
     /// open.
     #[must_use]
-    pub fn editor_size_constraint(&self, main: &MainThread, requested: Size) -> Option<Size> {
+    pub fn editor_size_constraint(&self, main: MainThreadMarker, requested: Size) -> Option<Size> {
         let _scope = self.scoped(main);
         Some(self.editor.as_ref()?.constrain(requested).0)
     }
@@ -133,7 +133,11 @@ impl Parts {
     ///
     /// [`Vst3Error::NotInitialized`] with no editor open, or the view's
     /// refusal.
-    pub fn resize_editor(&self, main: &MainThread, requested: Size) -> Result<Size, Vst3Error> {
+    pub fn resize_editor(
+        &self,
+        main: MainThreadMarker,
+        requested: Size,
+    ) -> Result<Size, Vst3Error> {
         let _scope = self.scoped(main);
         self.editor
             .as_ref()
@@ -149,7 +153,7 @@ impl Parts {
     /// [`Vst3Error::NotInitialized`] with no editor open.
     pub fn set_editor_scale(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         scale: ContentScale,
     ) -> Result<bool, Vst3Error> {
         let _scope = self.scoped(main);
@@ -164,7 +168,7 @@ impl Parts {
     #[must_use]
     pub fn editor_key_down(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         key: u16,
         virtual_key: i16,
         modifiers: i16,
@@ -179,7 +183,7 @@ impl Parts {
     #[must_use]
     pub fn editor_key_up(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         key: u16,
         virtual_key: i16,
         modifiers: i16,
@@ -192,7 +196,7 @@ impl Parts {
 
     /// Delivers a wheel step to the open editor; `true` if it was consumed.
     #[must_use]
-    pub fn editor_wheel(&self, main: &MainThread, distance: f32) -> bool {
+    pub fn editor_wheel(&self, main: MainThreadMarker, distance: f32) -> bool {
         let _scope = self.scoped(main);
         self.editor
             .as_ref()
@@ -200,7 +204,7 @@ impl Parts {
     }
 
     /// Tells the open editor whether it has focus.
-    pub fn set_editor_focus(&self, main: &MainThread, focused: bool) {
+    pub fn set_editor_focus(&self, main: MainThreadMarker, focused: bool) {
         let _scope = self.scoped(main);
         if let Some(e) = &self.editor {
             crate::view::set_view_focus(main, &e.view, focused);
@@ -210,7 +214,7 @@ impl Parts {
     /// What the run loop wants the host's main loop to wait on (Linux): the
     /// descriptors a plugin registered event handlers for and the earliest of its
     /// timers, added to `out`; nothing elsewhere, where the OS has the loop.
-    pub fn editor_wakeups(&self, main: &MainThread, out: &mut tutti_plugin_types::Wakeups) {
+    pub fn editor_wakeups(&self, main: MainThreadMarker, out: &mut tutti_plugin_types::Wakeups) {
         #[cfg(target_os = "linux")]
         {
             let _ = main;
@@ -224,7 +228,7 @@ impl Parts {
     /// the handlers of the descriptors `ready` (Linux); nothing elsewhere.
     pub fn wake_editor_loop(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         ready: &[tutti_plugin_types::Ready],
         now: std::time::Instant,
     ) {
@@ -237,7 +241,7 @@ impl Parts {
     /// One pass of the run loop without waiting: describes it, looks at its
     /// descriptors and the clock, and runs what is ready. What a host does where
     /// it has no main loop of its own to wait in.
-    pub fn run_editor_loop_iteration(&self, main: &MainThread) {
+    pub fn run_editor_loop_iteration(&self, main: MainThreadMarker) {
         #[cfg(target_os = "linux")]
         self.module.run_loop().run_iteration(main);
         #[cfg(not(target_os = "linux"))]

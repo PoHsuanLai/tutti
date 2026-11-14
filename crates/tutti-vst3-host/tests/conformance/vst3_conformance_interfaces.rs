@@ -77,12 +77,12 @@ fn note_expression_types_enumerate_per_plugin() {
     let twin = require_twin();
     let main = main_thread();
 
-    let count = twin.note_expression_count(&main, 0, 0);
+    let count = twin.note_expression_count(main, 0, 0);
     assert_eq!(count, 3, "the twin advertises three note-expression types");
 
     let ids: Vec<u32> = (0..count)
         .map(|i| {
-            twin.note_expression_info(&main, 0, 0, i)
+            twin.note_expression_info(main, 0, 0, i)
                 .unwrap_or_else(|| {
                     panic!(
                         "type {i} of {count} has no descriptor: the count and the \
@@ -97,13 +97,13 @@ fn note_expression_types_enumerate_per_plugin() {
 
     // Out of range must be None, not a wrapped or clamped entry.
     assert!(
-        twin.note_expression_info(&main, 0, 0, count + 1000)
+        twin.note_expression_info(main, 0, 0, count + 1000)
             .is_none(),
         "an out-of-range note-expression index returned a descriptor"
     );
     // The negative half: a plugin without the interface has none.
     assert_eq!(
-        require_probe().note_expression_count(&main, 0, 0),
+        require_probe().note_expression_count(main, 0, 0),
         0,
         "audio-probe does not implement INoteExpressionController"
     );
@@ -116,12 +116,12 @@ fn keyswitches_enumerate_and_bound_check() {
     let twin = require_twin();
     let main = main_thread();
 
-    let count = twin.keyswitch_count(&main, 0, 0);
+    let count = twin.keyswitch_count(main, 0, 0);
     assert_eq!(count, 2, "the twin advertises two keyswitches");
     let ranges: Vec<(i32, i32)> = (0..count)
         .map(|i| {
             let info = twin
-                .keyswitch_info(&main, 0, 0, i)
+                .keyswitch_info(main, 0, 0, i)
                 .unwrap_or_else(|| panic!("keyswitch {i} of {count} has no descriptor"));
             (info.keyswitch_min, info.keyswitch_max)
         })
@@ -132,13 +132,13 @@ fn keyswitches_enumerate_and_bound_check() {
         "each keyswitch reports its own key range, in index order"
     );
     assert!(
-        twin.keyswitch_info(&main, 0, 0, count + 1000).is_none(),
+        twin.keyswitch_info(main, 0, 0, count + 1000).is_none(),
         "an out-of-range keyswitch index returned a descriptor"
     );
 
     // A plugin without the interface must answer 0 rather than guessing.
     assert_eq!(
-        require_probe().keyswitch_count(&main, 0, 0),
+        require_probe().keyswitch_count(main, 0, 0),
         0,
         "audio-probe does not implement IKeyswitchController, so the count must be 0"
     );
@@ -163,7 +163,7 @@ fn keyswitches_enumerate_and_bound_check() {
 fn units_enumerate_with_resolvable_parents() {
     let twin = require_twin();
 
-    let units = twin.units(&main_thread());
+    let units = twin.units(main_thread());
     let tree: Vec<(i32, Option<i32>)> = units
         .iter()
         .map(|u| (u.id.get(), u.parent.map(|p| p.get())))
@@ -176,7 +176,7 @@ fn units_enumerate_with_resolvable_parents() {
 
     let probe = require_probe();
     assert!(
-        probe.units(&main_thread()).is_empty() && probe.program_lists(&main_thread()).is_empty(),
+        probe.units(main_thread()).is_empty() && probe.program_lists(main_thread()).is_empty(),
         "audio-probe publishes no unit tree and no program lists"
     );
 
@@ -190,17 +190,17 @@ fn units_enumerate_with_resolvable_parents() {
     let mut silent = 0usize;
     for (name, path) in sample_plugins() {
         let Ok(loaded) = Vst3Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             &path,
             LoadOptions::new(),
         ) else {
             continue;
         };
-        if loaded.units(&main_thread()).is_empty() {
+        if loaded.units(main_thread()).is_empty() {
             silent += 1;
             assert!(
-                loaded.program_lists(&main_thread()).is_empty(),
+                loaded.program_lists(main_thread()).is_empty(),
                 "{name}: the host read no units but did read program lists — \
                  one accessor found IUnitInfo and the other did not"
             );
@@ -223,15 +223,15 @@ fn a_resolved_program_list_is_one_the_plugin_publishes() {
 
     for (name, path) in sample_plugins() {
         let Ok(loaded) = Vst3Loaded::load(
-            &main_thread(),
+            main_thread(),
             &tutti_fixtures::detached_work(),
             &path,
             LoadOptions::new(),
         ) else {
             continue;
         };
-        let lists = loaded.program_lists(&main_thread());
-        let units = loaded.units(&main_thread());
+        let lists = loaded.program_lists(main_thread());
+        let units = loaded.units(main_thread());
         if units.is_empty() {
             continue;
         }
@@ -262,7 +262,7 @@ fn a_resolved_program_list_is_one_the_plugin_publishes() {
         for list in &lists {
             for i in 0..list.program_count {
                 assert!(
-                    loaded.program_name(&main_thread(), list.id, i).is_some(),
+                    loaded.program_name(main_thread(), list.id, i).is_some(),
                     "{name}: list {} claims {} programs but program {i} has no \
                      name",
                     list.id,
@@ -405,19 +405,19 @@ fn remap_param_id_migrates_a_known_parameter() {
     let uid: [i8; 16] = AGAIN_PROCESSOR_UID.map(|b| b as i8);
 
     assert_eq!(
-        remap.remap_param_id(&main_thread(), &uid, ParamId::new(0)),
+        remap.remap_param_id(main_thread(), &uid, ParamId::new(0)),
         Some(ParamId::new(EXPECTED_NEW_ID)),
         "the sample maps AGain's param 0 onto {EXPECTED_NEW_ID}; a different \
          answer means the UID or the id is not reaching the plugin"
     );
     assert_eq!(
-        remap.remap_param_id(&main_thread(), &uid, ParamId::new(999)),
+        remap.remap_param_id(main_thread(), &uid, ParamId::new(999)),
         None,
         "param 999 has no mapping, so the host must report None rather than a \
          stale or defaulted id"
     );
     assert_eq!(
-        remap.remap_param_id(&main_thread(), &[0i8; 16], ParamId::new(0)),
+        remap.remap_param_id(main_thread(), &[0i8; 16], ParamId::new(0)),
         None,
         "a zero UID is not AGain, so the plugin refuses — a Some here means the \
          host is not passing the UID through"
@@ -435,7 +435,7 @@ fn physical_ui_mapping_is_read_per_plugin() {
     let main = main_thread();
     // `u32::MAX` is `kInvalidTypeID`: the twin leaves y movement unmapped.
     assert_eq!(
-        require_twin().physical_ui_mapping(&main, 0, 0),
+        require_twin().physical_ui_mapping(main, 0, 0),
         [
             (PhysicalUiType::XMovement, 2),
             (PhysicalUiType::YMovement, u32::MAX),
@@ -447,7 +447,7 @@ fn physical_ui_mapping_is_read_per_plugin() {
     // A plugin without the interface must yield nothing rather than a default
     // table, or the host would invent controller routings.
     assert!(
-        require_probe().physical_ui_mapping(&main, 0, 0).is_empty(),
+        require_probe().physical_ui_mapping(main, 0, 0).is_empty(),
         "audio-probe does not implement the interface, so the mapping must be \
          empty rather than a synthesised default"
     );
@@ -468,7 +468,7 @@ fn xml_representation_is_fetched_for_a_supported_layout() {
 
     let xml = twin
         .xml_representation(
-            &main,
+            main,
             "Steinberg Media Technologies",
             "Generic 8 Cells",
             "1.0",
@@ -489,7 +489,7 @@ fn xml_representation_is_fetched_for_a_supported_layout() {
     // than the same document under a different name.
     assert!(
         twin.xml_representation(
-            &main,
+            main,
             "Steinberg Media Technologies",
             "No Such Layout",
             "1.0",
@@ -502,7 +502,7 @@ fn xml_representation_is_fetched_for_a_supported_layout() {
     assert!(
         require_probe()
             .xml_representation(
-                &main,
+                main,
                 "Steinberg Media Technologies",
                 "Generic 8 Cells",
                 "1.0",
@@ -527,22 +527,22 @@ fn param_id_for_function_name_resolves_known_functions() {
     let root = UnitId::ROOT;
 
     assert_eq!(
-        twin.param_id_for_function_name(&main, root, "DryWetMix"),
+        twin.param_id_for_function_name(main, root, "DryWetMix"),
         Some(ParamId::new(0)),
         "the twin maps the DryWetMix function name to `level`"
     );
     assert_eq!(
-        twin.param_id_for_function_name(&main, root, "Randomize"),
+        twin.param_id_for_function_name(main, root, "Randomize"),
         Some(ParamId::new(3)),
         "the twin maps the Randomize function name to `tone`"
     );
     assert_eq!(
-        twin.param_id_for_function_name(&main, root, "NotAFunctionName"),
+        twin.param_id_for_function_name(main, root, "NotAFunctionName"),
         None,
         "an unknown function name resolved to a parameter id"
     );
     assert_eq!(
-        require_probe().param_id_for_function_name(&main, root, "DryWetMix"),
+        require_probe().param_id_for_function_name(main, root, "DryWetMix"),
         None,
         "audio-probe does not implement IParameterFunctionName"
     );

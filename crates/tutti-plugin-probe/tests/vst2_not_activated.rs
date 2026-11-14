@@ -63,12 +63,12 @@ fn a_probe_does_not_activate() {
 
     // Control: a real activation is seen.
     reset(&path);
-    let loaded = Vst2Loaded::load(&main, &tutti_fixtures::detached_work(), &path).expect("loads");
+    let loaded = Vst2Loaded::load(main, &tutti_fixtures::detached_work(), &path).expect("loads");
     let prepare = tutti_plugin_types::Prepare::new(
         tutti_types::SampleRate::SR_48K,
         tutti_plugin_types::MaxBlock::new(tutti_types::Samples(64)).unwrap(),
     );
-    let active = loaded.activate(&main, prepare);
+    let active = loaded.activate(main, prepare);
     assert!(active.is_ok(), "the control activation");
     assert_eq!(
         capture(&path).resume_count,
@@ -78,7 +78,7 @@ fn a_probe_does_not_activate() {
     drop(active);
 
     reset(&path);
-    let plugins = describe(&main, &path).expect("probes");
+    let plugins = describe(main, &path).expect("probes");
     let [descriptor] = plugins.as_slice() else {
         panic!("a plugin that is no shell is one plugin: {plugins:?}");
     };

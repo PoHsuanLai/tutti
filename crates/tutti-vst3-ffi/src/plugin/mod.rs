@@ -31,7 +31,7 @@ use vst3::Steinberg::{
 use vst3::{ComPtr, ComWrapper};
 
 use tutti_plugin_types::{
-    ContentScale, EditorCapabilities, MainThread, MainWorkHandle, ParamId, WindowHandle,
+    ContentScale, EditorCapabilities, MainThreadMarker, MainWorkHandle, ParamId, WindowHandle,
 };
 use tutti_types::ChannelLayout;
 
@@ -190,24 +190,24 @@ struct Extensions {
 
 /// What a [`Plugin`] holds: the instance itself, apart from the wrapper whose
 /// `Drop` decides where the teardown runs. Reached through `Plugin`'s `Deref`.
-/// The thread a plugin was made on, under a `&MainThread`, and that proof: a
+/// The thread a plugin was made on, under a `MainThreadMarker`, and that proof: a
 /// drop has no token, and on this thread the stored one is the caller's.
 struct Home {
     thread: std::thread::ThreadId,
-    main: MainThread,
+    main: MainThreadMarker,
 }
 
 impl Home {
-    fn new(main: &MainThread) -> Self {
+    fn new(main: MainThreadMarker) -> Self {
         Self {
             thread: std::thread::current().id(),
-            main: *main,
+            main,
         }
     }
 
     /// The token, when the caller is the thread it was made on.
-    fn here(&self) -> Option<&MainThread> {
-        (std::thread::current().id() == self.thread).then_some(&self.main)
+    fn here(&self) -> Option<MainThreadMarker> {
+        (std::thread::current().id() == self.thread).then_some(self.main)
     }
 }
 
@@ -291,7 +291,7 @@ impl Plugin {
     pub(crate) fn assemble(
         module: &Arc<Module>,
         component: Component,
-        main: &MainThread,
+        main: MainThreadMarker,
         work: MainWorkHandle,
     ) -> Result<Self, CreateError> {
         Ok(Self {
@@ -342,7 +342,7 @@ impl std::fmt::Debug for Parts {
 // breaks the SDK's contract, not this type's. The host objects are `Send + Sync`
 // and touch atomics, queues and mutexes only. The editor view, the controller,
 // the component's buses and state, and the lifecycle calls are main-thread by
-// spec: each of those entries takes a `&MainThread`, which only the claiming
+// spec: each of those entries takes a `MainThreadMarker`, which only the claiming
 // thread holds. The tokenless entries are `latency_samples` and `tail_samples`
 // (plain getters; see their docs), `is_active`, `set_processing` and
 // `audio_side` (audio-half bookkeeping under the claim), and the
@@ -356,7 +356,7 @@ impl Parts {
     fn assemble(
         module: &Arc<Module>,
         component: Component,
-        main: &MainThread,
+        main: MainThreadMarker,
     ) -> Result<Self, CreateError> {
         let component = component.0;
         let processor = component
@@ -409,10 +409,10 @@ impl Parts {
 
     /// Until it drops, what the plugin registers with the module's run loop
     /// through a context that names no owner is this plugin's. Every call into
-    /// the plugin that takes a `&MainThread` runs under one: a toolkit
+    /// the plugin that takes a `MainThreadMarker` runs under one: a toolkit
     /// registers lazily (in `onSize`, on an event, from a controller call), not
     /// only inside `attached`.
-    pub(super) fn scoped(&self, main: &MainThread) -> CallScope {
+    pub(super) fn scoped(&self, main: MainThreadMarker) -> CallScope {
         #[cfg(target_os = "linux")]
         {
             CallScope(self.module.run_loop().scope_owned(self.owner, main))

@@ -260,7 +260,7 @@ fn opening_an_editor_on_an_editorless_plugin_says_so() {
 
     let err = instance
         .loaded_mut()
-        .open_editor(&main_thread(), parent, ContentScale::IDENTITY)
+        .open_editor(main_thread(), parent, ContentScale::IDENTITY)
         .expect_err("a plugin with no editor must not report a successful open");
 
     let msg = err.to_string();
@@ -497,7 +497,7 @@ fn an_out_of_range_midi_count_is_not_an_answer() {
     let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
-    let counts = instance.loaded().midi_channel_counts(&main_thread());
+    let counts = instance.loaded().midi_channel_counts(main_thread());
     assert_eq!(
         counts.inputs, None,
         "0 is what an unimplemented opcode returns, so it must read as \
@@ -530,7 +530,7 @@ fn an_in_range_midi_count_is_reported_verbatim() {
     let instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     clear_probe_env();
 
-    let counts = instance.loaded().midi_channel_counts(&main_thread());
+    let counts = instance.loaded().midi_channel_counts(main_thread());
     assert_eq!(counts.inputs, Some(1), "the boundary value 1 must be kept");
     assert_eq!(
         counts.outputs,
@@ -593,14 +593,14 @@ fn chunk_state_round_trips() {
     seeded.extend_from_slice(b"probe-state-v1");
     instance
         .load_state(
-            &main_thread(),
+            main_thread(),
             &seeded,
             tutti_plugin_types::StateUse::Project,
         )
         .expect("probe accepts any chunk");
 
     let saved = instance
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("get_state should succeed");
     assert_eq!(
         &saved[..4],
@@ -613,11 +613,7 @@ fn chunk_state_round_trips() {
     assert_eq!(&saved[8..], b"probe-state-v1");
 
     instance
-        .load_state(
-            &main_thread(),
-            &saved,
-            tutti_plugin_types::StateUse::Project,
-        )
+        .load_state(main_thread(), &saved, tutti_plugin_types::StateUse::Project)
         .expect("restore should succeed");
 }
 
@@ -637,7 +633,7 @@ fn a_chunkless_plugin_falls_back_to_a_parameter_snapshot() {
     let mut instance = load_probe_with(&[("TUTTI_VST2_PROBE_NO_CHUNKS", "1")]);
 
     let saved = instance
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("no chunk support is not a failure — fall back, don't error");
     assert_eq!(
         &saved[..4],
@@ -664,11 +660,7 @@ fn restoring_a_chunk_into_a_chunkless_plugin_goes_to_the_plugin() {
     // The probe answers `effSetChunk` with 0, as a JUCE plugin does after a successful load:
     // the host must not read that as a failure.
     instance
-        .load_state(
-            &main_thread(),
-            &chunk,
-            tutti_plugin_types::StateUse::Project,
-        )
+        .load_state(main_thread(), &chunk, tutti_plugin_types::StateUse::Project)
         .expect("a plugin answering 0 to effSetChunk has not refused it");
 }
 
@@ -690,7 +682,7 @@ fn parameter_state_round_trips() {
     );
 
     let state = instance
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("get_state should succeed");
     assert_eq!(&state[..4], b"PRM\x01");
 
@@ -706,16 +698,12 @@ fn parameter_state_round_trips() {
     );
 
     instance
-        .load_state(
-            &main_thread(),
-            &state,
-            tutti_plugin_types::StateUse::Project,
-        )
+        .load_state(main_thread(), &state, tutti_plugin_types::StateUse::Project)
         .expect("set_state should succeed");
 
     assert!(
         (instance
-            .parameter(&main_thread(), pid(0))
+            .parameter(main_thread(), pid(0))
             .map(|n| n.get() as f32)
             .unwrap()
             - 0.25)
@@ -724,7 +712,7 @@ fn parameter_state_round_trips() {
     );
     assert!(
         (instance
-            .parameter(&main_thread(), pid(1))
+            .parameter(main_thread(), pid(1))
             .map(|n| n.get() as f32)
             .unwrap()
             - 0.75)
@@ -741,14 +729,14 @@ fn state_restore_rejects_malformed_blobs() {
 
     assert!(
         instance
-            .load_state(&main_thread(), &[], tutti_plugin_types::StateUse::Project)
+            .load_state(main_thread(), &[], tutti_plugin_types::StateUse::Project)
             .is_err(),
         "empty blob"
     );
     assert!(
         instance
             .load_state(
-                &main_thread(),
+                main_thread(),
                 &[0, 1, 2],
                 tutti_plugin_types::StateUse::Project
             )
@@ -758,7 +746,7 @@ fn state_restore_rejects_malformed_blobs() {
     assert!(
         instance
             .load_state(
-                &main_thread(),
+                main_thread(),
                 &[0xFF; 4],
                 tutti_plugin_types::StateUse::Project
             )
@@ -768,7 +756,7 @@ fn state_restore_rejects_malformed_blobs() {
     assert!(
         instance
             .load_state(
-                &main_thread(),
+                main_thread(),
                 b"CHK\0",
                 tutti_plugin_types::StateUse::Project
             )
@@ -781,7 +769,7 @@ fn state_restore_rejects_malformed_blobs() {
     bad.extend_from_slice(&0.5f32.to_le_bytes()); // only 1 value follows
     assert!(
         instance
-            .load_state(&main_thread(), &bad, tutti_plugin_types::StateUse::Project)
+            .load_state(main_thread(), &bad, tutti_plugin_types::StateUse::Project)
             .is_err(),
         "count/length mismatch"
     );
@@ -805,7 +793,7 @@ fn a_negative_parameter_count_does_not_abort_the_save() {
     ]);
 
     let state = instance
-        .save_state(&main_thread(), tutti_plugin_types::StateUse::Project)
+        .save_state(main_thread(), tutti_plugin_types::StateUse::Project)
         .expect("a negative numParams should produce an empty snapshot, not an abort");
 
     assert_eq!(&state[..4], b"PRM\x01");
@@ -825,11 +813,7 @@ fn a_negative_parameter_count_does_not_abort_the_save() {
 
     // The blob must survive the round trip it just claimed to be.
     instance
-        .load_state(
-            &main_thread(),
-            &state,
-            tutti_plugin_types::StateUse::Project,
-        )
+        .load_state(main_thread(), &state, tutti_plugin_types::StateUse::Project)
         .expect("a state blob this host wrote must be one it can read");
 }
 
@@ -870,7 +854,7 @@ fn a_program_switch_is_bracketed_in_order() {
 
     let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(
-        instance.loaded_mut().set_program(&main_thread(), 1),
+        instance.loaded_mut().set_program(main_thread(), 1),
         "program 1 is in range"
     );
 
@@ -899,16 +883,16 @@ fn a_program_switch_raises_a_values_rescan() {
     let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     let taken = |instance: &mut Active| {
         let mut asked = Vec::new();
-        instance.take_requests(&main_thread(), &mut asked);
+        instance.take_requests(main_thread(), &mut asked);
         asked
     };
     let _ = taken(&mut instance);
-    assert!(!instance.loaded_mut().set_program(&main_thread(), 999));
+    assert!(!instance.loaded_mut().set_program(main_thread(), 999));
     assert!(
         !taken(&mut instance).contains(&Request::RescanParams(RescanScope::Values)),
         "a refused switch moved nothing"
     );
-    assert!(instance.loaded_mut().set_program(&main_thread(), 1));
+    assert!(instance.loaded_mut().set_program(main_thread(), 1));
     assert!(taken(&mut instance).contains(&Request::RescanParams(RescanScope::Values)));
 
     drop(instance);
@@ -928,11 +912,11 @@ fn an_out_of_range_program_dispatches_nothing() {
 
     let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(
-        !instance.loaded_mut().set_program(&main_thread(), 999),
+        !instance.loaded_mut().set_program(main_thread(), 999),
         "999 is past numPrograms"
     );
     assert!(
-        !instance.loaded_mut().set_program(&main_thread(), -1),
+        !instance.loaded_mut().set_program(main_thread(), -1),
         "a negative index is not a program"
     );
 
@@ -952,7 +936,7 @@ fn the_declared_programs_are_listed_with_their_names() {
     let _guard = lock_probe();
     let instance = load_probe_with(&[("TUTTI_VST2_PROBE_PROGRAMS", "3")]);
 
-    let programs = instance.loaded().programs(&main_thread());
+    let programs = instance.loaded().programs(main_thread());
     assert_eq!(programs.len(), 3, "the probe declared 3 programs");
     assert_eq!(
         programs.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
@@ -977,7 +961,7 @@ fn an_unnamed_program_keeps_its_index() {
         ("TUTTI_VST2_PROBE_SERVICED_PROGRAMS", "2"),
     ]);
 
-    let programs = instance.loaded().programs(&main_thread());
+    let programs = instance.loaded().programs(main_thread());
     assert_eq!(programs.len(), 4, "all declared slots are reported");
     assert_eq!(
         programs.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
@@ -1012,7 +996,7 @@ fn an_accepted_soft_bypass_reaches_the_plugin() {
     let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
 
     assert!(
-        instance.loaded_mut().set_bypass(&main_thread(), true),
+        instance.loaded_mut().set_bypass(main_thread(), true),
         "the probe accepts effSetBypass but the host reported a refusal"
     );
     assert_eq!(
@@ -1023,7 +1007,7 @@ fn an_accepted_soft_bypass_reaches_the_plugin() {
     );
 
     assert!(
-        instance.loaded_mut().set_bypass(&main_thread(), false),
+        instance.loaded_mut().set_bypass(main_thread(), false),
         "leaving bypass was refused"
     );
     assert_eq!(
@@ -1052,7 +1036,7 @@ fn a_refused_soft_bypass_is_reported() {
     let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
 
     assert!(
-        !instance.loaded_mut().set_bypass(&main_thread(), true),
+        !instance.loaded_mut().set_bypass(main_thread(), true),
         "the probe refuses effSetBypass; reporting success would leave the \
          host believing a bypass took effect when the plugin is still \
          processing"
@@ -1083,7 +1067,7 @@ fn soft_bypass_support_is_advertised_not_assumed() {
     set_can_do(&path, can_do::YES, 0);
     let advertising = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(
-        advertising.loaded().supports_soft_bypass(&main_thread()),
+        advertising.loaded().supports_soft_bypass(main_thread()),
         "the probe answered effCanDo(bypass) = 1 and the host ignored it"
     );
     drop(advertising);
@@ -1092,7 +1076,7 @@ fn soft_bypass_support_is_advertised_not_assumed() {
     set_can_do(&path, can_do::MAYBE, 0);
     let silent = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
     assert!(
-        !silent.loaded().supports_soft_bypass(&main_thread()),
+        !silent.loaded().supports_soft_bypass(main_thread()),
         "effCanDo = 0 is 'don't know', not a yes; a host that treats it as one \
          relies on a bypass the plugin never promised"
     );
@@ -1192,7 +1176,7 @@ fn default_value_is_the_load_time_state_not_the_live_value() {
     // passing because the writes were dropped.
     assert!(
         (instance
-            .parameter(&main_thread(), pid(0))
+            .parameter(main_thread(), pid(0))
             .map(|n| n.get() as f32)
             .unwrap()
             - 0.9)
@@ -1225,7 +1209,7 @@ fn parameter_set_get_roundtrip() {
 
     let read = |i| {
         instance
-            .parameter(&main_thread(), pid(i))
+            .parameter(main_thread(), pid(i))
             .map(|n| n.get() as f32)
             .expect("the probe must expose getParameter")
     };

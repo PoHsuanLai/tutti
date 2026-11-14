@@ -60,7 +60,7 @@
 //! bundle on disk.
 //!
 //! ```rust,no_run
-//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let main = tutti_plugin_types::MainThreadMarker::new().expect("on the UI thread");
 //! # let (_collector, work) = tutti_plugin_types::MainWork::new();
 //! use tutti_ump::{MidiChannel, MidiGroup};
 //! use tutti_plugin_types::{MaxBlock, Prepare, SampleRate, Samples};
@@ -73,7 +73,7 @@
 //! // Initialized. Parameters and the editor are reachable here, with no
 //! // activation cost paid. The rate and the block length are not load
 //! // parameters: they are the activation's.
-//! let loaded = Vst3Loaded::load(&main, &work, "/usr/lib/vst3/MyPlugin.vst3", LoadOptions::new())?;
+//! let loaded = Vst3Loaded::load(main, &work, "/usr/lib/vst3/MyPlugin.vst3", LoadOptions::new())?;
 //! println!("{} by {}", loaded.plugin_info().name, loaded.plugin_info().vendor);
 //!
 //! // Activated. `T` fixes the sample width: `f64` is refused unless the plugin
@@ -81,7 +81,7 @@
 //! // so it can be retried at `f32` without reloading.
 //! let prepare = Prepare::new(SampleRate::SR_48K, MaxBlock::of(Samples(512)));
 //! let (mut processor, controller) = loaded
-//!     .activate_typed::<f32>(&main, prepare)
+//!     .activate_typed::<f32>(main, prepare)
 //!     .map_err(|refused| tutti_vst3_host::Vst3Error::NotSupported(refused.reason.to_string()))?;
 //!
 //! // 512 is the block length in FRAMES; each channel slice holds that many.
@@ -109,7 +109,7 @@
 //! println!("plugin emitted {} MIDI events", out.midi_events.len());
 //!
 //! // The halves rejoin into the plugin, deactivated.
-//! let _loaded = Vst3Loaded::deactivate_typed(&main, processor, controller)
+//! let _loaded = Vst3Loaded::deactivate_typed(main, processor, controller)
 //!     .map_err(|(_, _, reason)| tutti_vst3_host::Vst3Error::NotSupported(reason.to_string()))?;
 //! # Ok::<(), tutti_vst3_host::Vst3Error>(())
 //! ```
@@ -125,16 +125,16 @@
 //! # use tutti_plugin_types::{Control, Normalized, ParamId, StateUse};
 //! # use tutti_vst3_host::{LoadOptions, Vst3Loaded};
 //! # fn ex() -> Result<(), Box<dyn std::error::Error>> {
-//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let main = tutti_plugin_types::MainThreadMarker::new().expect("on the UI thread");
 //! # let (_collector, work) = tutti_plugin_types::MainWork::new();
-//! let mut plugin = Vst3Loaded::load(&main, &work, Path::new("/usr/lib/vst3/MyPlugin.vst3"), LoadOptions::new())?;
+//! let mut plugin = Vst3Loaded::load(main, &work, Path::new("/usr/lib/vst3/MyPlugin.vst3"), LoadOptions::new())?;
 //!
 //! // Parameters are addressed by an opaque, plugin-chosen `ParamID`, never by
 //! // position: `parameter_ids` lists them, `parameter_info` reads one by id, and
 //! // the id is what `Control::set_parameter` takes. The titles are UTF-16 in the
 //! // ABI, so they are read through the `_string` accessors rather than as fields.
-//! for id in plugin.parameter_ids(&main) {
-//!     let Some(info) = plugin.parameter_info(&main, id) else {
+//! for id in plugin.parameter_ids(main) {
+//!     let Some(info) = plugin.parameter_info(main, id) else {
 //!         continue;
 //!     };
 //!     println!(
@@ -146,14 +146,14 @@
 //! }
 //!
 //! // The write takes the id and a normalized `0..=1` value.
-//! if let Some(&id) = plugin.parameter_ids(&main).first() {
-//!     plugin.set_parameter(&main, id, Normalized::of(0.75));
+//! if let Some(&id) = plugin.parameter_ids(main).first() {
+//!     plugin.set_parameter(main, id, Normalized::of(0.75));
 //! }
 //!
 //! // State save/restore is legal before any buffer exists — a project load
 //! // restores state before the transport rolls.
-//! let saved = plugin.save_state(&main, StateUse::Project)?;
-//! plugin.load_state(&main, &saved, StateUse::Project)?;
+//! let saved = plugin.save_state(main, StateUse::Project)?;
+//! plugin.load_state(main, &saved, StateUse::Project)?;
 //!
 //! // One drain, four kinds of news — not a poller per kind. Edits, progress and
 //! // unit news come to the closure in arrival order; `restartComponent` requests
@@ -162,7 +162,7 @@
 //! // collected for you, so the poll allocates nothing.
 //! use tutti_vst3_host::PluginNotification;
 //! let mut edits = 0;
-//! let restart = plugin.poll_plugin_notifications(&main, |news| {
+//! let restart = plugin.poll_plugin_notifications(main, |news| {
 //!     if let PluginNotification::Edit(_) = news {
 //!         edits += 1;
 //!     }
@@ -178,16 +178,16 @@
 //! # use tutti_plugin_types::{Control, EditorWindow};
 //! # use tutti_vst3_host::{ContentScale, LoadOptions, Vst3Loaded, WindowHandle};
 //! # fn ex(window: &impl raw_window_handle::HasWindowHandle) -> Result<(), Box<dyn std::error::Error>> {
-//! # let main = tutti_plugin_types::MainThread::new().expect("on the UI thread");
+//! # let main = tutti_plugin_types::MainThreadMarker::new().expect("on the UI thread");
 //! # let (_collector, work) = tutti_plugin_types::MainWork::new();
-//! # let mut plugin = Vst3Loaded::load(&main, &work, Path::new("/usr/lib/vst3/MyPlugin.vst3"), LoadOptions::new())?;
-//! if plugin.has_editor(&main) {
+//! # let mut plugin = Vst3Loaded::load(main, &work, Path::new("/usr/lib/vst3/MyPlugin.vst3"), LoadOptions::new())?;
+//! if plugin.has_editor(main) {
 //!     // Any winit or other `raw-window-handle` window.
 //!     let handle = WindowHandle::from_window(window)?;
-//!     let size = plugin.open_editor(&main, handle, ContentScale::IDENTITY)?;
+//!     let size = plugin.open_editor(main, handle, ContentScale::IDENTITY)?;
 //!     println!("editor is {size:?}");
 //! }
-//! plugin.close_editor(&main);
+//! plugin.close_editor(main);
 //! # Ok(()) }
 //! ```
 //!

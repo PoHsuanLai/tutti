@@ -103,7 +103,7 @@ pub trait ActiveExt: Sized {
 
 impl ActiveExt for Active {
     fn load_with(path: impl AsRef<Path>, prepare: Prepare) -> Result<Self, LoadError> {
-        let loaded = Vst2Loaded::load(&main_thread(), &tutti_fixtures::detached_work(), path)
+        let loaded = Vst2Loaded::load(main_thread(), &tutti_fixtures::detached_work(), path)
             .map_err(LoadError::Load)?;
         Self::activate(loaded, prepare).map_err(|(_, e)| LoadError::Activate(e))
     }

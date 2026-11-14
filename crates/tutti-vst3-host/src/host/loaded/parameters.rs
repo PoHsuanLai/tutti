@@ -4,7 +4,7 @@ use super::super::mapping::ControllerMapping;
 use super::*;
 use crate::types::{PlainRange, ProcessContextRequirements, UnitId};
 use tutti_plugin_types::AutomationMode;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::MainThreadMarker;
 use tutti_plugin_types::ParamUnit;
 use tutti_types::UnitParam;
 
@@ -14,13 +14,13 @@ impl Vst3Loaded {
     // below touches indices; everything else takes a `ParamId`.
 
     /// How many parameters the edit controller reports; `0` without one.
-    pub fn parameter_count(&self, main: &MainThread) -> u32 {
+    pub fn parameter_count(&self, main: MainThreadMarker) -> u32 {
         self.plugin.parameter_count(main)
     }
 
     /// The id of every parameter, in the plugin's own order. Empty without an
     /// edit controller.
-    pub fn parameter_ids(&self, main: &MainThread) -> Vec<ParamId> {
+    pub fn parameter_ids(&self, main: MainThreadMarker) -> Vec<ParamId> {
         (0..self.parameter_count(main))
             .filter_map(|i| self.plugin.parameter_info(main, i))
             .map(|info| ParamId::new(info.id()))
@@ -31,7 +31,7 @@ impl Vst3Loaded {
     /// parameter or no controller. Walks the list, so prefer
     /// [`parameter_list`](Self::parameter_list) for more than one. Each call is
     /// an O(n) walk of FFI calls into the plugin.
-    pub fn parameter_info(&self, main: &MainThread, id: ParamId) -> Option<Vst3ParameterInfo> {
+    pub fn parameter_info(&self, main: MainThreadMarker, id: ParamId) -> Option<Vst3ParameterInfo> {
         (0..self.parameter_count(main))
             .filter_map(|i| self.plugin.parameter_info(main, i))
             .find(|info| info.id() == id.get())
@@ -42,7 +42,7 @@ impl Vst3Loaded {
     /// list, or with no controller.
     pub fn mapping<'a>(
         &'a self,
-        main: &'a MainThread,
+        main: MainThreadMarker,
         id: ParamId,
     ) -> Option<ControllerMapping<'a>> {
         self.parameter_info(main, id)?;
@@ -56,7 +56,7 @@ impl Vst3Loaded {
     /// The descriptor at list position `index`, for the walks that enumerate.
     pub(in crate::host) fn parameter_info_at(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         index: u32,
     ) -> Option<Vst3ParameterInfo> {
         self.plugin.parameter_info(main, index)
@@ -76,7 +76,7 @@ impl Vst3Loaded {
     /// A parameter whose descriptor the plugin declines to hand over is
     /// skipped rather than substituted, so the list is short instead of
     /// carrying an invented entry.
-    pub fn parameter_list(&self, main: &MainThread) -> Vec<ParameterInfo> {
+    pub fn parameter_list(&self, main: MainThreadMarker) -> Vec<ParameterInfo> {
         let units = self.units(main);
         let groups = unit_names(&units);
 
@@ -127,7 +127,7 @@ impl Vst3Loaded {
     ///
     /// Must run on the main thread with the controller connected, per the SDK's
     /// `[UI-thread & Connected]` annotation on the method.
-    pub fn parameter_plain_range(&self, main: &MainThread, id: ParamId) -> Option<PlainRange> {
+    pub fn parameter_plain_range(&self, main: MainThreadMarker, id: ParamId) -> Option<PlainRange> {
         let at = |n: f64| self.plugin.normalized_to_plain(main, id.get(), n);
 
         let (lo, mid, hi) = (at(0.0)?, at(0.5)?, at(1.0)?);
@@ -153,7 +153,12 @@ impl Vst3Loaded {
     /// descriptors. The host can always **send**
     /// [`NoteExpressionValue`](crate::NoteExpressionValue) events regardless of
     /// what this reports.
-    pub fn note_expression_count(&self, main: &MainThread, bus_index: i32, channel: i16) -> u32 {
+    pub fn note_expression_count(
+        &self,
+        main: MainThreadMarker,
+        bus_index: i32,
+        channel: i16,
+    ) -> u32 {
         self.plugin.note_expression_count(main, bus_index, channel)
     }
 
@@ -189,7 +194,7 @@ impl Vst3Loaded {
     /// `INoteExpressionController`.
     pub fn note_expression_info(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         bus_index: i32,
         channel: i16,
         index: u32,
@@ -204,7 +209,7 @@ impl Vst3Loaded {
     ///
     /// Pair with [`keyswitch_info`](Self::keyswitch_info) to enumerate the
     /// articulation map a sample-library instrument advertises.
-    pub fn keyswitch_count(&self, main: &MainThread, bus_index: i32, channel: i16) -> u32 {
+    pub fn keyswitch_count(&self, main: MainThreadMarker, bus_index: i32, channel: i16) -> u32 {
         self.plugin.keyswitch_count(main, bus_index, channel)
     }
 
@@ -214,7 +219,7 @@ impl Vst3Loaded {
     /// `IKeyswitchController`.
     pub fn keyswitch_info(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         bus_index: i32,
         channel: i16,
         index: u32,
@@ -237,7 +242,7 @@ impl Vst3Loaded {
     /// main/UI thread.
     pub fn remap_param_id(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         plugin_to_replace_uid: &[i8; 16],
         old_param_id: ParamId,
     ) -> Option<ParamId> {
@@ -255,7 +260,7 @@ impl Vst3Loaded {
     /// uses for it, without hard-coding parameter indices. Main/UI thread.
     pub fn param_id_for_function_name(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         unit_id: crate::UnitId,
         function_name: &str,
     ) -> Option<ParamId> {
@@ -275,7 +280,7 @@ impl Vst3Loaded {
     /// physical control is wired to. Main/UI thread.
     pub fn physical_ui_mapping(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         bus_index: i32,
         channel: i16,
     ) -> Vec<(crate::PhysicalUiType, u32)> {
@@ -291,7 +296,7 @@ impl Vst3Loaded {
     /// Main/UI thread.
     pub fn xml_representation(
         &self,
-        main: &MainThread,
+        main: MainThreadMarker,
         vendor: &str,
         name: &str,
         version: &str,
@@ -310,7 +315,7 @@ impl Vst3Loaded {
     /// was delivered. Must run on the main/UI thread.
     pub(crate) fn apply_automation_state(
         &mut self,
-        main: &MainThread,
+        main: MainThreadMarker,
         mode: AutomationMode,
     ) -> bool {
         self.plugin

@@ -649,7 +649,8 @@ mod tests {
     use crate::instance::AuLoaded;
     use crate::types::{AudioComponentDescription, K_AUDIO_UNIT_TYPE_EFFECT};
     use tutti_plugin_types::{
-        AudioBuffer, Loaded, MainThread, MaxBlock, ParamId, ParameterChanges, Prepare, SampleRate,
+        AudioBuffer, Loaded, MainThreadMarker, MaxBlock, ParamId, ParameterChanges, Prepare,
+        SampleRate,
     };
 
     fn delay() -> (AuProcessor, crate::controller::AuController) {

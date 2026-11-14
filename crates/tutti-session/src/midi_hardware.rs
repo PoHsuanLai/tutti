@@ -2,7 +2,7 @@
 //! `midi-hardware`): list them, open one as an input or the output, and bring
 //! back a saved one. Each call forwards to the session's
 //! [`MidiSession`](tutti_midi_hardware::MidiSession); the hot-plug and the
-//! negotiation come back as [`MidiEvent`](crate::MidiEvent)s from
+//! negotiation come back as [`MidiEvent`]s from
 //! `Session::update`.
 
 use std::sync::Arc;
@@ -55,7 +55,7 @@ impl Midi<'_> {
     /// a session with no OS MIDI layer
     /// ([`SessionBuilder::midi_hardware`](crate::SessionBuilder::midi_hardware)).
     /// A device that came or went since is reported as a
-    /// [`MidiEvent`](crate::MidiEvent) from `Session::update`.
+    /// [`MidiEvent`] from `Session::update`.
     #[must_use]
     pub fn devices(&self) -> Vec<DeviceInfo> {
         self.io
@@ -69,7 +69,7 @@ impl Midi<'_> {
     /// ([`route`](Midi::route)) send on. The session keeps it connected: when
     /// the device is removed and returns, and is surely the same one (what
     /// [`reconnect_saved`](Self::reconnect_saved) binds unasked), it is opened
-    /// again and [`MidiEvent::InputRestored`](crate::MidiEvent::InputRestored)
+    /// again and [`MidiEvent::InputRestored`]
     /// says so; [`disconnect_input`](Self::disconnect_input) ends that.
     ///
     /// # Errors
@@ -94,7 +94,7 @@ impl Midi<'_> {
     /// identity in use it changes nothing; with another, the running devices end
     /// as [`disable_ci`](Self::disable_ci) ends them and start again under a new
     /// MUID. Found peers are
-    /// [`MidiEvent::CiPeer`](crate::MidiEvent::CiPeer) and
+    /// [`MidiEvent::CiPeer`] and
     /// [`ci_peers`](Self::ci_peers).
     ///
     /// # Errors
@@ -121,7 +121,7 @@ impl Midi<'_> {
     /// a device that answered the session's Discovery declared (identity,
     /// categories, receivable SysEx size, Function Block). Empty when the
     /// input is not open, the device has no output to talk on, or nothing
-    /// answered; a change is a [`MidiEvent::CiPeer`](crate::MidiEvent::CiPeer).
+    /// answered; a change is a [`MidiEvent::CiPeer`].
     /// The list is shared, not copied (a read clones a pointer), and stays as it
     /// was when read: read it again after a `CiPeer` event.
     #[must_use]
@@ -135,7 +135,7 @@ impl Midi<'_> {
     /// Group then MUID (M2-101 section 7): only a peer that declared Profile
     /// Configuration has an entry, and the session asks it for its Profiles when
     /// it is found. Empty when the input is not open or no peer did; a change is
-    /// a [`MidiEvent::CiProfiles`](crate::MidiEvent::CiProfiles). Shared like
+    /// a [`MidiEvent::CiProfiles`]. Shared like
     /// [`ci_peers`](Self::ci_peers), and as it was when read.
     ///
     /// A peer that has the MPE Profile (M2-120) enabled puts that input's ingest
@@ -159,7 +159,7 @@ impl Midi<'_> {
     /// Asks a peer to enable or disable a Profile it lists, on the input the
     /// switch was made from. The request goes out at the next update, and its end (the peer's
     /// Enabled or Disabled Report, its NAK, or a timeout with no answer) is a
-    /// [`MidiEvent::CiProfiles`](crate::MidiEvent::CiProfiles) with
+    /// [`MidiEvent::CiProfiles`] with
     /// [`ProfilesChange::Resolved`](tutti_midi_hardware::ProfilesChange::Resolved).
     ///
     /// # Errors
@@ -175,7 +175,7 @@ impl Midi<'_> {
     /// answered that they support MIDI Message Report, by Group then MUID (M2-101
     /// section 9): empty when the input is not open or no peer did. The session
     /// asks each such peer for its capabilities when it is found; a
-    /// [`MidiEvent::CiProcess`](crate::MidiEvent::CiProcess) says one answered.
+    /// [`MidiEvent::CiProcess`] says one answered.
     /// Shared like [`ci_peers`](Self::ci_peers), and as it was when read.
     ///
     /// Each is a [`ReportPeer`], the handle a [`ReportAsk`] is made from, so a
@@ -189,7 +189,7 @@ impl Midi<'_> {
 
     /// Asks a peer for a MIDI Message Report, on the input the request was made
     /// from. The request goes out at the next update; the peer's Reply and End, its
-    /// NAK, or a timeout are [`MidiEvent::CiProcess`](crate::MidiEvent::CiProcess)
+    /// NAK, or a timeout are [`MidiEvent::CiProcess`]
     /// events, and the report's MIDI messages reach the graph between the first
     /// and the last as the input's MIDI.
     ///
@@ -207,7 +207,7 @@ impl Midi<'_> {
     /// Identity Reply, then a MIDI-CI peer's for what those left). Empty when
     /// the input is not open, has not answered yet, or never will: the answers
     /// arrive over the first seconds after a connect, and a
-    /// [`MidiEvent::StreamSettled`](crate::MidiEvent::StreamSettled) or
+    /// [`MidiEvent::StreamSettled`] or
     /// [`CiPeer`](crate::MidiEvent::CiPeer) reports that something did. A
     /// device identity names a model and a Product Instance Id one unit
     /// (M2-101 §5.8.3.1).
@@ -245,7 +245,7 @@ impl Midi<'_> {
 
     /// Closes an input, by id or name, and forgets it: it is not reopened when
     /// it returns. An input that was lost
-    /// ([`MidiEvent::InputLost`](crate::MidiEvent::InputLost)) and has not
+    /// ([`MidiEvent::InputLost`]) and has not
     /// returned is forgotten the same way.
     ///
     /// # Errors
@@ -272,7 +272,7 @@ impl Midi<'_> {
     /// configuration says, which each update's poll follows. The session
     /// keeps it connected: when the device is removed and returns, and is
     /// surely the same one, it is opened again
-    /// ([`MidiEvent::OutputRestored`](crate::MidiEvent::OutputRestored));
+    /// ([`MidiEvent::OutputRestored`]);
     /// [`disconnect_output`](Self::disconnect_output) or another
     /// `connect_output` ends that.
     ///
@@ -296,7 +296,7 @@ impl Midi<'_> {
     /// and what it sends is counted as dropped until another is connected
     /// ([`connect_output`](Self::connect_output) or
     /// [`set_hardware_out`](Midi::set_hardware_out)). An output that was lost
-    /// ([`MidiEvent::OutputLost`](crate::MidiEvent::OutputLost)) and has not
+    /// ([`MidiEvent::OutputLost`]) and has not
     /// returned is forgotten the same way.
     ///
     /// # Errors

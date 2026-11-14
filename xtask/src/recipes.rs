@@ -212,6 +212,16 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "no file:line pointer in code prose; one under docs/ names a line that exists",
     ),
     (
+        "check-doc-idents",
+        "",
+        "a backticked item name in prose is used by some code; a per-file ratchet",
+    ),
+    (
+        "check-passive-tests",
+        "",
+        "a #[test] asserts something; a per-file ratchet",
+    ),
+    (
         "check-comments",
         "",
         "no comment gains a citation of a design doc, audit, pull request, commit or CLAUDE.md",
@@ -531,6 +541,8 @@ impl Planner<'_> {
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-doc-refs" => self.out.push(Step::Gate(Gate::DocRefs)),
             "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
+            "check-doc-idents" => self.out.push(Step::Gate(Gate::DocIdents)),
+            "check-passive-tests" => self.out.push(Step::Gate(Gate::PassiveTests)),
             "check-comments" => self.out.push(Step::Gate(Gate::Comments)),
             "check-platform-seam" => self.out.push(Step::Gate(Gate::PlatformSeam)),
             "check-conformance" => self.out.push(Step::Gate(Gate::Conformance)),
@@ -640,8 +652,8 @@ impl Planner<'_> {
                     "check-paths", "check-session", "check-guards", "check-ffi", "check-errors",
                     "check-layout", "check-range-types", "check-hosting", "check-lints",
                     "check-value-traits", "check-submodule-pins", "check-doc-refs",
-                    "check-pointers", "check-comments", "check-platform-seam",
-                    "check-alloc-binaries",
+                    "check-pointers", "check-comments", "check-platform-seam", "check-doc-idents",
+                    "check-passive-tests", "check-alloc-binaries",
                 ] {
                     self.dep(d)?;
                 }

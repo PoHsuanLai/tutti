@@ -16,6 +16,7 @@ mod conformance;
 mod conformance_site;
 mod decode_boundary;
 mod doc_features;
+mod doc_idents;
 mod doc_refs;
 mod errors;
 mod ffi;
@@ -26,10 +27,12 @@ mod layout;
 mod lex;
 mod lints;
 mod midi_spec;
+mod passive_tests;
 mod platform_seam;
 mod pointers;
 mod prose;
 mod range_types;
+mod ratchet;
 mod session;
 mod sf2_spec;
 mod spec_text;
@@ -121,6 +124,10 @@ pub(crate) enum Gate {
     DocRefs,
     /// Prose outside `docs/` points at no `file.rs:N`; under `docs/` the line exists.
     Pointers,
+    /// A backticked item name in prose is an item the code uses (a per-file ratchet).
+    DocIdents,
+    /// A `#[test]` asserts something (a per-file ratchet).
+    PassiveTests,
     /// No comment holds more citations of design docs, audits, pull requests,
     /// commits, mutation runs or `CLAUDE.md` than its baseline.
     Comments,
@@ -149,6 +156,8 @@ impl Gate {
             Gate::ValueTraits => "gate check-value-traits".to_owned(),
             Gate::DocRefs => "gate check-doc-refs".to_owned(),
             Gate::Pointers => "gate check-pointers".to_owned(),
+            Gate::DocIdents => "gate check-doc-idents".to_owned(),
+            Gate::PassiveTests => "gate check-passive-tests".to_owned(),
             Gate::Comments => "gate check-comments".to_owned(),
             Gate::AllocBinaries => "gate check-alloc-binaries".to_owned(),
             Gate::PlatformSeam => "gate check-platform-seam".to_owned(),
@@ -178,6 +187,8 @@ impl Gate {
             }
             Gate::DocRefs => doc_refs::check(&tree),
             Gate::Pointers => pointers::check(&tree),
+            Gate::DocIdents => doc_idents::check(&tree),
+            Gate::PassiveTests => passive_tests::check(&tree),
             Gate::Comments => comments::check(&tree),
             Gate::AllocBinaries => alloc_binaries::check(&tree, alloc_binaries::ALLOWED),
             Gate::PlatformSeam => platform_seam::check(&tree, platform_seam::ALLOW),

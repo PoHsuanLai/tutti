@@ -194,6 +194,10 @@ jobs:
       - run: cargo xtask check-value-traits
       - run: cargo xtask check-doc-refs
       - run: cargo xtask check-pointers
+      # Backticked item names in prose resolve to code, and every `#[test]`
+      # asserts; each is a per-file ratchet over its `xtask/*.txt` baseline.
+      - run: cargo xtask check-doc-idents
+      - run: cargo xtask check-passive-tests
       - run: cargo xtask check-comments
       - run: cargo xtask check-alloc-binaries
       # A platform cfg stands only on a `mod` declaration; the `-ffi` crates are

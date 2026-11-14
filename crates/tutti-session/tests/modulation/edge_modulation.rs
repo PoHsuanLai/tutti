@@ -85,7 +85,7 @@ fn mixer(s: &mut Session) -> Edge {
 /// `depth * macro * span`, clamped to the range: with a range of `-2..=2`
 /// (span 4), macro 0.5 at depth 0.25 gives `w = 1.0 + 0.5 = 1.5`, so the sum
 /// is `(0.0 + 1.5 * A) + B`. Then the macro moves (`w = 1.0 - 0.5 = 0.5`),
-/// the knob moves (`ModState::set_knob`: `w = -0.25 - 0.5`, polarity), a
+/// the knob moves (`Edge::set_gain`: `w = -0.25 - 0.5`, polarity), a
 /// narrower range changes the span, and one whose floor the value is below
 /// clamps it; and removing the route returns the edge to its base, which
 /// the knob left at `-0.25` (the knob is the edge's gain: one cell), once the
@@ -104,7 +104,6 @@ fn a_route_onto_an_edge_modulates_the_sum_by_the_analytic_amount() {
     let route = m
         .route(RouteSpec::new(source, edge, Depth::of(0.25)))
         .unwrap();
-    let target = m.key(edge);
     settle(&mut s);
 
     // Past the lane's first block and the connect's declick.
@@ -123,7 +122,7 @@ fn a_route_onto_an_edge_modulates_the_sum_by_the_analytic_amount() {
     settle(&mut s);
     figure(&mut s, 0.5, "the macro moved");
 
-    assert!(s.mod_state().set_knob(target, -0.25), "the lane has a knob");
+    edge.set_gain(s.graph(), Amplitude(-0.25)).expect("an edge");
     settle(&mut s);
     figure(&mut s, -0.75, "the knob moved");
 

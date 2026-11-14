@@ -495,7 +495,7 @@ impl Player {
             MidiChannel::new(i as u8).map_or(Semitones(0.0), |c| self.voicing.channel_pitch(c))
         });
         self.voices.process(
-            self.font.wave_data(),
+            self.font.sample_pool(),
             &self.channels,
             self.voicing.channels(),
             &bends,

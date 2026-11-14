@@ -11,7 +11,7 @@ use objc2::runtime::{AnyClass, AnyObject};
 use objc2_foundation::{NSBundle, NSSize};
 use std::os::raw::c_void;
 
-use tutti_plugin_types::EditorSize;
+use dpi::LogicalSize;
 
 use crate::cf::{CfString, CfUrl};
 use crate::error::{Error, OsError, Result};
@@ -35,7 +35,7 @@ const K_AUDIO_UNIT_ERR_INVALID_PROPERTY: i32 = coreaudio_sys::kAudioUnitErr_Inva
 /// and `Error::Invalid` at each later step that can come up empty —
 /// null bundle URL, null class name, bundle that will not load, ObjC class not
 /// found, factory that returns a null view.
-pub(super) fn create_view(unit: &Unit, preferred: EditorSize) -> Result<*mut AnyObject> {
+pub(super) fn create_view(unit: &Unit, preferred: LogicalSize<u32>) -> Result<*mut AnyObject> {
     let (bundle_url, class_name) = load_cocoa_view_info(unit)?;
     let bundle = load_bundle(&bundle_url)?;
     let factory = instantiate_factory(&bundle, &class_name)?;
@@ -169,7 +169,7 @@ fn instantiate_factory(_bundle: &NSBundle, class_name: &CfString) -> Result<*mut
 fn make_view(
     factory: *mut AnyObject,
     unit: &Unit,
-    preferred: EditorSize,
+    preferred: LogicalSize<u32>,
 ) -> Result<*mut AnyObject> {
     // `inPreferredSize` is what the *host* would like, and
     // `AUCocoaUIView.h:47-48` calls it exactly that — a preference. A plugin
@@ -178,9 +178,10 @@ fn make_view(
     //
     // It must be the host's real window size. A fixed figure here tells every AU
     // the host wants that size regardless of the window it is about to live in.
+    let preferred = preferred.cast::<f64>();
     let size = NSSize {
-        width: f64::from(preferred.width),
-        height: f64::from(preferred.height),
+        width: preferred.width,
+        height: preferred.height,
     };
     // `uiViewForAudioUnit:withSize:` lives on the plugin-provided factory class,
     // so it has no typed binding — dispatch dynamically. objc2's `msg_send!`

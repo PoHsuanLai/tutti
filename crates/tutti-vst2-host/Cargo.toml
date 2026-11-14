@@ -14,6 +14,8 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [dependencies]
+# The editor's sizes, which name their unit (`dpi::Size`).
+dpi.workspace = true
 # The two plugin→host callback queues. `ArrayQueue`, not `crossbeam-channel`:
 # `automate` and `process_events` are invoked from inside the plugin's
 # `processReplacing`, so their push runs on the audio thread. An unbounded

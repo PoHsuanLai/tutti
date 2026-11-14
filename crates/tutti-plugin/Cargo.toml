@@ -83,6 +83,8 @@ tutti-vst2-host = { version = "0.0.1", path = "../tutti-vst2-host", optional = t
 tempfile = "3"
 
 [dev-dependencies]
+# A size for `set_editor_size`.
+dpi.workspace = true
 tutti-rt = { path = "../tutti-rt" }
 tutti-ump = { path = "../tutti-ump", default-features = false }
 # The tests' mock listeners.

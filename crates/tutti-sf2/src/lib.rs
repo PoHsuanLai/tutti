@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 //! `tutti-sf2` reads a SoundFont 2 (`.sf2`) file into data: the presets, the
-//! instruments, the sample headers and the 16-bit sample data. It holds nothing
+//! instruments, the sample headers and the sample data, 16-bit or, with a
+//! valid `sm24` chunk (section 6.2), 24-bit (`SamplePool`). It holds nothing
 //! that plays; `tutti-soundfont` is the player over it.
 //!
 //! The code is the file-reading half of Nobuaki Tanaka's
@@ -10,8 +11,7 @@
 //! Generator values stay raw, in the unit the SoundFont 2.04 specification gives
 //! each (`GeneratorType`); turning a value into seconds or hertz is the player's.
 //! A file with a compressed (SoundFont 3) `smpl` chunk is refused with
-//! `Error::UnsupportedSampleFormat`; the `sm24` chunk and the modulator chunks are
-//! skipped.
+//! `Error::UnsupportedSampleFormat`; the modulator chunks are skipped.
 //!
 //! Sample positions are `tutti_types::Samples`, a rate is a `SampleRate` and a
 //! pitch correction `Cents`. A preset's bank is a `Bank` (a MIDI bank 0 to 127, or
@@ -77,6 +77,7 @@ pub use preset_region::PresetRegion;
 pub use sample_header::{NEAREST_PRACTICAL_RATE, SampleHeader, Side};
 pub use soundfont::SoundFont;
 pub use soundfont_info::SoundFontInfo;
+pub use soundfont_sampledata::{Pcm24, SamplePool};
 pub use soundfont_version::SoundFontVersion;
 pub use summed_generator::SummedGenerator;
 

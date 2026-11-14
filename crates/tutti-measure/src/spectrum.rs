@@ -61,8 +61,9 @@
 //! (`tests/spectrum_alloc.rs`). An [`FftScratch`] shared with a different size
 //! re-plans, which allocates.
 
-use tutti_types::{Db, Hz, Samples, Seconds};
+use tutti_types::{Db, Hz, SampleRate, Samples, Seconds};
 
+use crate::ranged::ranged;
 use crate::stereo::Ballistics;
 use crate::{Error, Result};
 use tutti_dsp::Complex32;
@@ -81,24 +82,13 @@ const MAX_OVERLAP: usize = 64;
 /// The most outputs a banding may have.
 const MAX_BANDS: usize = 4096;
 
-/// The most bands per octave.
-const MAX_PER_OCTAVE: usize = 48;
-
 /// The most cells (columns times outputs) a spectrogram may hold: 16 MiB of
 /// `f32`.
 const MAX_SPECTROGRAM_CELLS: usize = 1 << 22;
 
-/// The longest time constant, hold or release accepted, in seconds.
-const MAX_SECONDS: f64 = 3600.0;
-
-/// The steepest peak decay accepted, in dB per second.
-const MAX_DECAY: f32 = 10_000.0;
-
-/// The lowest floor accepted, in dB.
-const MIN_FLOOR: f32 = -300.0;
-
 /// The sample rates accepted, in hertz.
-const RATES: core::ops::RangeInclusive<f64> = 1.0..=10_000_000.0;
+const MIN_RATE: SampleRate = SampleRate::of(1.0);
+const MAX_RATE: SampleRate = SampleRate::of(10_000_000.0);
 
 /// Power clamp: +200 dB.
 const MAX_POWER: f32 = 1e20;
@@ -106,6 +96,37 @@ const MAX_POWER: f32 = 1e20;
 /// Smoothed power under this is set to zero, so a release does not run the
 /// float unit through subnormals.
 const POWER_EPSILON: f32 = 1e-30;
+
+ranged! {
+    /// A time constant or a hold: within `0..=3600` seconds.
+    SpectrumTime(Seconds), SpectrumTimeError, "a spectrum time within 0..=3600 s",
+    |raw| raw.get() >= 0.0 && raw.get() <= 3600.0
+}
+
+ranged! {
+    /// The level silence and anything quieter reads: within `-300..=0` dB.
+    SpectrumFloor(Db), SpectrumFloorError, "a spectrum floor within -300..=0 dB",
+    |raw| raw.get() >= -300.0 && raw.get() <= 0.0
+}
+
+ranged! {
+    /// How fast a held peak falls, in [`Db`] per second: within `0..=10000`. No
+    /// unit covers a rate of decibels.
+    PeakDecay(Db), PeakDecayError, "a peak decay within 0..=10000 dB per second",
+    |raw| raw.get() >= 0.0 && raw.get() <= 10_000.0
+}
+
+ranged! {
+    /// Bands per octave: within `1..=48`.
+    BandsPerOctave(usize), BandsPerOctaveError, "a band count per octave within 1..=48",
+    |raw| raw >= 1 && raw <= 48
+}
+
+ranged! {
+    /// The number of log-spaced bands: within `1..=4096`.
+    BandCount(usize), BandCountError, "a band count within 1..=4096",
+    |raw| raw >= 1 && raw <= 4096
+}
 
 /// How the per-output power is smoothed from frame to frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -115,18 +136,18 @@ pub enum Smoothing {
     None,
     /// Instant attack; the power falls toward a lower reading with this time
     /// constant.
-    Release(Seconds),
+    Release(SpectrumTime),
     /// The power moves toward each reading with this time constant, rising and
     /// falling alike: an exponential average over the time constant.
-    Average(Seconds),
+    Average(SpectrumTime),
 }
 
 impl Smoothing {
     fn ballistics(self) -> Ballistics {
         match self {
             Self::None => Ballistics::new(Seconds(0.0), Seconds(0.0)),
-            Self::Release(tau) => Ballistics::new(Seconds(0.0), tau),
-            Self::Average(tau) => Ballistics::new(tau, tau),
+            Self::Release(tau) => Ballistics::new(Seconds(0.0), tau.get()),
+            Self::Average(tau) => Ballistics::new(tau.get(), tau.get()),
         }
     }
 }
@@ -149,8 +170,8 @@ pub enum Banding {
     /// `min * 2^(j / per_octave) .. min * 2^((j + 1) / per_octave)`, for as
     /// many bands as end at or below `max` (3 per octave is third-octave).
     Octave {
-        /// Bands per octave, within `1..=48`.
-        per_octave: usize,
+        /// Bands per octave.
+        per_octave: BandsPerOctave,
         /// The lower edge of the first band.
         min: Hz,
         /// The frequency the last band ends at or below.
@@ -158,8 +179,8 @@ pub enum Banding {
     },
     /// `count` bands of equal ratio from `min` to `max`.
     Log {
-        /// The number of bands, within `1..=4096`.
-        count: usize,
+        /// The number of bands.
+        count: BandCount,
         /// The lower edge of the first band.
         min: Hz,
         /// The upper edge of the last band.
@@ -173,9 +194,9 @@ pub struct SpectrumConfig {
     geometry: StftGeometry,
     banding: Banding,
     smoothing: Smoothing,
-    floor: Db,
-    peak_hold: Seconds,
-    peak_decay: Db,
+    floor: SpectrumFloor,
+    peak_hold: SpectrumTime,
+    peak_decay: PeakDecay,
     columns: usize,
 }
 
@@ -186,39 +207,49 @@ impl SpectrumConfig {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidSpectrumParameter`] for a window under 64 or over 65536
-    /// samples, a hop wider than the window or giving more than 64 frames per
-    /// window, or a sample rate that is not finite or outside 1 Hz..=10 MHz.
+    /// [`Error::WindowOutOfRange`] for a window under 64 or over 65536
+    /// samples; [`Error::HopWiderThanWindow`] for a hop wider than the window;
+    /// [`Error::TooManyOverlaps`] for a hop giving more than 64 frames per
+    /// window; [`Error::SampleRateOutOfRange`] for a sample rate outside
+    /// 1 Hz..=10 MHz.
     pub fn new(geometry: StftGeometry) -> Result<Self> {
         let window = geometry.window().get();
         if !(MIN_WINDOW..=MAX_WINDOW).contains(&window) {
-            return Err(Error::InvalidSpectrumParameter(
-                "window: outside 64..=65536",
-            ));
+            return Err(Error::WindowOutOfRange {
+                window: Samples(window),
+                min: Samples(MIN_WINDOW),
+                max: Samples(MAX_WINDOW),
+            });
         }
         let hop = geometry.hop().get();
         if hop > window {
-            return Err(Error::InvalidSpectrumParameter(
-                "hop: wider than the window",
-            ));
+            return Err(Error::HopWiderThanWindow {
+                hop: geometry.hop(),
+                window: Samples(window),
+            });
         }
         if window.div_ceil(hop) > MAX_OVERLAP {
-            return Err(Error::InvalidSpectrumParameter(
-                "hop: more than 64 frames per window",
-            ));
+            return Err(Error::TooManyOverlaps {
+                window: Samples(window),
+                hop: geometry.hop(),
+                max: MAX_OVERLAP,
+            });
         }
-        if !RATES.contains(&geometry.sample_rate().get()) {
-            return Err(Error::InvalidSpectrumParameter(
-                "sample rate: outside 1..=10000000 Hz",
-            ));
+        let rate = geometry.sample_rate();
+        if !(MIN_RATE..=MAX_RATE).contains(&rate) {
+            return Err(Error::SampleRateOutOfRange {
+                rate,
+                min: MIN_RATE,
+                max: MAX_RATE,
+            });
         }
         Ok(Self {
             geometry,
             banding: Banding::Bins,
             smoothing: Smoothing::None,
-            floor: Db::FLOOR,
-            peak_hold: Seconds(1.0),
-            peak_decay: Db(20.0),
+            floor: SpectrumFloor::of(Db::FLOOR),
+            peak_hold: SpectrumTime::of(Seconds(1.0)),
+            peak_decay: PeakDecay::of(Db(20.0)),
             columns: 0,
         })
     }
@@ -227,9 +258,10 @@ impl SpectrumConfig {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidSpectrumParameter`] for a count outside its range, or a
-    /// spectrogram that would then exceed its size cap (more outputs per
-    /// column than before, as when returning to [`Banding::Bins`]);
+    /// [`Error::TooManyBands`] for more than 4096 bands;
+    /// [`Error::SpectrogramTooLarge`] when the spectrogram would then exceed
+    /// its size cap (more outputs per column than before, as when returning to
+    /// [`Banding::Bins`]);
     /// [`Error::EmptyBand`] for a band that holds no bin;
     /// [`Error::EmptyFrequencyRange`] when a bound is not finite and
     /// positive, `min` is not below `max`, or no whole band fits;
@@ -242,66 +274,34 @@ impl SpectrumConfig {
     }
 
     /// Smooths the power of each output from frame to frame.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidSpectrumParameter`] unless the time constant is finite
-    /// and within `0..=3600` seconds.
-    pub fn with_smoothing(mut self, smoothing: Smoothing) -> Result<Self> {
-        if let Smoothing::Release(tau) | Smoothing::Average(tau) = smoothing
-            && !(0.0..=MAX_SECONDS).contains(&tau.get())
-        {
-            return Err(Error::InvalidSpectrumParameter(
-                "smoothing: time constant outside 0..=3600 s",
-            ));
-        }
+    #[must_use]
+    pub fn with_smoothing(mut self, smoothing: Smoothing) -> Self {
         self.smoothing = smoothing;
-        Ok(self)
+        self
     }
 
     /// The level silence and anything quieter reads.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidSpectrumParameter`] unless finite and within
-    /// `-300..=0` dB.
-    pub fn with_floor(mut self, floor: Db) -> Result<Self> {
-        if !(MIN_FLOOR..=0.0).contains(&floor.get()) {
-            return Err(Error::InvalidSpectrumParameter(
-                "floor: outside -300..=0 dB",
-            ));
-        }
+    #[must_use]
+    pub fn with_floor(mut self, floor: SpectrumFloor) -> Self {
         self.floor = floor;
-        Ok(self)
+        self
     }
 
     /// Holds each peak for `hold`, then lets it fall by `decay` per second.
     ///
-    /// The decay is a [`Db`] read per second: no unit covers a rate of
-    /// decibels.
-    ///
     /// # Errors
     ///
-    /// [`Error::InvalidSpectrumParameter`] unless `hold` is finite and within
-    /// `0..=3600` seconds and no more than 4294967295 frames, and `decay` is
-    /// finite and within `0..=10000` dB.
-    pub fn with_peak_hold(mut self, hold: Seconds, decay: Db) -> Result<Self> {
-        if !(0.0..=MAX_SECONDS).contains(&hold.get()) {
-            return Err(Error::InvalidSpectrumParameter(
-                "peak hold: outside 0..=3600 s",
-            ));
-        }
-        if !(0.0..=MAX_DECAY).contains(&decay.get()) {
-            return Err(Error::InvalidSpectrumParameter(
-                "peak decay: outside 0..=10000 dB per second",
-            ));
-        }
+    /// [`Error::PeakHoldTooLong`] when `hold` is more than 4294967295 frames
+    /// at the hop and rate in use.
+    pub fn with_peak_hold(mut self, hold: SpectrumTime, decay: PeakDecay) -> Result<Self> {
         self.peak_hold = hold;
         self.peak_decay = decay;
-        if self.peak_hold_frames().get() > u32::MAX as usize {
-            return Err(Error::InvalidSpectrumParameter(
-                "peak hold: more than 4294967295 frames",
-            ));
+        let frames = self.peak_hold_frames().get();
+        if frames > u32::MAX as usize {
+            return Err(Error::PeakHoldTooLong {
+                frames,
+                max: u32::MAX as usize,
+            });
         }
         Ok(self)
     }
@@ -310,8 +310,8 @@ impl SpectrumConfig {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidSpectrumParameter`] when `columns` times the outputs
-    /// exceeds 4194304 cells.
+    /// [`Error::SpectrogramTooLarge`] when `columns` times the outputs exceeds
+    /// 4194304 cells.
     pub fn with_spectrogram(mut self, columns: FrameCount) -> Result<Self> {
         self.columns = columns.get();
         self.check_cells(self.outputs().get())?;
@@ -329,7 +329,7 @@ impl SpectrumConfig {
     #[inline]
     #[must_use]
     pub fn floor(&self) -> Db {
-        self.floor
+        self.floor.get()
     }
 
     /// Outputs per frame: bins or bands.
@@ -360,7 +360,7 @@ impl SpectrumConfig {
     #[must_use]
     pub(crate) fn peak_hold_frames(&self) -> FrameCount {
         let hop = self.geometry.hop().get() as f64;
-        let frames = self.peak_hold.get() * self.geometry.sample_rate().get() / hop;
+        let frames = self.peak_hold.get().get() * self.geometry.sample_rate().get() / hop;
         FrameCount((frames * (1.0 - 1e-6)).ceil() as usize)
     }
 
@@ -373,10 +373,12 @@ impl SpectrumConfig {
     }
 
     fn check_cells(&self, outputs: usize) -> Result<()> {
-        if self.columns.saturating_mul(outputs) > MAX_SPECTROGRAM_CELLS {
-            return Err(Error::InvalidSpectrumParameter(
-                "spectrogram: more than 4194304 cells",
-            ));
+        let cells = self.columns.saturating_mul(outputs);
+        if cells > MAX_SPECTROGRAM_CELLS {
+            return Err(Error::SpectrogramTooLarge {
+                cells,
+                max: MAX_SPECTROGRAM_CELLS,
+            });
         }
         Ok(())
     }
@@ -389,22 +391,8 @@ impl SpectrumConfig {
                 per_octave,
                 min,
                 max,
-            } => {
-                if !(1..=MAX_PER_OCTAVE).contains(&per_octave) {
-                    return Err(Error::InvalidSpectrumParameter(
-                        "banding: bands per octave outside 1..=48",
-                    ));
-                }
-                (min, max, 0, Some(per_octave))
-            }
-            Banding::Log { count, min, max } => {
-                if !(1..=MAX_BANDS).contains(&count) {
-                    return Err(Error::InvalidSpectrumParameter(
-                        "banding: band count outside 1..=4096",
-                    ));
-                }
-                (min, max, count, None)
-            }
+            } => (min, max, 0, Some(per_octave.get())),
+            Banding::Log { count, min, max } => (min, max, count.get(), None),
         };
         let empty = Error::EmptyFrequencyRange { min, max };
         if !(min.get().is_finite() && max.get().is_finite() && min.get() > 0.0 && min < max) {
@@ -439,9 +427,10 @@ impl SpectrumConfig {
             return Ok(None);
         };
         if edges.len() - 1 > MAX_BANDS {
-            return Err(Error::InvalidSpectrumParameter(
-                "banding: more than 4096 bands",
-            ));
+            return Err(Error::TooManyBands {
+                bands: edges.len() - 1,
+                max: MAX_BANDS,
+            });
         }
         let width = self.bin_width();
         let bins = self.bins();
@@ -533,11 +522,11 @@ impl SpectrumState {
             next_due: size as u64,
             frames: 0,
             power: vec![0.0; outputs],
-            levels: vec![cfg.floor; outputs],
-            peaks: vec![cfg.floor; outputs],
-            anchor: vec![cfg.floor.get(); outputs],
+            levels: vec![cfg.floor(); outputs],
+            peaks: vec![cfg.floor(); outputs],
+            anchor: vec![cfg.floor().get(); outputs],
             age: vec![0; outputs],
-            spectrogram: vec![cfg.floor; cfg.columns * outputs],
+            spectrogram: vec![cfg.floor(); cfg.columns * outputs],
             head: 0,
             filled: 0,
         };
@@ -548,7 +537,7 @@ impl SpectrumState {
     /// Forgets everything fed, keeping the buffers: the readings are the
     /// floor and the next frame is ready after a whole window.
     pub fn reset(&mut self) {
-        let floor = self.cfg.floor;
+        let floor = self.cfg.floor();
         self.ring.fill(0.0);
         self.write = 0;
         self.fed = 0;
@@ -624,8 +613,8 @@ impl SpectrumState {
         // Validated to fit by `with_peak_hold`.
         let hold = cfg.peak_hold_frames().get() as u32;
         // One product per call: exact, then rounded once to the `f32` the loop runs in.
-        let decay = (f64::from(cfg.peak_decay.get()) * dt.get()) as f32;
-        let floor = cfg.floor;
+        let decay = (f64::from(cfg.peak_decay.get().get()) * dt.get()) as f32;
+        let floor = cfg.floor();
 
         for i in 0..self.power.len() {
             let raw = if self.band_bins.is_empty() {
@@ -709,8 +698,7 @@ fn to_db(power: f32, floor: Db) -> Db {
 ///
 /// # Errors
 ///
-/// [`Error::InvalidSpectrumParameter`] when `state` was built for another
-/// config; [`Error::NonFiniteInput`] for a NaN or infinite sample. The state is
+/// [`Error::StateMismatch`] when `state` was built for another config; [`Error::NonFiniteInput`] for a NaN or infinite sample. The state is
 /// untouched on error.
 pub fn step_spectrum(
     cfg: &SpectrumConfig,
@@ -719,9 +707,7 @@ pub fn step_spectrum(
     fft: &mut FftScratch,
 ) -> Result<bool> {
     if state.cfg != *cfg {
-        return Err(Error::InvalidSpectrumParameter(
-            "state: built for another config",
-        ));
+        return Err(Error::StateMismatch);
     }
     if block.iter().any(|s| !s.is_finite()) {
         return Err(Error::NonFiniteInput);
@@ -943,10 +929,9 @@ mod tests {
     #[test]
     fn blocks_of_any_size_give_identical_frames() {
         let cfg = config(256, 100)
-            .with_smoothing(Smoothing::Release(Seconds(0.05)))
-            .unwrap()
+            .with_smoothing(Smoothing::Release(SpectrumTime::of(Seconds(0.05))))
             .with_banding(Banding::Octave {
-                per_octave: 1,
+                per_octave: BandsPerOctave::of(1),
                 min: Hz(375.0),
                 max: Hz(12_000.0),
             })
@@ -989,9 +974,7 @@ mod tests {
     fn averaging_converges_to_the_mean_noise_power() {
         let size = 1024;
         let tau = Seconds(1.0);
-        let cfg = config(size, size)
-            .with_smoothing(Smoothing::Average(tau))
-            .unwrap();
+        let cfg = config(size, size).with_smoothing(Smoothing::Average(SpectrumTime::of(tau)));
         let sigma = 0.1f64;
         let mut rng = StdRng::seed_from_u64(0x5eed);
         let mut gauss = || {
@@ -1040,9 +1023,7 @@ mod tests {
     fn release_follows_the_analytic_exponential_and_attack_is_instant() {
         let (size, hop) = (1536, 512);
         let tau = Seconds(0.1);
-        let cfg = config(size, hop)
-            .with_smoothing(Smoothing::Release(tau))
-            .unwrap();
+        let cfg = config(size, hop).with_smoothing(Smoothing::Release(SpectrumTime::of(tau)));
         let (quiet, loud_end) = (size * 2, size * 6);
         let mut signal = tone(loud_end, 1000.0, 0.5);
         signal[..quiet].iter_mut().for_each(|s| *s *= 0.02);
@@ -1074,7 +1055,9 @@ mod tests {
     fn peaks_hold_then_decay_at_the_configured_rate() {
         let (size, hop) = (1536, 512);
         let (hold, decay) = (Seconds(0.25), Db(30.0));
-        let cfg = config(size, hop).with_peak_hold(hold, decay).unwrap();
+        let cfg = config(size, hop)
+            .with_peak_hold(SpectrumTime::of(hold), PeakDecay::of(decay))
+            .unwrap();
         let mut signal = tone(size * 3, 1000.0, 0.5);
         signal.resize(size * 3 + size * 40, 0.0);
 
@@ -1154,17 +1137,17 @@ mod tests {
         let width = RATE / size as f64;
         let bandings = [
             Banding::Octave {
-                per_octave: 3,
+                per_octave: BandsPerOctave::of(3),
                 min: Hz(100.0),
                 max: Hz(20_000.0),
             },
             Banding::Log {
-                count: 24,
+                count: BandCount::of(24),
                 min: Hz(50.0),
                 max: Hz(20_000.0),
             },
             Banding::Octave {
-                per_octave: 1,
+                per_octave: BandsPerOctave::of(1),
                 min: Hz(100.0),
                 max: Hz(12_800.0),
             },
@@ -1181,7 +1164,7 @@ mod tests {
                     min,
                     max,
                 } => {
-                    let n = (per_octave as f64
+                    let n = (per_octave.get() as f64
                         * (f64::from(max.get()) / f64::from(min.get())).log2()
                         + 1e-9)
                         .floor() as usize;
@@ -1189,10 +1172,11 @@ mod tests {
                     (
                         lo,
                         n,
-                        Box::new(move |j| lo * 2f64.powf(j as f64 / per_octave as f64)),
+                        Box::new(move |j| lo * 2f64.powf(j as f64 / per_octave.get() as f64)),
                     )
                 }
                 Banding::Log { count, min, max } => {
+                    let count = count.get();
                     let (lo, hi) = (f64::from(min.get()), f64::from(max.get()));
                     (
                         lo,
@@ -1238,7 +1222,7 @@ mod tests {
     #[test]
     fn an_empty_band_names_itself_and_the_window_that_holds_it() {
         let banding = Banding::Octave {
-            per_octave: 3,
+            per_octave: BandsPerOctave::of(3),
             min: Hz(20.0),
             max: Hz(20_000.0),
         };
@@ -1287,7 +1271,7 @@ mod tests {
         let size = 1536;
         let cfg = config(size, size)
             .with_banding(Banding::Octave {
-                per_octave: 1,
+                per_octave: BandsPerOctave::of(1),
                 min: Hz(700.0),
                 max: Hz(2800.0),
             })
@@ -1310,10 +1294,13 @@ mod tests {
     fn the_hold_is_a_whole_number_of_frames_without_over_holding() {
         let cfg = config(1920, 480);
         let frames = |hold: f32| {
-            cfg.with_peak_hold(Seconds::from_f32(hold), Db(20.0))
-                .unwrap()
-                .peak_hold_frames()
-                .get()
+            cfg.with_peak_hold(
+                SpectrumTime::new(Seconds::from_f32(hold)).unwrap(),
+                PeakDecay::of(Db(20.0)),
+            )
+            .unwrap()
+            .peak_hold_frames()
+            .get()
         };
         assert_eq!(frames(1.0), 100);
         assert_eq!(frames(0.1), 10);
@@ -1326,55 +1313,54 @@ mod tests {
                 StftGeometry::new(SampleRate::of(10_000_000.0), Samples(64), Samples(1)).unwrap()
             )
             .unwrap()
-            .with_peak_hold(Seconds(3600.0), Db(1.0)),
-            Err(Error::InvalidSpectrumParameter(_))
+            .with_peak_hold(SpectrumTime::of(Seconds(3600.0)), PeakDecay::of(Db(1.0))),
+            Err(Error::PeakHoldTooLong { .. })
         ));
     }
 
-    /// Settings are checked, NaN and infinity included, and sizes are capped
-    /// before anything is allocated.
+    /// The rules that span fields are checked, and sizes are capped before
+    /// anything is allocated.
     #[test]
     fn bad_settings_are_errors() {
-        let bad = |r: Result<SpectrumConfig>| matches!(r, Err(Error::InvalidSpectrumParameter(_)));
         let new = |size, hop| SpectrumConfig::new(geometry(size, hop));
-        assert!(bad(new(63, 63)));
-        assert!(bad(new(65_537, 65_537)));
-        assert!(bad(new(256, 257)));
-        assert!(bad(new(65_536, 1)));
-        assert!(bad(new(4096, 63)));
+        for size in [63, 65_537] {
+            assert!(matches!(
+                new(size, size),
+                Err(Error::WindowOutOfRange { .. })
+            ));
+        }
+        assert!(matches!(
+            new(256, 257),
+            Err(Error::HopWiderThanWindow { .. })
+        ));
+        for (size, hop) in [(65_536, 1), (4096, 63)] {
+            assert!(matches!(new(size, hop), Err(Error::TooManyOverlaps { .. })));
+        }
         assert!(new(64, 1).is_ok() && new(65_536, 65_536).is_ok() && new(4096, 64).is_ok());
         for rate in [0.5, 1e9] {
-            assert!(bad(SpectrumConfig::new(
-                StftGeometry::new(SampleRate::of(rate), Samples(256), Samples(64)).unwrap()
-            )));
+            assert!(matches!(
+                SpectrumConfig::new(
+                    StftGeometry::new(SampleRate::of(rate), Samples(256), Samples(64)).unwrap()
+                ),
+                Err(Error::SampleRateOutOfRange { .. })
+            ));
         }
 
         let cfg = config(1024, 256);
-        for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, 3601.0] {
-            assert!(
-                bad(cfg.with_smoothing(Smoothing::Release(Seconds::from_f32(v)))),
-                "{v}"
-            );
-            assert!(
-                bad(cfg.with_smoothing(Smoothing::Average(Seconds::from_f32(v)))),
-                "{v}"
-            );
-            assert!(
-                bad(cfg.with_peak_hold(Seconds::from_f32(v), Db(10.0))),
-                "{v}"
-            );
-        }
-        for v in [f32::NAN, f32::INFINITY, -1.0, 10_001.0] {
-            assert!(bad(cfg.with_peak_hold(Seconds(1.0), Db(v))), "{v}");
-        }
-        for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1.0, -301.0] {
-            assert!(bad(cfg.with_floor(Db(v))), "{v}");
-        }
-        assert!(bad(cfg.with_spectrogram(FrameCount(usize::MAX))));
-        assert!(bad(cfg.with_spectrogram(FrameCount((1 << 22) / 513 + 1))));
+        assert!(matches!(
+            cfg.with_spectrogram(FrameCount(usize::MAX)),
+            Err(Error::SpectrogramTooLarge { .. })
+        ));
+        assert_eq!(
+            cfg.with_spectrogram(FrameCount((1 << 22) / 513 + 1)),
+            Err(Error::SpectrogramTooLarge {
+                cells: ((1 << 22) / 513 + 1) * 513,
+                max: 1 << 22
+            })
+        );
         assert!(cfg.with_spectrogram(FrameCount((1 << 22) / 513)).is_ok());
         let banded = cfg.with_banding(Banding::Log {
-            count: 4000,
+            count: BandCount::of(4000),
             min: Hz(100.0),
             max: Hz(20_000.0),
         });
@@ -1383,14 +1369,17 @@ mod tests {
             "4000 bands of 513 bins cannot all hold a bin"
         );
 
-        let oct = |per_octave, min: f32, max: f32| {
+        let oct = |per_octave: usize, min: f32, max: f32| {
             cfg.with_banding(Banding::Octave {
-                per_octave,
+                per_octave: BandsPerOctave::new(per_octave).unwrap(),
                 min: Hz(min),
                 max: Hz(max),
             })
         };
-        assert!(bad(oct(0, 100.0, 1000.0)) && bad(oct(49, 100.0, 1000.0)));
+        assert!(matches!(
+            oct(48, 1e-30, 20_000.0),
+            Err(Error::TooManyBands { max: 4096, .. })
+        ));
         assert!(
             matches!(oct(48, 100.0, 20_000.0), Err(Error::EmptyBand { .. })),
             "1/48 octave is finer than the bins"
@@ -1422,15 +1411,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             banded.with_banding(Banding::Bins),
-            Err(Error::InvalidSpectrumParameter(m)) if m.contains("spectrogram")
-        ));
-        assert!(matches!(
-            cfg.with_banding(Banding::Log {
-                count: 0,
-                min: Hz(100.0),
-                max: Hz(1000.0)
-            }),
-            Err(Error::InvalidSpectrumParameter(_))
+            Err(Error::SpectrogramTooLarge { .. })
         ));
     }
 
@@ -1438,7 +1419,7 @@ mod tests {
     /// far below a -60 dB floor reads the floor in every bin.
     #[test]
     fn no_level_reads_under_the_configured_floor() {
-        let cfg = config(256, 64).with_floor(Db(-60.0)).unwrap();
+        let cfg = config(256, 64).with_floor(SpectrumFloor::of(Db(-60.0)));
         let mut fft = FftScratch::new();
         let mut state = SpectrumState::new(&cfg, &mut fft);
         step_spectrum(&cfg, &mut state, &vec![0.0; 1000], &mut fft).unwrap();
@@ -1496,7 +1477,7 @@ mod tests {
         let other = config(512, 64);
         assert!(matches!(
             step_spectrum(&other, &mut state, &[0.0], &mut fft),
-            Err(Error::InvalidSpectrumParameter(_))
+            Err(Error::StateMismatch)
         ));
     }
 }

@@ -2675,6 +2675,7 @@ dependencies = [
  "ebur128",
  "pitch-detection",
  "rand",
+ "serde",
  "thiserror 2.0.21",
  "tutti-dsp",
  "tutti-fixtures",

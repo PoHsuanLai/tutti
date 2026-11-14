@@ -181,6 +181,13 @@
 //! an inverted range would report "unvoiced" forever instead, which is a silent
 //! wrong answer rather than an error.
 //!
+//! A setting with one range of its own is a range-checked type (`Harmonics`,
+//! `Tightness`, `SpectrumFloor`, `NoteSpan`, ...): its `new` refuses a value
+//! outside the range, so a config holds none, and its `with_*` setter cannot
+//! fail. The constructors that still return `Error` refuse only what spans
+//! fields or the input: a hop against its window, a band against Nyquist, a
+//! tempo against the curve's length.
+//!
 //! The measurement entry points are correspondingly thin on failure. `correlate` and
 //! `summarize` are infallible — the pairing and layout checks already happened, in
 //! `StereoPlanes::new` and `PeakConfig`. `measure_loudness` returns `Option`,
@@ -272,6 +279,9 @@ mod peaks;
 // No `///` here: a doc comment on a `mod` line shadows the module's own `//!`.
 // The module header carries the description.
 mod pitch;
+#[cfg(test)]
+mod range_contracts;
+mod ranged;
 mod silence;
 mod spectrum;
 mod stereo;
@@ -282,22 +292,33 @@ mod xcorr;
 mod yin;
 
 pub use align::{AlignConfig, Alignment, align};
-pub use chord::{ChordConfig, ChordQuality, ChordSpan, detect_chords};
-pub use chroma::{Chroma, ChromaConfig, ChromaState, Tuning, chroma, step_chroma};
+pub use chord::{
+    ChordConfig, ChordQuality, ChordSpan, SelfTransition, SelfTransitionError, Sharpness,
+    SharpnessError, detect_chords,
+};
+pub use chroma::{
+    Chroma, ChromaConfig, ChromaState, HarmonicDecay, HarmonicDecayError, Harmonics,
+    HarmonicsError, PeakFloor, PeakFloorError, Tuning, TuningOffset, TuningOffsetError, chroma,
+    step_chroma,
+};
 pub use error::{Error, Result};
 pub use features::{
     SpectralFeatures, spectral_centroid, spectral_features, spectral_flatness, spectral_rolloff,
 };
 pub use key::{Key, KeyEstimate, KeyProfile, Mode, estimate_key, estimate_key_from_mean};
 pub use loudness::{
-    Loudness, LoudnessConfig, LoudnessState, WindowedLoudnessConfig, WindowedLoudnessState,
+    Loudness, LoudnessConfig, LoudnessState, WindowedLayout, WindowedLayoutError,
+    WindowedLoudnessConfig, WindowedLoudnessState, WindowedRate, WindowedRateError,
     WindowedReading, finish as finish_loudness, measure_loudness, step_loudness,
     step_windowed_loudness,
 };
 // `finish` is renamed on the way out, matching `finish_peaks` /
 // `finish_loudness` above: three modules each have a `finish`, and the bare name
 // says nothing about which accumulator it drains.
-pub use notes::{NoteConfig, NoteEvent, VelocityRange, frame_levels, notes_from_track, transcribe};
+pub use notes::{
+    NoteConfig, NoteEvent, NoteSpan, NoteSpanError, PitchSplit, PitchSplitError, VelocityRange,
+    frame_levels, notes_from_track, transcribe,
+};
 pub use onset::{
     DetectionFunction, Onset, OnsetConfig, OnsetState, complex_domain_deviation, detect_onsets,
     finish as finish_onset, high_frequency_content, spectral_energy, spectral_flux, step_onset,
@@ -310,13 +331,18 @@ pub use peaks::{
 pub use silence::{
     Region, SilenceConfig, SilenceState, finish as finish_silence, step_silence, strip_silence,
 };
-pub use spectrum::{Banding, Smoothing, SpectrumConfig, SpectrumState, step_spectrum};
+pub use spectrum::{
+    BandCount, BandCountError, Banding, BandsPerOctave, BandsPerOctaveError, PeakDecay,
+    PeakDecayError, Smoothing, SpectrumConfig, SpectrumFloor, SpectrumFloorError, SpectrumState,
+    SpectrumTime, SpectrumTimeError, step_spectrum,
+};
 pub use stereo::{
     Ballistics, BallisticsState, StereoLevels, StereoReading, correlate, step_ballistics,
 };
 pub use tempo::{
-    BeatGrid, Tempo, TempoCandidate, TempoConfig, estimate_tempo, estimate_tempo_from_novelty,
-    track_beats, track_beats_from_novelty,
+    BeatGrid, PriorSpread, PriorSpreadError, Tempo, TempoCandidate, TempoConfig, Tightness,
+    TightnessError, estimate_tempo, estimate_tempo_from_novelty, track_beats,
+    track_beats_from_novelty,
 };
 pub use transform::{
     HopPolicy, NormalizedMagnitudes, RawMagnitudes, SampleRange, Stft, StftMagnitude, StftPolar,

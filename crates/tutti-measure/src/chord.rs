@@ -59,10 +59,12 @@
 
 use tutti_types::{PitchClass, Samples};
 
+use crate::ranged::ranged;
+
 use crate::chroma::{CLASSES, ChromaConfig};
 use crate::{Error, Result};
-use tutti_dsp::Grid;
 use tutti_dsp::StftGeometry;
+use tutti_dsp::{FrameCount, Grid};
 
 /// The states: 12 major roots, 12 minor roots, and "no chord".
 const STATES: usize = 2 * CLASSES + 1;
@@ -71,9 +73,6 @@ const NO_CHORD: usize = 2 * CLASSES;
 /// The most frames one call smooths, bounding the backpointers (25 bytes a
 /// frame).
 const MAX_FRAMES: usize = 1 << 19;
-
-/// The largest emission sharpness accepted.
-const MAX_SHARPNESS: f32 = 100.0;
 
 /// What the Viterbi scores are held in; wide, because they are summed over
 /// every frame.
@@ -112,12 +111,29 @@ pub struct ChordSpan {
     pub end: Samples,
 }
 
+ranged! {
+    /// The probability of staying in a chord from one frame to the next: finite
+    /// and in `(0, 1)`. 1/25 is the even share, which leaves each frame to its
+    /// own best state.
+    SelfTransition(f32), SelfTransitionError,
+    "a self-transition probability within (0, 1)",
+    |raw| raw > 0.0 && raw < 1.0
+}
+
+ranged! {
+    /// How strongly a frame's similarity weighs against the transition prior:
+    /// finite and in `(0, 100]`. The Viterbi scores are summed over every frame,
+    /// so the upper bound keeps their sum within what `f64` resolves.
+    Sharpness(f32), SharpnessError, "a sharpness within (0, 100]",
+    |raw| raw > 0.0 && raw <= 100.0
+}
+
 /// What [`detect_chords`] smooths with. Immutable once built.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChordConfig {
     geometry: StftGeometry,
-    self_transition: f32,
-    sharpness: f32,
+    self_transition: SelfTransition,
+    sharpness: Sharpness,
 }
 
 impl ChordConfig {
@@ -128,8 +144,8 @@ impl ChordConfig {
     pub fn new(geometry: StftGeometry) -> Self {
         Self {
             geometry,
-            self_transition: 0.9,
-            sharpness: 8.0,
+            self_transition: SelfTransition::of(0.9),
+            sharpness: Sharpness::of(8.0),
         }
     }
 
@@ -141,33 +157,18 @@ impl ChordConfig {
         Self::new(chroma.geometry())
     }
 
-    /// The probability of staying in a state from one frame to the next. 1/25
-    /// is the even share, which leaves each frame to its own best state.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidTonalParameter`] unless finite and in `(0, 1)`.
-    pub fn with_self_transition(mut self, probability: f32) -> Result<Self> {
-        if !(probability > 0.0 && probability < 1.0) {
-            return Err(Error::InvalidTonalParameter(
-                "self transition: outside (0, 1)",
-            ));
-        }
+    /// The probability of staying in a state from one frame to the next.
+    #[must_use]
+    pub fn with_self_transition(mut self, probability: SelfTransition) -> Self {
         self.self_transition = probability;
-        Ok(self)
+        self
     }
 
     /// How strongly a frame's similarity weighs against the transition prior.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidTonalParameter`] unless finite and in `(0, 100]`.
-    pub fn with_sharpness(mut self, sharpness: f32) -> Result<Self> {
-        if !(sharpness > 0.0 && sharpness <= MAX_SHARPNESS) {
-            return Err(Error::InvalidTonalParameter("sharpness: outside (0, 100]"));
-        }
+    #[must_use]
+    pub fn with_sharpness(mut self, sharpness: Sharpness) -> Self {
         self.sharpness = sharpness;
-        Ok(self)
+        self
     }
 
     /// The window, hop and sample rate the chroma was taken at.
@@ -183,22 +184,29 @@ impl ChordConfig {
 ///
 /// # Errors
 ///
-/// [`Error::InvalidTonalParameter`] when the grid is not 12 columns wide, holds
-/// a negative value, has more than 524288 frames, or places a span beyond the
-/// range of a sample count; [`Error::NonFiniteInput`] for a NaN or infinity.
+/// [`Error::NotTwelveClasses`] when the grid is not 12 columns wide;
+/// [`Error::NegativeInput`] when it holds a negative value;
+/// [`Error::TooManyFrames`] for more than 524288 frames;
+/// [`Error::SpanBeyondSampleCount`] when a span lies beyond the range of a
+/// sample count; [`Error::NonFiniteInput`] for a NaN or infinity.
 pub fn detect_chords(chroma: &Grid<f32>, cfg: &ChordConfig) -> Result<Vec<ChordSpan>> {
     if chroma.bins().get() != CLASSES {
-        return Err(Error::InvalidTonalParameter("chroma: not 12 columns wide"));
+        return Err(Error::NotTwelveClasses {
+            columns: chroma.bins().get(),
+        });
     }
     let frames = chroma.frames().get();
     if frames > MAX_FRAMES {
-        return Err(Error::InvalidTonalParameter("chroma: too many frames"));
+        return Err(Error::TooManyFrames {
+            frames: chroma.frames(),
+            max: FrameCount(MAX_FRAMES),
+        });
     }
     if chroma.as_slice().iter().any(|v| !v.is_finite()) {
         return Err(Error::NonFiniteInput);
     }
     if chroma.as_slice().iter().any(|&v| v < 0.0) {
-        return Err(Error::InvalidTonalParameter("chroma: negative value"));
+        return Err(Error::NegativeInput);
     }
     if frames == 0 {
         return Ok(Vec::new());
@@ -239,9 +247,10 @@ fn similarities(frame: &[f32]) -> [f64; STATES] {
 /// The best state per frame under the emission and transition model.
 fn viterbi(chroma: &Grid<f32>, cfg: &ChordConfig) -> Vec<u8> {
     let frames = chroma.frames().get();
-    let stay = Score::from(cfg.self_transition).ln();
-    let switch = ((1.0 - Score::from(cfg.self_transition)) / (STATES - 1) as Score).ln();
-    let emit = |frame: &[f32]| similarities(frame).map(|s| s as Score * Score::from(cfg.sharpness));
+    let stay = Score::from(cfg.self_transition.get()).ln();
+    let switch = ((1.0 - Score::from(cfg.self_transition.get())) / (STATES - 1) as Score).ln();
+    let emit =
+        |frame: &[f32]| similarities(frame).map(|s| s as Score * Score::from(cfg.sharpness.get()));
 
     let mut score = emit(chroma.row(0.into()));
     let mut back = vec![0u8; frames * STATES];
@@ -287,9 +296,7 @@ fn spans(path: &[u8], geometry: StftGeometry) -> Result<Vec<ChordSpan>> {
         geometry.hop().get() as u128,
     );
     let frames = path.len() as u128;
-    let sample = |v: u128| {
-        usize::try_from(v).map_err(|_| Error::InvalidTonalParameter("spans: beyond a sample count"))
-    };
+    let sample = |v: u128| usize::try_from(v).map_err(|_| Error::SpanBeyondSampleCount);
     // The change before frame `j`: the midpoint of two centres.
     let boundary = |j: usize| -> u128 { (2 * j as u128 * hop + window - hop) / 2 };
     let end = (frames - 1) * hop + window;
@@ -507,7 +514,7 @@ mod tests {
         (second[0], second[4], second[7]) = (1.0, 0.4, 0.4);
         let sim = similarities(&second)[0];
         assert!(sim > 0.85 && sim < 0.939, "{sim}");
-        let config = cfg().with_self_transition(0.02).unwrap();
+        let config = cfg().with_self_transition(SelfTransition::of(0.02));
         let path = viterbi(&grid(&[triad(0, false), second]), &config);
         assert_eq!(path, [0, NO_CHORD as u8]);
     }
@@ -533,10 +540,8 @@ mod tests {
             // The F frame's margin over C is two thirds of the sharpness.
             let sharpness = ((cost + offset) * 1.5) as f32;
             let config = cfg()
-                .with_self_transition(p)
-                .unwrap()
-                .with_sharpness(sharpness)
-                .unwrap();
+                .with_self_transition(SelfTransition::new(p).unwrap())
+                .with_sharpness(Sharpness::new(sharpness).unwrap());
             let spans = detect_chords(&grid, &config).unwrap();
             assert_eq!(spans.len(), if kept { 3 } else { 1 }, "offset {offset}");
         }
@@ -551,7 +556,7 @@ mod tests {
         let flicker = [c, c, c, c, f, c, c, c, c];
         let smoothed = run(&flicker, &cfg());
         assert_eq!(roots(&smoothed), [(PitchClass::C, ChordQuality::Major)]);
-        let raw = cfg().with_self_transition(1.0 / 25.0).unwrap();
+        let raw = cfg().with_self_transition(SelfTransition::of(1.0 / 25.0));
         let per_frame = run(&flicker, &raw);
         assert_eq!(
             roots(&per_frame),
@@ -572,7 +577,7 @@ mod tests {
     fn viterbi_is_the_best_path() {
         let mut rng = StdRng::seed_from_u64(11);
         for p in [0.9f32, 0.5, 0.02] {
-            let config = cfg().with_self_transition(p).unwrap();
+            let config = cfg().with_self_transition(SelfTransition::new(p).unwrap());
             for _ in 0..3 {
                 let rows: Vec<[f32; CLASSES]> = (0..4)
                     .map(|_| core::array::from_fn(|_| rng.random_range(0.0..1.0)))
@@ -581,7 +586,7 @@ mod tests {
                 let (stay, switch) = (p.ln(), ((1.0 - p) / 24.0).ln());
                 let emit: Vec<[f64; STATES]> = rows
                     .iter()
-                    .map(|r| similarities(r).map(|s| s * f64::from(config.sharpness)))
+                    .map(|r| similarities(r).map(|s| s * f64::from(config.sharpness.get())))
                     .collect();
                 let mut best = (f64::MIN, [0usize; 4]);
                 for code in 0..STATES.pow(4) {
@@ -652,45 +657,41 @@ mod tests {
         assert_eq!(roots(&spans), [(PitchClass::G, ChordQuality::Minor); 2]);
     }
 
-    /// Settings, shape, values and sizes are validated.
+    /// The shape, values and sizes of the input are validated.
     #[test]
     fn inputs_are_validated() {
-        let bad = |r: Result<ChordConfig>| matches!(r, Err(Error::InvalidTonalParameter(_)));
-        for p in [0.0, 1.0, -0.5, 1.5, f32::NAN, f32::INFINITY] {
-            assert!(bad(cfg().with_self_transition(p)), "{p}");
-        }
-        for s in [0.0, -1.0, 101.0, f32::NAN, f32::INFINITY] {
-            assert!(bad(cfg().with_sharpness(s)), "{s}");
-        }
         let invalid = |g: &Grid<f32>| detect_chords(g, &cfg()).unwrap_err();
         let wide = Grid::new(vec![0.0; 13], FrameCount(1), BinCount(13)).unwrap();
-        assert!(matches!(invalid(&wide), Error::InvalidTonalParameter(_)));
+        assert_eq!(invalid(&wide), Error::NotTwelveClasses { columns: 13 });
         let mut x = [0.5; CLASSES];
         x[4] = f32::NAN;
         assert_eq!(invalid(&grid(&[x])), Error::NonFiniteInput);
         x[4] = f32::NEG_INFINITY;
         assert_eq!(invalid(&grid(&[x])), Error::NonFiniteInput);
         x[4] = -0.5;
-        assert!(matches!(
-            invalid(&grid(&[x])),
-            Error::InvalidTonalParameter(_)
-        ));
+        assert_eq!(invalid(&grid(&[x])), Error::NegativeInput);
         let huge = Grid::new(
             vec![0.0; (MAX_FRAMES + 1) * CLASSES],
             FrameCount(MAX_FRAMES + 1),
             BinCount(CLASSES),
         )
         .unwrap();
-        assert!(matches!(invalid(&huge), Error::InvalidTonalParameter(_)));
+        assert_eq!(
+            invalid(&huge),
+            Error::TooManyFrames {
+                frames: FrameCount(MAX_FRAMES + 1),
+                max: FrameCount(MAX_FRAMES)
+            }
+        );
         let empty = Grid::new(Vec::new(), FrameCount(0), BinCount(CLASSES)).unwrap();
         assert!(detect_chords(&empty, &cfg()).unwrap().is_empty());
         let far = ChordConfig::new(
             StftGeometry::new(SampleRate::SR_22K05, Samples(1024), Samples(usize::MAX)).unwrap(),
         );
-        assert!(matches!(
+        assert_eq!(
             detect_chords(&grid(&[triad(0, false); 3]), &far),
-            Err(Error::InvalidTonalParameter(_))
-        ));
+            Err(Error::SpanBeyondSampleCount)
+        );
         // The most frames still smooth, in one pass.
         let max = Grid::new(
             vec![0.0; MAX_FRAMES * CLASSES],

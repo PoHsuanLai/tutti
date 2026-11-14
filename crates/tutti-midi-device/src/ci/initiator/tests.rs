@@ -75,7 +75,7 @@ fn it_starts_with_a_profile_inquiry_to_the_function_block_from_us_to_the_peer() 
     assert_eq!(header.device_id, CiDeviceId::FunctionBlock);
     assert_eq!(header.source, Muid::of(OURS));
     assert_eq!(*to, Muid::of(PEER));
-    assert_eq!(initiator.deadline(), Some(now + PROFILE_TIMEOUT));
+    assert_eq!(initiator.deadline(), Some(now + PEER_REPLY_TIMEOUT));
     assert!(!initiator.is_known());
 }
 
@@ -197,11 +197,11 @@ fn an_inquiry_that_is_never_finished_times_out_and_keeps_what_it_heard() {
     let (mut i, _, now) = start();
     i.on_message(&reply(channel(0), &[profile(1)], &[]));
     assert!(
-        i.on_timeout(now + PROFILE_TIMEOUT - Duration::from_millis(1))
+        i.on_timeout(now + PEER_REPLY_TIMEOUT - Duration::from_millis(1))
             .is_empty()
     );
     assert_eq!(
-        i.on_timeout(now + PROFILE_TIMEOUT),
+        i.on_timeout(now + PEER_REPLY_TIMEOUT),
         [ProfileAction::InquiryTimedOut]
     );
     assert!(!i.is_known());
@@ -576,10 +576,10 @@ fn a_request_with_no_answer_times_out() {
     let later = now + Duration::from_secs(10);
     i.on_message(&reply(CiDeviceId::FunctionBlock, &[], &[]));
     i.set_on(ProfileTarget::Group, profile(1), later).unwrap();
-    assert_eq!(i.deadline(), Some(later + PROFILE_TIMEOUT));
+    assert_eq!(i.deadline(), Some(later + PEER_REPLY_TIMEOUT));
     assert!(i.on_timeout(later).is_empty());
     assert_eq!(
-        i.on_timeout(later + PROFILE_TIMEOUT),
+        i.on_timeout(later + PEER_REPLY_TIMEOUT),
         [ProfileAction::Resolved {
             request: Request::SetOn {
                 address: CiDeviceId::Group,
@@ -691,7 +691,7 @@ fn details_is_refused_by_a_nak_0x04_and_times_out() {
     ));
     i.details(channel(2), profile(1), target, now).unwrap();
     assert!(matches!(
-        &i.on_timeout(now + PROFILE_TIMEOUT)[..],
+        &i.on_timeout(now + PEER_REPLY_TIMEOUT)[..],
         [ProfileAction::Resolved {
             outcome: Outcome::TimedOut,
             request: Request::Details { .. }
@@ -796,10 +796,10 @@ fn a_timeout_wait_adds_its_time_to_a_sets_deadline() {
     );
     assert_eq!(
         i.deadline(),
-        Some(now + PROFILE_TIMEOUT + Duration::from_secs(5))
+        Some(now + PEER_REPLY_TIMEOUT + Duration::from_secs(5))
     );
     // Not timed out at 3 s, nor at 4 s, and the Report still resolves it.
-    assert!(i.on_timeout(now + PROFILE_TIMEOUT).is_empty());
+    assert!(i.on_timeout(now + PEER_REPLY_TIMEOUT).is_empty());
     let at_4s = now + Duration::from_secs(4);
     assert!(i.on_timeout(at_4s).is_empty());
     let actions = i.on_message(&enabled(CiDeviceId::Group, profile(1), 0));
@@ -879,7 +879,7 @@ fn a_success_ack_does_not_end_a_set() {
             .with_details(profile(1).to_bytes().map(U7::of)),
     });
     assert!(i.on_message(&ack).is_empty());
-    assert_eq!(i.deadline(), Some(now + PROFILE_TIMEOUT));
+    assert_eq!(i.deadline(), Some(now + PEER_REPLY_TIMEOUT));
 }
 
 #[test]
@@ -909,7 +909,7 @@ fn a_timeout_wait_extends_a_details_request() {
     i.on_message(&wait_with(channel(2), 0x28, 100, profile(1).to_bytes()));
     assert_eq!(
         i.deadline(),
-        Some(now + PROFILE_TIMEOUT + Duration::from_secs(10))
+        Some(now + PEER_REPLY_TIMEOUT + Duration::from_secs(10))
     );
 }
 
@@ -917,7 +917,7 @@ fn a_timeout_wait_extends_a_details_request() {
 fn an_inquiry_with_a_timeout_wait_outlives_the_profile_timeout() {
     let (mut i, _, now) = start();
     i.on_message(&wait(CiDeviceId::FunctionBlock, 0x20, 100));
-    assert!(i.on_timeout(now + PROFILE_TIMEOUT).is_empty());
+    assert!(i.on_timeout(now + PEER_REPLY_TIMEOUT).is_empty());
     assert!(i.on_timeout(now + Duration::from_secs(9)).is_empty());
     // The set still completes at the final Reply, and a wait past the end is the timeout.
     let actions = i.on_message(&reply(CiDeviceId::FunctionBlock, &[], &[]));
@@ -925,11 +925,11 @@ fn an_inquiry_with_a_timeout_wait_outlives_the_profile_timeout() {
     let (mut i, _, now) = start();
     i.on_message(&wait(CiDeviceId::FunctionBlock, 0x20, 100));
     assert!(
-        i.on_timeout(now + PROFILE_TIMEOUT + Duration::from_secs(10) - Duration::from_nanos(1))
+        i.on_timeout(now + PEER_REPLY_TIMEOUT + Duration::from_secs(10) - Duration::from_nanos(1))
             .is_empty()
     );
     assert_eq!(
-        i.on_timeout(now + PROFILE_TIMEOUT + Duration::from_secs(10)),
+        i.on_timeout(now + PEER_REPLY_TIMEOUT + Duration::from_secs(10)),
         [ProfileAction::InquiryTimedOut]
     );
 }

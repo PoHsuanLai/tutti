@@ -40,28 +40,23 @@
 //!
 //! # The timeout
 //!
-//! [`PROCESS_TIMEOUT`] is tutti's choice, 3 seconds: M2-101 §9 gives no limit for a
+//! [`PEER_REPLY_TIMEOUT`] is tutti's choice, 3 seconds: M2-101 §9 gives no limit for a
 //! Process Inquiry transaction, and the only wait the document states is
 //! Discovery's 3 seconds at least (§5.5.5). The capabilities inquiry waits that
 //! long for its reply. A report waits that long for the Reply, and the Reply
 //! starts the wait again, for the End; so the time a report takes is bounded by
 //! the peer's silence, not by how much it has to say.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use std::vec::Vec;
 
-use super::TimeoutWait;
 use super::link::Link;
+use super::{PEER_REPLY_TIMEOUT, TimeoutWait};
 
 use super::{
     CiDeviceId, CiHeader, CiMessage, DataControl, Decoded, Muid, Nak, ProcessFeatures, ReportScope,
     SUB_ID2_MESSAGE_REPORT_INQUIRY, SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
 };
-
-/// How long an Inquiry: Process Inquiry Capabilities waits for its reply, and a
-/// MIDI Message Report for its Reply and then for its End: 3 seconds. See the
-/// module docs: tutti's figure, from §5.5.5.
-pub const PROCESS_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// What a MIDI Message Report asks (§9.5): how much, and of what.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -91,7 +86,7 @@ pub enum ProcessAction {
     /// The peer NAKed the capabilities inquiry: it has no Process Inquiry to
     /// ask about.
     CapabilitiesRefused(Nak),
-    /// [`PROCESS_TIMEOUT`] passed with no reply to the capabilities inquiry.
+    /// [`PEER_REPLY_TIMEOUT`] passed with no reply to the capabilities inquiry.
     CapabilitiesTimedOut,
     /// The peer's Reply to MIDI Message Report arrived: it is about to send the
     /// kinds of message in `declared`, which are the kinds it was asked for that
@@ -104,7 +99,7 @@ pub enum ProcessAction {
     ReportEnded,
     /// The peer NAKed the report, which ends it with whatever it had sent.
     ReportRefused(Nak),
-    /// [`PROCESS_TIMEOUT`] passed with no Reply, or after the Reply with no End:
+    /// [`PEER_REPLY_TIMEOUT`] passed with no Reply, or after the Reply with no End:
     /// the report is over, complete or not.
     ReportTimedOut,
 }
@@ -175,7 +170,7 @@ impl ProcessInitiator {
     /// Asks for the capabilities again: a wait already running starts over. The
     /// features are kept until the reply replaces them.
     pub fn inquire(&mut self, now: Instant) -> Vec<ProcessAction> {
-        self.capabilities_deadline = Some(now + PROCESS_TIMEOUT);
+        self.capabilities_deadline = Some(now + PEER_REPLY_TIMEOUT);
         vec![self.send(CiDeviceId::FunctionBlock, |header, to| {
             CiMessage::ProcessCapabilitiesInquiry { header, to }
         })]
@@ -207,7 +202,7 @@ impl ProcessInitiator {
         self.report = Some(Report {
             request,
             stage: Stage::AwaitingReply,
-            deadline: now + PROCESS_TIMEOUT,
+            deadline: now + PEER_REPLY_TIMEOUT,
         });
         let ReportRequest { control, scope } = request;
         Ok(vec![self.send(scope.address(), |header, to| {
@@ -275,7 +270,7 @@ impl ProcessInitiator {
                     && scope.address() == report.request.scope.address()
                 {
                     report.stage = Stage::Reporting;
-                    report.deadline = now + PROCESS_TIMEOUT;
+                    report.deadline = now + PEER_REPLY_TIMEOUT;
                     actions.push(ProcessAction::ReportBegan {
                         declared: scope.within(&report.request.scope),
                     });

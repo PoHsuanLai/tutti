@@ -6,6 +6,17 @@ use std::time::{Duration, Instant};
 use super::Ack;
 use super::pe::NotInRange;
 
+/// How long an Initiator waits on a peer's answer where the specification gives
+/// no limit: 3 seconds. A Profile Inquiry, Set Profile On or Off, or Details
+/// Inquiry waits this long for its answer; a Process Inquiry Capabilities for
+/// its reply; and a MIDI Message Report for its Reply and then for its End.
+///
+/// The figure is tutti's choice. M2-101 gives no wait for Profile Configuration
+/// or Process Inquiry; the waits it does state are kept apart:
+/// [`DISCOVERY_WINDOW`](crate::DISCOVERY_WINDOW) (§5.5.5, at least 3 seconds)
+/// and [`PE_TIMEOUT`](crate::PE_TIMEOUT) (M2-103 §12.2, under 3 seconds).
+pub const PEER_REPLY_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// How long a Timeout Wait asks to keep a transaction open: 0 to 127 tenths of
 /// a second, 0 to 12.7 s (M2-101 Table 14, M2-103 §12.2.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

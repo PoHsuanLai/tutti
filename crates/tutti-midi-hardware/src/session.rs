@@ -546,7 +546,7 @@ impl MidiSession {
     /// Asks a peer to enable or disable a Profile it lists, on the input the
     /// [`ProfileSwitch`] was made from, as the Initiator (M2-101 §§7.8, 7.9): the request is sent at the
     /// next [`poll`](Self::poll), and its end is a [`ProfilesChange::Resolved`]
-    /// (the peer's Enabled or Disabled Report, its NAK, or [`PROFILE_TIMEOUT`]
+    /// (the peer's Enabled or Disabled Report, its NAK, or [`PEER_REPLY_TIMEOUT`]
     /// with no answer). Make the [`ProfileSwitch`] from a handle in
     /// [`profiles`](Self::profiles).
     ///
@@ -556,7 +556,7 @@ impl MidiSession {
     /// [`ProfileError::NoSuchPeer`] when the peer is gone, and
     /// [`ProfileError::NotListed`] when it no longer lists the Profile there.
     ///
-    /// [`PROFILE_TIMEOUT`]: tutti_midi_device::PROFILE_TIMEOUT
+    /// [`PEER_REPLY_TIMEOUT`]: tutti_midi_device::PEER_REPLY_TIMEOUT
     pub fn set_profile(&mut self, switch: ProfileSwitch) -> std::result::Result<(), ProfileError> {
         self.inputs
             .get_mut(&switch.device)

@@ -627,7 +627,7 @@ impl<'de> Deserialize<'de> for MaxDelay {
 /// finite, not above zero, past the cap: a finite 1e30 s among them) and never clamps.
 #[test]
 fn a_max_delay_keeps_the_range_checked_shape() {
-    tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+    let c = tutti_fixtures::RangeContract {
         new: MaxDelay::new,
         get: MaxDelay::get,
         of: Some(MaxDelay::of),
@@ -641,7 +641,9 @@ fn a_max_delay_keeps_the_range_checked_shape() {
             Seconds(f64::INFINITY),
             Seconds(f64::NEG_INFINITY),
         ],
-    });
+    };
+    tutti_fixtures::check_range_contract(&c);
+    tutti_fixtures::check_range_serde(&c);
     assert_eq!(
         MaxDelay::try_from(Seconds(-1.0)),
         Err(MaxDelayError(Seconds(-1.0)))

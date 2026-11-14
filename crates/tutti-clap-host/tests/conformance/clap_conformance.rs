@@ -43,8 +43,8 @@ use tutti_types::Samples;
 const OFFSET_BLOCK: usize = 10_000;
 
 /// The offset `k` frames into the block.
-fn at(k: u32) -> Offset {
-    Offset::new(k as usize, Samples(OFFSET_BLOCK)).expect("inside the block")
+fn at(k: usize) -> Offset {
+    Offset::of(Samples(k), Samples(OFFSET_BLOCK))
 }
 
 // CLAP event type constants we assert against (from clap-sys).

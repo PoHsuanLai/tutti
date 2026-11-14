@@ -313,5 +313,5 @@ pub(super) fn new_node(
 }
 
 pub(super) fn at(frame: usize, len: usize) -> Offset {
-    Offset::new(frame, Samples(len)).expect("inside the block")
+    Offset::of(Samples(frame), Samples(len))
 }

@@ -1,0 +1,14 @@
+[book]
+title = "The tutti Book"
+authors = ["The tutti contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "build"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/tutti-audio/tutti"
+edit-url-template = "https://github.com/tutti-audio/tutti/edit/main/book/{path}"
+site-url = "/tutti/book/"

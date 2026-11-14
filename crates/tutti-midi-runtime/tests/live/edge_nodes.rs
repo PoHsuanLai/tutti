@@ -214,12 +214,12 @@ impl Ingest {
 
 /// `ump` at frame `offset`, which may lie past the 512-frame blocks these
 /// tests run: it is built against a block long enough to hold it.
-fn at(offset: u32, ump: Ump) -> UmpAt {
-    (Offset::new(offset as usize, Samples(1 << 20)).unwrap(), ump)
+fn at(offset: usize, ump: Ump) -> UmpAt {
+    (Offset::of(Samples(offset), Samples(1 << 20)), ump)
 }
 
 /// A note-on with 7-bit velocity 100, widened (M2-115), at `offset`.
-fn note(channel: u8, note: u8, offset: u32) -> UmpAt {
+fn note(channel: u8, note: u8, offset: usize) -> UmpAt {
     at(
         offset,
         note_on(
@@ -237,7 +237,7 @@ fn cc_ev(channel: u8, control: CCNumber, value: u8) -> UmpAt {
 }
 
 /// A MIDI 1.0 CC at frame `offset`.
-fn cc_at(offset: u32, channel: u8, control: CCNumber, value: u8) -> UmpAt {
+fn cc_at(offset: usize, channel: u8, control: CCNumber, value: u8) -> UmpAt {
     at(
         offset,
         m1_cc(MidiChannel::of(channel), control, U7::of(value)),
@@ -525,7 +525,7 @@ fn a_device_that_lets_go_has_what_it_held_released() {
 fn a_cable_that_goes_quiet_after_active_sensing_has_its_notes_ended() {
     let sense = system(G, tutti_ump::System::ActiveSensing);
     let blocks = |last: u64| (last / 512 + 2) as usize;
-    for (extra, ran_out) in [(None, 15_840u64), (Some(15_000u32), 30_840)] {
+    for (extra, ran_out) in [(None, 15_840u64), (Some(15_000usize), 30_840)] {
         let mut batch = vec![sense, note(0, 60, 0)];
         batch.extend(extra.map(|f| cc_at(f, 0, CCNumber::of(1), 1)));
         let (_ed, mut exec, _c, seen) = ingest(
@@ -933,7 +933,7 @@ fn a_start_inside_a_block_clocks_from_its_frame() {
     let rolling = TransportPosition::new(true, Bpm::of(120.0), Beat(0.0), None);
     let mut changes = TransportChanges::NONE;
     changes
-        .push(Offset::new(100, Samples(2048)).unwrap(), rolling)
+        .push(Offset::of(Samples(100), Samples(2048)), rolling)
         .unwrap();
     let mut out = vec![0.0f32; 2048];
     exec.process_with_changes(2048, &stopped, &changes, &[], &mut [&mut out[..]]);
@@ -1048,7 +1048,7 @@ fn a_segment_boundary_on_a_wrap_sends_the_song_position_once() {
     let rolling = TransportPosition::new(true, Bpm::of(120.0), Beat(1.0), looping);
     let mut changes = TransportChanges::NONE;
     changes
-        .push(Offset::new(2_400, Samples(4_000)).unwrap(), rolling)
+        .push(Offset::of(Samples(2_400), Samples(4_000)), rolling)
         .unwrap();
     let mut out = vec![0.0f32; 4_000];
     exec.process_with_changes(4_000, &rolling, &changes, &[], &mut [&mut out[..]]);

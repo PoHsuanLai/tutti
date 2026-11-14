@@ -100,7 +100,6 @@ impl Node for ClockNode {
         let pending = &mut self.pending;
         // A segment's events lie inside it, so inside the block; the clamp is
         // what the sort's `offset_of` did to a stray one.
-        let last = block_len.get().saturating_sub(1);
         let mut dropped = 0u64;
         for (start, seg) in cx.env.segments() {
             let base = start.get();
@@ -109,8 +108,7 @@ impl Node for ClockNode {
                     // Never grows on the audio thread: past the capacity the
                     // rest are refused, as the port would refuse them, and
                     // counted for the host.
-                    let at = base as usize + at.index();
-                    let at = Offset::new(at.min(last), block_len).unwrap_or(Offset::ZERO);
+                    let at = Offset::clamped(base.saturating_add(at.get()), block_len);
                     if !pending.push((at, ump)) {
                         dropped += 1;
                     }

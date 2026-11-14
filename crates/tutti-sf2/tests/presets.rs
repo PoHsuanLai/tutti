@@ -19,6 +19,7 @@ fn preset(name: &'static str, bank: u16, program: u16) -> Preset {
 /// 7.2: a preset whose bank or program field is outside MIDI's 0 to 127 (128
 /// for wBank) is kept but cannot be played: it loads, with no bank or no
 /// program.
+/// Spec: sf2.pdta.phdr.bank-program.range
 #[test]
 fn a_preset_outside_midis_values_is_kept_and_says_it_cannot_be_played() {
     let file = bytes(
@@ -62,6 +63,7 @@ fn a_preset_outside_midis_values_is_kept_and_says_it_cannot_be_played() {
 /// 42, 49, 55, 59), `endOper` (60) and a number past it are ignored, at both
 /// levels: the records before and after them still apply, and the values they
 /// carry reach no named generator.
+/// Spec: sf2.genrule.unused.ignored, sf2.pdta.pgen.unknown-generator.ignored, sf2.pdta.igen.unknown-generator.ignored, sf2.gen.unused1, sf2.gen.unused2, sf2.gen.unused3, sf2.gen.unused4, sf2.gen.reserved1, sf2.gen.reserved2, sf2.gen.reserved3, sf2.gen.unused5, sf2.gen.endOper
 #[test]
 fn an_unused_or_reserved_generator_number_is_ignored() {
     const UNUSED: [u16; 11] = [14, 18, 19, 20, 42, 49, 55, 59, 60, 61, u16::MAX];
@@ -109,6 +111,7 @@ fn an_unused_or_reserved_generator_number_is_ignored() {
 /// 8.1.2: `instrument` (41) is a preset-level generator; in an instrument zone it
 /// is ignored. The zone keeps its other generators, still ends at its `sampleID`,
 /// and is not taken for a global zone nor dropped.
+/// Spec: sf2.pdta.igen.instrument.illegal
 #[test]
 fn an_instrument_record_in_an_instrument_zone_is_ignored() {
     let file = bytes(

@@ -52,25 +52,17 @@ env:
 # the file.
 
 jobs:
-  fmt:
-    name: rustfmt
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      # The toolchain `rust-toolchain.toml` pins, with its components.
-      - run: rustup toolchain install
-      - run: cargo fmt --all --check
-
   # Advisories (`deny.toml`): a RustSec vulnerability, a yanked crate or an
   # unmaintained one not named there fails the job. The advisory DB is fetched
   # fresh on the runner; a failed fetch is an error, never a pass. `bans` and
-  # `licenses` are not checked (see `deny.toml`).
+  # `licenses` are not checked (see `deny.toml`). A pull request or merge group
+  # runs it only when the dependencies change (`deps` below); every push to
+  # main and the nightly run it whatever changed, which is where a new advisory
+  # against an unchanged lock shows.
   deny:
     name: cargo deny (advisories)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -95,6 +87,13 @@ jobs:
       # The toolchain `rust-toolchain.toml` pins: the gates below that are
       # `cargo xtask` recipes build `xtask` (std only, a few seconds).
       - run: rustup toolchain install
+      # The two cheapest checks first, so a pull request that fails one fails
+      # in a minute, not after the workspace builds: the formatting, and
+      # xtask's own tests (a recipe or gate whose tests break in a merged tree
+      # once cost a full test run per merge group). `cargo xtask gates` runs
+      # these and the source gates below locally; `.githooks/pre-push` runs it.
+      - run: cargo fmt --all --check
+      - run: cargo test --locked -p xtask
       # Engine types are imported from a crate's root or prelude, never through
       # its modules. Neither rustc nor clippy has a lint for a redundant path,
       # and doc comments in ```text / ```ignore blocks are never compiled — so
@@ -290,7 +289,7 @@ jobs:
   clippy-macos:
     name: clippy (macos)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.macos == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -615,6 +614,8 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per OS for `test` and `test-more`; `test` writes it.
+          shared-key: test
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
 
@@ -667,7 +668,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(needs.changes.outputs.test_os) }}
+        os: ${{ fromJSON(needs.changes.outputs.test_more_os) }}
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04' || matrix.os }}
     env:
       TUTTI_GOLDEN: ${{ matrix.os == 'ubuntu-latest' && 'require' || '' }}
@@ -683,7 +684,8 @@ jobs:
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: test
+          save-if: false
       - uses: taiki-e/install-action@nextest
 
       # The RT primitives in release. Some of their properties only exist
@@ -774,7 +776,7 @@ jobs:
   doc-macos:
     name: rustdoc (macos)
     needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
+    if: needs.changes.outputs.macos_main == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -878,9 +880,13 @@ jobs:
   # `macos`: whether the change touches code that differs on macOS: the crates
   # with a macOS path (thread priority in `tutti-rt`, CoreAudio through
   # `tutti-cpal`, CoreMIDI, the AU host and the plugin stack's process and
-  # bundle code), the test plugins, or the build. A pull request that touches
-  # none of those runs `clippy (macos)` only; its macOS tests and rustdoc run on
-  # the push to main.
+  # bundle code), the test plugins and the contract, or the build. It gates
+  # `clippy (macos)` and the macOS `test`; a change outside it runs no macOS job
+  # before the push to main. The macOS editor, release and doctest runs
+  # (`test-more`) and the macOS rustdoc (`macos_main`) are the push's alone.
+  #
+  # `deps`: whether a manifest, the lock, `deny.toml`, the toolchain or this
+  # file changed, which is what `cargo deny` reads.
   changes:
     name: what changed?
     runs-on: ubuntu-24.04
@@ -888,7 +894,10 @@ jobs:
       code: ${{ steps.diff.outputs.code }}
       loom: ${{ steps.diff.outputs.loom }}
       macos: ${{ steps.diff.outputs.macos }}
+      macos_main: ${{ steps.diff.outputs.macos_main }}
       test_os: ${{ steps.diff.outputs.test_os }}
+      test_more_os: ${{ steps.diff.outputs.test_more_os }}
+      deps: ${{ steps.diff.outputs.deps }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -902,7 +911,10 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "loom=true" >> "$GITHUB_OUTPUT"
             echo "macos=true" >> "$GITHUB_OUTPUT"
+            echo "macos_main=true" >> "$GITHUB_OUTPUT"
             echo 'test_os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+            echo 'test_more_os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+            echo "deps=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # HEAD is the pull request's merge commit, or the merge group's head.
@@ -918,7 +930,17 @@ jobs:
           else
             echo "loom=false" >> "$GITHUB_OUTPUT"
           fi
-          if echo "$changed" | grep -qE '^(crates/(tutti-rt|tutti-cpal|tutti-midi-hardware|tutti-coremidi-ffi|tutti-au-[a-z]+|tutti-vst2-[a-z]+|tutti-vst3-[a-z]+|tutti-clap-[a-z]+|tutti-plugin[a-z-]*)/|crates/tutti-session/(src|tests)/plugin|testing/|vendor/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
+          # The editor, release and doctest runs and the macOS rustdoc are the
+          # push's alone: Linux runs the same tests, and what only macOS
+          # compiles is linted by `clippy (macos)` here.
+          echo "macos_main=false" >> "$GITHUB_OUTPUT"
+          echo 'test_more_os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          if echo "$changed" | grep -qE '^(Cargo\.(toml|lock)|deny\.toml|rust-toolchain\.toml|\.github/workflows/ci\.yml)$|/Cargo\.toml$'; then
+            echo "deps=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deps=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$changed" | grep -qE '^(crates/(tutti-rt|tutti-cpal|tutti-midi-hardware|tutti-coremidi-ffi|tutti-au-[a-z]+|tutti-vst2-[a-z]+|tutti-vst3-[a-z]+|tutti-clap-[a-z]+|tutti-plugin[a-z-]*)/|crates/tutti-session/(src|tests)/plugin|testing/tutti-(shared-plugin[a-z0-9-]*|clap-test-plugin|vst2-[a-z]+|vst2-test-plugin|plugin-contract|fixtures)/|vendor/|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)'; then
             echo "macos=true" >> "$GITHUB_OUTPUT"
             echo 'test_os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
           else
@@ -1050,7 +1072,6 @@ jobs:
     name: CI result
     if: always()
     needs:
-      - fmt
       - deny
       - paths
       - clippy

@@ -991,7 +991,7 @@ impl tutti_graph::Node for Notes {
                 x if x == 3 * q => m1_note_off(c, NoteNumber::of(62), U7::of(0)),
                 _ => continue,
             };
-            let at = tutti_graph::Offset::new(i, n).expect("in the block");
+            let at = tutti_graph::Offset::of(tutti_types::Samples(i), n);
             let _ = io.event_out(0).push(tutti_graph::Event::midi(at, ump));
         }
         tutti_graph::Status::Modified
@@ -1141,7 +1141,7 @@ fn signal_block(
         20 => {
             let at = (n / 2).min(n - 1);
             ch.push(
-                Offset::new(at, tutti_types::Samples(n)).expect("in"),
+                Offset::of(tutti_types::Samples(at), tutti_types::Samples(n)),
                 rolling(clock),
             )
             .expect("room");

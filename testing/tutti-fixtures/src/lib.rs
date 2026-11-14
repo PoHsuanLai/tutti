@@ -1,7 +1,8 @@
 //! Where the test suites find things: the repo's `assets/`, the reference plugin
 //! cdylibs and the `plugin-server` and `plugin-probe` binaries;
-//! [`check_range_contract`], the one check a range-checked type keeps its
-//! contract; [`Fnv`], [`digest()`] and [`noise`], what a digest test is made of, and [`assert_golden`],
+//! [`check_range_contract`] and [`check_range_serde`], the checks a range-checked
+//! type keeps its contract and its serde form by, and [`check_round_trip`], a
+//! value's JSON spelling pinned both ways; [`Fnv`], [`digest()`] and [`noise`], what a digest test is made of, and [`assert_golden`],
 //! the gate that pins a digest where its libm was recorded; and
 //! [`sf2`], a SoundFont built in memory.
 //!
@@ -54,6 +55,7 @@ pub mod midi;
 #[cfg(feature = "plugin")]
 mod plugin;
 mod range_contract;
+mod round_trip;
 pub mod sf2;
 pub mod signal;
 #[cfg(feature = "vst3-cpp")]
@@ -68,7 +70,8 @@ pub use golden::{RECORDED_ARCH, RECORDED_GLIBC, assert_golden};
 pub use machine_lock::{MachineLock, machine_lock};
 #[cfg(feature = "plugin")]
 pub use plugin::{Activation, Active, StandInWindow, Whole, main_thread, vst3_module};
-pub use range_contract::{RangeContract, check_range_contract};
+pub use range_contract::{RangeContract, check_range_contract, check_range_serde};
+pub use round_trip::check_round_trip;
 #[cfg(feature = "vst3-cpp")]
 pub use vst3_cpp::{bundle_of, vst3_cpp_module};
 

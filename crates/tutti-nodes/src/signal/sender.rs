@@ -183,7 +183,7 @@ impl Out {
 
     fn flush(&mut self, io: &mut Io<'_>) {
         if let Some((i, seg)) = self.pending.take() {
-            let pushed = Offset::new(i, self.len)
+            let pushed = Offset::new(Samples(i), self.len)
                 .is_some_and(|at| io.event_out(0).push(Event::segment(at, seg)).is_ok());
             self.refused |= !pushed;
         }

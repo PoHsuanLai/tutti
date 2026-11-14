@@ -42,6 +42,9 @@ bytemuck = "1.16"
 # it, `arc-lend`, does so by the same design (its atomics become loom's too).
 # `monotonic_ns`: the OS clock read, `clock_gettime` on Unix and
 # `QueryPerformanceCounter` on Windows.
+# The `Error` derive of the crate's error types.
+thiserror = { workspace = true }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

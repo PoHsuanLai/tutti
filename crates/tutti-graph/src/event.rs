@@ -679,15 +679,17 @@ impl Event {
 }
 
 /// Why a slice is not a valid [`SortedEvents`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum EventOrderError {
     /// The event at this index has a smaller offset than the one before it.
+    #[error("event {at} is out of order: its offset is smaller than that of the event before it")]
     Unsorted {
         /// Index into the slice.
         at: usize,
     },
     /// The event at this index is at or past the end of the block.
+    #[error("event {at} is at or past the end of the block")]
     OutOfBlock {
         /// Index into the slice.
         at: usize,

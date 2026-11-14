@@ -326,7 +326,7 @@ pub(crate) struct Queued {
 ///
 /// A dropped add is a note that never sounds; a dropped remove is a voice
 /// that never stops.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum SendError {
     /// The 64-slot command queue was full. Transient: the audio thread drains
@@ -666,21 +666,14 @@ pub(crate) type SlotStreams = Arc<Mutex<HashMap<SlotId, Arc<Mutex<Stream>>>>>;
 /// A streaming add that did not reach the pool: why, and the stream, which the
 /// handle takes only once the add is queued. Its loop and direction are as they
 /// were before the call.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
 pub struct StreamingAddError {
     /// Why the add was refused, with the command (the voice) it carried.
     pub error: SendError,
     /// The stream that was to steer the voice, handed back.
     pub stream: Stream,
 }
-
-impl std::fmt::Display for StreamingAddError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.error, f)
-    }
-}
-
-impl std::error::Error for StreamingAddError {}
 
 impl VoicePoolHandle {
     /// Frees everything the audio thread has retired since the last call — removed

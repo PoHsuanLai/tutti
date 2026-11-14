@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tutti_graph::UmpAt;
 use tutti_ump::ControlValue;
 
-mod support;
+use crate::support;
 
 use support::Hand;
 use tutti_fixtures::assert_golden;

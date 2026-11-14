@@ -10,7 +10,7 @@
 //! tail (`tutti-session`'s `general_midi` suite measures a note through all of
 //! them).
 
-mod support;
+use crate::support;
 
 use support::font::{Inst, Preset, font};
 use support::rig::{Rig, timgm6mb};

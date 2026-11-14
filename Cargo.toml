@@ -1,49 +1,22 @@
-# Workspace root for the tutti audio engine.
 [workspace]
 resolver = "2"
 members = [
-    # The umbrella: a pure re-export crate, and it must stay one. See
-    # `crates/tutti/src/lib.rs` and `crates/tutti/tests/no_logic.rs`.
-    # The development commands (`cargo xtask help`): std only, no workspace
-    # dependency, outside the layering (`cargo xtask check-layout`).
     "xtask",
     "crates/tutti",
-    # The API layer: the cross-crate composition, not an umbrella. It
-    # re-exports no crate whole (`cargo xtask check-session`).
     "crates/tutti-session",
-    # The audio cases the Python judges verify (`cargo xtask verify-audio`).
     "testing/tutti-verify",
     "crates/tutti-engine",
     "crates/tutti-transport",
     "crates/tutti-metering",
-    # The tempo map: step and ramp segments, beat, seconds and frame conversion.
-    # Depends on `tutti-types` alone (and `libm`); nothing adopts it yet.
     "crates/tutti-tempo",
-    # The easing laws (`Law`) and the automation point list built on them:
-    # layer 1, `tutti-types` alone. The graph, the modulation compiler and the
-    # automation lanes evaluate the same `Law`.
     "crates/tutti-curve",
     "crates/tutti-cpal",
     "crates/tutti-types",
-    # The audio file encoders (WAV, AIFF, FLAC, Ogg Vorbis) behind one `Encoder`
-    # over a `Write + Seek` sink. Depends on `tutti-types` alone.
     "crates/tutti-codec",
-    # Real-time-safe shared-memory primitives for the audio thread: the engine's
-    # lock-free and `unsafe` runtime structures, and the `ArcLend` re-export.
-    # Names no tutti crate (and `publish = false`).
     "crates/tutti-rt",
-    # The Universal MIDI Packet and the group, channel and controller addresses
-    # it carries. Depends on no workspace crate, so `tutti-graph` can carry a
-    # packet without a MIDI codec.
     "crates/tutti-ump",
-    # MIDI 1.0 to MIDI 2.0 widening and the M2-115 scaling;
-    # depends on `tutti-ump` alone.
     "crates/tutti-midi-protocol",
-    # What a note-driven instrument decides before it makes sound, as one pure
-    # step (`Voicing::step`): channel state, the note table, the note gate.
     "crates/tutti-voicing",
-    # The pure core of MIDI device detection and the MIDI-CI codec: `DeviceId` and
-    # `DeviceTable`. Depends on `tutti-ump` alone.
     "crates/tutti-midi-device",
     "crates/tutti-graph",
     "crates/tutti-modulation",
@@ -61,21 +34,12 @@ members = [
     "crates/tutti-measure",
     "crates/tutti-plugin-ipc-ffi",
     "crates/tutti-plugin-ipc",
-    # The format-generic half of plugin hosting (design 021 step 4a): the control
-    # handle and the node pieces, over `tutti-plugin-types`. No ipc, no format host.
     "crates/tutti-plugin-host",
     "crates/tutti-plugin",
     "crates/tutti-plugin-server",
-    # The probe binary (design 021 section 2.5): reads a plugin's descriptor into a
-    # result file. Depends on the format hosts, not on a hosting; nothing depends on it.
     "crates/tutti-plugin-probe",
     "crates/tutti-plugin-types",
-    # Plugin discovery: directory walk, scan with crash recovery, the catalog.
-    # Depends on `tutti-plugin-types` alone; the probe is a parameter.
     "crates/tutti-plugin-db",
-    # Test-only: a loom model of tutti-plugin's shm header protocol. A separate
-    # crate because `--cfg loom` is global and breaks a transitive dep of
-    # tutti-plugin; see its Cargo.toml.
     "testing/tutti-shm-model",
     "crates/tutti-vst3-host",
     "crates/tutti-clap-ffi",
@@ -91,19 +55,11 @@ members = [
     "testing/tutti-fixtures",
     "crates/tutti-sf2",
     "testing/tutti-clap-test-plugin",
-    # One test plugin (a format-free core, a shell per format) and the contract
-    # every format's host runs against it.
     "testing/tutti-shared-plugin",
-    # The same spec as a C++ VST3 plugin on the Steinberg SDK classes, a binding
-    # check the Rust shells (which share the `vst3` crate with the host) cannot be.
     "testing/tutti-shared-plugin-vst3-cpp",
     "testing/tutti-plugin-contract",
 ]
 
-# The edition every member inherits with `edition.workspace = true`, vendored
-# members included, and the minimum Rust they build with (`rust-version`, the
-# pinned toolchain's minor; let chains need 1.88), and the licence and
-# repository the published members share. Pinned here once.
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
@@ -111,95 +67,41 @@ rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tutti-audio/tutti"
 
-# Lints every member inherits with `[lints] workspace = true`.
-#
-# `broken_intra_doc_links` is deny, not the default warn: a doc link into a
-# module is exactly what rots when that module goes private, and a warning in a
-# 30-crate build scrolls past unread. Was zero-warning across both workspaces
-# when set, so nothing is grandfathered in. Vendored members deliberately do not
-# inherit this — they carry pre-existing broken links we do not restyle.
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
-# The other half of the same failure: a link that still *resolves* but points at
-# something the reader cannot reach. Privatizing a module turns every link to it
-# into one of these, and rustdoc renders it as plain text with no clue why.
 private_intra_doc_links = "deny"
 
-# `cfg(loom)` is set from the command line (`RUSTFLAGS="--cfg loom"`) to run the
-# loom models, so rustc cannot know it is intended and warns on every `#[cfg]`
-# that names it. Declared once here for every member; `tutti-shm-model` declares
-# it for itself because it cannot take the workspace table. `cfg(docsrs)` is
-# the same: docs.rs sets it (`rustdoc-args` in each crate's
-# `[package.metadata.docs.rs]`) for the `doc_cfg` feature badges.
+# `cfg(loom)` (the loom models) and `cfg(docsrs)` (docs.rs) are set from outside
+# the build, so they are declared here for every member.
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(docsrs)'] }
 missing_docs = "warn"
 missing_debug_implementations = "deny"
 
-# A system's argument list IS its dependency declaration, and a query filter is
-# the query specification — aliasing either behind a type or a SystemParam bundle
-# moves the one thing a reader needs out of the signature.
 [workspace.lints.clippy]
 too_many_arguments = "allow"
 type_complexity = "allow"
 missing_errors_doc = "warn"
 missing_panics_doc = "warn"
 
-# Shared-dep pins the members inherit via `workspace = true`.
 [workspace.dependencies]
 thiserror = "2"
 libloading = "0.9"
-# The W3C UI Events key vocabulary (`Key`, `Code`, `Modifiers`, `KeyState`) a plugin editor's
-# key events are written in, so a windowing frontend converts name for name.
 keyboard-types = { version = "0.8.3", default-features = false }
-# The standard 8-bit RGBA colour (`RGBA8`) a plugin is told its track's colour in.
 rgb = { version = "0.8.53", default-features = false }
 
-# Benchmarks. One version across the workspace: `tutti-core` carried 0.5 —
-# dead, never with a `[[bench]]` — while the vendored fundsp fork was already
-# on 0.8, so the tree resolved two criterions and two criterion-plots.
-#
-# No `html_reports`: in criterion 0.8 the HTML report is compiled
-# unconditionally and the feature is referenced only by criterion's own tests.
-# It is a leftover from 0.3, and the CI comment that blamed it for pulling
-# fontconfig was wrong: that edge was the vendored fundsp fork's own bare
-# `plotters` dev-dependency, and went with the fork.
 criterion = "0.8"
 
-# `tutti-midi-file`'s SMF reader alone (a parser combinator library, named in
-# `src/smf/read.rs` only: `cargo xtask check-layout`): `binary` is `be_u16` and
-# kin, `alloc` the `Vec` a `repeat` collects.
 winnow = { version = "1", default-features = false, features = ["alloc", "binary"] }
-# NFC composition for text written into UMP messages (M2-104 section 1.8).
 unicode-normalization = { version = "0.1", default-features = false }
 coremidi = "0.9"
-# Raw CoreMIDI FFI + Core Foundation strings — needed only for the native-UMP
-# virtual source (MIDISourceCreateWithProtocol / MIDIReceivedEventList), which
-# coremidi's safe wrapper doesn't expose. Versions pinned to what coremidi
-# already pulls, so no new tree.
 coremidi-sys = "3.2"
 core-foundation = "0.10"
-# macOS 15's `MIDIUMPEndpoint` and `MIDIUMPFunctionBlock` are Objective-C classes,
-# which `coremidi-sys` (C functions) cannot carry. These are the generated
-# bindings, pure Rust, named by `tutti-coremidi-ffi` alone.
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSString"] }
 objc2-core-midi = { version = "0.3", default-features = false, features = ["std", "objc2", "objc2-foundation", "MIDIMessages", "MIDIServices", "MIDIUMPCI", "MIDIUMPEndpoint", "MIDIUMPEndpointManager", "MIDIUMPFunctionBlock"] }
 
-# Release codegen plus the symbols a sampling profiler needs to attribute them.
-#
-# `samply record` on a plain `--release` binary reports raw addresses: the
-# default release profile carries no debuginfo, so the call tree is unreadable
-# exactly where it matters. Inheriting release keeps the optimization decisions
-# identical to what ships, so a profile taken here describes shipping code —
-# profiling a debug build would mostly measure code that never runs in anger.
-#
-# `debug = "line-tables-only"` is enough for stack attribution and costs far
-# less build time and disk than full DWARF.
-#
-# Belongs in the root manifest: Cargo ignores `[profile]` in non-root manifests
-# (with a warning that is easy to miss under `| tail`).
-#
+# Release codegen with line tables, for a sampling profiler:
 #   cargo build -p tutti-nodes --profile profiling --bench engine_render
 #   samply record target/profiling/deps/engine_render-<hash> --bench
 [profile.profiling]
@@ -207,11 +109,8 @@ inherits = "release"
 debug = "line-tables-only"
 strip = "none"
 
-# CI builds its tests with `CARGO_PROFILE_DEV_OPT_LEVEL=1` (the suite is CPU bound).
-# This crate's `aeffect_params` compares function addresses across crates, which
-# only holds when nothing is optimized (inlining and folding give the same
-# function two addresses), so it stays at 0.
+# `aeffect_params` compares function addresses across crates, which holds only
+# when nothing is optimized, so this crate stays at opt-level 0.
 [profile.dev.package.tutti-vst2-author]
 opt-level = 0
 
-# NOTE: no `[patch.crates-io]` here: no member depends on a git repository.

@@ -1,14 +1,4 @@
-//! Planning tests. Mutation record (each planted, seen to fail the named test,
-//! restored):
-//! - `dep` without the `done` check: `a_dependency_asked_for_twice_runs_once`;
-//! - `plugin-probe` dep removed from `test`: `test_builds_the_plugins_then_runs_nextest`;
-//! - `bench-save` passing `--baseline`: `bench_save_and_cmp_name_the_baseline`;
-//! - the loom flag dropped from `check-loom`: `loom_recipes_carry_their_environment`;
-//! - the stub moved back to `/tmp`: `check_windows_stubs_under_the_target_dir`;
-//! - the `-E` filter dropped from `test`: `test_builds_the_plugins_then_runs_nextest`;
-//! - `deny` without its probe: `deny_probes_cargo_deny_first`.
-//! - `loom`'s filter matching a name as a prefix (`--test {a}` alone):
-//!   `loom_runs_only_the_models_it_is_named`.
+//! Planning tests.
 
 use super::*;
 

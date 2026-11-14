@@ -1,4 +1,3 @@
-2 Cargo.toml
 1 crates/tutti-au-host/tests/render/au_process_no_alloc.rs
 1 crates/tutti-clap-ffi/src/events.rs
 1 crates/tutti-clap-host/src/events.rs
@@ -263,8 +262,6 @@
 1 crates/tutti-vst2-host/src/host.rs
 1 crates/tutti-vst2-host/src/loaded.rs
 1 crates/tutti-vst2-host/src/parameters.rs
-6 .github/workflows/ci.yml
-1 rust-toolchain.toml
 1 testing/tutti-fixtures/src/range_contract.rs
 2 testing/tutti-plugin-contract/src/cases.rs
 1 testing/tutti-plugin-contract/src/format.rs
@@ -272,13 +269,11 @@
 1 testing/tutti-plugin-contract/tests/probe.rs
 2 testing/tutti-plugin-contract/tests/server.rs
 2 testing/tutti-shared-plugin/src/core.rs
-7 xtask/src/gates/canonical_paths.rs
 3 xtask/src/gates/comments.rs
 2 xtask/src/gates/doc_refs.rs
 1 xtask/src/gates/hosting.rs
 2 xtask/src/gates/layout.rs
 1 xtask/src/gates/prose.rs
-7 xtask/src/gates/range_types.rs
+1 xtask/src/gates/range_types.rs
 1 xtask/src/gates.rs
 1 xtask/src/gates/session.rs
-1 xtask/src/gates/submodule_pins.rs

@@ -23,12 +23,16 @@ use tutti_types::{ChannelTopology, Fold, FoldError, Speaker};
 
 /// Why a node has no pass: what it would need to declare to be bypassed or
 /// mixed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum PassError {
     /// The main input and output differ in width and one of them names no
     /// placement, so which input reaches which output is a guess. Declare the buses
     /// ([`Shape::buses`]).
+    #[error(
+        "{inputs} channels in and {outputs} out name no placement, so the dry \
+                 path would be a guess: declare the node's buses"
+    )]
     Unplaced {
         /// The main input's width.
         inputs: usize,
@@ -36,23 +40,9 @@ pub enum PassError {
         outputs: usize,
     },
     /// The main buses name their channels and do not fold into each other.
+    #[error("the main buses do not fold: {0}")]
     Fold(FoldError),
 }
-
-impl std::fmt::Display for PassError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unplaced { inputs, outputs } => write!(
-                f,
-                "{inputs} channels in and {outputs} out name no placement, so the dry \
-                 path would be a guess: declare the node's buses"
-            ),
-            Self::Fold(e) => write!(f, "the main buses do not fold: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for PassError {}
 
 use crate::node::Shape;
 

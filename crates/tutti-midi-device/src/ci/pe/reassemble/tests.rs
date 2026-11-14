@@ -10,10 +10,6 @@ use crate::ci::pe::{PeRequest, ResourceName, split_message};
 const KIND: PeMessageKind = PeMessageKind::SET_INQUIRY;
 const SECOND: Duration = Duration::from_secs(1);
 
-fn peer(n: u32) -> Muid {
-    Muid::new(n).unwrap()
-}
-
 fn id(n: u8) -> PeRequestId {
     PeRequestId::of(n)
 }
@@ -64,7 +60,7 @@ fn push(
     c: PeChunk,
     now: Instant,
 ) -> Result<PeStep, PeRefused> {
-    r.push(peer(1), kind, c, PeFlowControl::Off, now)
+    r.push(Muid::of(1), kind, c, PeFlowControl::Off, now)
 }
 
 fn complete(step: Result<PeStep, PeRefused>) -> PeReceived {
@@ -100,7 +96,10 @@ fn the_chunks_of_a_message_reassemble_in_order() {
             let got = complete(step);
             assert_eq!(got.header, request());
             assert_eq!(got.body, data);
-            assert_eq!((got.peer, got.kind, got.request_id), (peer(1), KIND, id(3)));
+            assert_eq!(
+                (got.peer, got.kind, got.request_id),
+                (Muid::of(1), KIND, id(3))
+            );
         } else {
             assert_eq!(pending(step), None);
         }
@@ -235,7 +234,7 @@ fn a_repeat_of_the_last_chunk_is_taken_once() {
 fn a_repeated_chunk_is_acknowledged_again_under_flow_control() {
     let now = Instant::now();
     let mut r = reassembler();
-    let on = |r: &mut PeReassembler, c| r.push(peer(1), KIND, c, PeFlowControl::On, now);
+    let on = |r: &mut PeReassembler, c| r.push(Muid::of(1), KIND, c, PeFlowControl::On, now);
     pending(on(&mut r, chunk(1, 3, 1, b"ab")));
     let again = pending(on(&mut r, chunk(1, 3, 1, b"ab")));
     assert_eq!(
@@ -282,7 +281,8 @@ fn an_id_is_free_again_when_its_message_is_complete() {
 fn an_id_is_unique_to_a_peer_and_a_direction() {
     let now = Instant::now();
     let mut r = reassembler();
-    let on = |r: &mut PeReassembler, p, kind, c| r.push(peer(p), kind, c, PeFlowControl::Off, now);
+    let on =
+        |r: &mut PeReassembler, p, kind, c| r.push(Muid::of(p), kind, c, PeFlowControl::Off, now);
     pending(on(&mut r, 1, KIND, chunk(1, 2, 1, b"aa")));
     pending(on(&mut r, 2, KIND, chunk(1, 2, 1, b"bb")));
     pending(on(
@@ -358,7 +358,7 @@ fn a_message_times_out_after_three_seconds_from_its_last_chunk() {
     assert_eq!(
         r.expire(deadline),
         vec![PeExpired {
-            peer: peer(1),
+            peer: Muid::of(1),
             kind: KIND,
             send: PeSignal::TimedOut { request_id: id(1) },
         }]
@@ -399,13 +399,13 @@ fn a_timeout_wait_extends_the_deadline_by_the_wait() {
     let t0 = Instant::now();
     let mut r = reassembler();
     pending(push(&mut r, KIND, chunk(1, 3, 1, b"ab"), t0));
-    assert!(r.extend(peer(1), KIND, id(1), TimeoutWait::of(0x3C)));
+    assert!(r.extend(Muid::of(1), KIND, id(1), TimeoutWait::of(0x3C)));
     assert!(
         r.expire(t0 + 9 * SECOND - Duration::from_nanos(1))
             .is_empty()
     );
     assert_eq!(r.expire(t0 + 9 * SECOND).len(), 1);
-    assert!(!r.extend(peer(1), KIND, id(1), TimeoutWait::of(1)));
+    assert!(!r.extend(Muid::of(1), KIND, id(1), TimeoutWait::of(1)));
 }
 
 // M2-103 §12.1: a Terminate NAK concludes the transaction at once.
@@ -414,8 +414,8 @@ fn a_terminate_drops_the_message() {
     let now = Instant::now();
     let mut r = reassembler();
     pending(push(&mut r, KIND, chunk(1, 3, 1, b"ab"), now));
-    assert!(r.terminate(peer(1), KIND, id(1)));
-    assert!(!r.terminate(peer(1), KIND, id(1)));
+    assert!(r.terminate(Muid::of(1), KIND, id(1)));
+    assert!(!r.terminate(Muid::of(1), KIND, id(1)));
     assert_eq!(r.buffered(), PeBuffered::default());
 }
 
@@ -563,7 +563,7 @@ fn flow_control_acknowledges_every_chunk_of_a_get_reply() {
     let reply = PeHeader::Reply(crate::PeReply::new(crate::PeStatus::Ok))
         .encode(MaxSysexSize::of(512))
         .unwrap();
-    let on = |r: &mut PeReassembler, c| r.push(peer(1), kind, c, PeFlowControl::On, now);
+    let on = |r: &mut PeReassembler, c| r.push(Muid::of(1), kind, c, PeFlowControl::On, now);
     assert_eq!(
         pending(on(&mut r, with_header(reply.clone(), 2, 1, b"ab"))),
         next(1)
@@ -596,11 +596,11 @@ fn no_flow_control_means_no_acknowledgement() {
 fn a_resend_request_names_the_last_good_chunk() {
     let now = Instant::now();
     let mut r = reassembler();
-    assert_eq!(r.resend_request(peer(1), KIND, id(1)), None);
+    assert_eq!(r.resend_request(Muid::of(1), KIND, id(1)), None);
     pending(push(&mut r, KIND, chunk(1, 4, 1, b"ab"), now));
     pending(push(&mut r, KIND, chunk(1, 4, 2, b"cd"), now));
     assert_eq!(
-        r.resend_request(peer(1), KIND, id(1)),
+        r.resend_request(Muid::of(1), KIND, id(1)),
         Some(PeSignal::Resend {
             request_id: id(1),
             last_good: Some(ChunkNo::of(2))

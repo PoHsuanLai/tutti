@@ -14,6 +14,7 @@ mod conformance;
 mod decode_boundary;
 mod doc_features;
 mod doc_refs;
+mod errors;
 mod ffi;
 mod guards;
 mod hosting;
@@ -21,6 +22,7 @@ mod layout;
 mod lex;
 mod lints;
 mod midi_spec;
+mod platform_seam;
 mod pointers;
 mod prose;
 mod range_types;
@@ -97,6 +99,8 @@ pub(crate) enum Gate {
     Layout,
     /// `unsafe` lives only in the crates that hold it.
     Ffi,
+    /// Every error type derives `thiserror::Error`.
+    Errors,
     /// Every host callback runs under the panic guard.
     Guards,
     /// Every hosting impl is listed in the plugin contract.
@@ -111,6 +115,8 @@ pub(crate) enum Gate {
     DocRefs,
     /// Prose outside `docs/` points at no `file.rs:N`; under `docs/` the line exists.
     Pointers,
+    /// A platform cfg stands only on a `mod` declaration.
+    PlatformSeam,
     /// The spec inventories are well formed, tags name rows, CLAP matches `clap-sys`.
     Conformance,
 }
@@ -124,6 +130,7 @@ impl Gate {
             Gate::SubmodulePins => "gate check-submodule-pins".to_owned(),
             Gate::Layout => "gate check-layout".to_owned(),
             Gate::Ffi => "gate check-ffi".to_owned(),
+            Gate::Errors => "gate check-errors".to_owned(),
             Gate::Guards => "gate check-guards".to_owned(),
             Gate::Hosting => "gate check-hosting".to_owned(),
             Gate::Session => "gate check-session".to_owned(),
@@ -131,6 +138,7 @@ impl Gate {
             Gate::ValueTraits => "gate check-value-traits".to_owned(),
             Gate::DocRefs => "gate check-doc-refs".to_owned(),
             Gate::Pointers => "gate check-pointers".to_owned(),
+            Gate::PlatformSeam => "gate check-platform-seam".to_owned(),
             Gate::Conformance => "gate check-conformance".to_owned(),
         }
     }
@@ -147,6 +155,7 @@ impl Gate {
             }
             Gate::Layout => layout::check(&tree, &RealCargo(root.to_path_buf())),
             Gate::Ffi => ffi::check(&tree),
+            Gate::Errors => errors::check(&tree, errors::ALLOW),
             Gate::Guards => guards::check(&tree, guards::MIN_SEEN),
             Gate::Hosting => hosting::check(&tree),
             Gate::Session => session::check(&tree, &RealCargo(root.to_path_buf())),
@@ -156,6 +165,7 @@ impl Gate {
             }
             Gate::DocRefs => doc_refs::check(&tree),
             Gate::Pointers => pointers::check(&tree),
+            Gate::PlatformSeam => platform_seam::check(&tree, platform_seam::ALLOW),
             Gate::Conformance => {
                 let sys = clap_sys_tree(&tree);
                 let require =

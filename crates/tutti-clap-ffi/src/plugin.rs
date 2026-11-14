@@ -90,6 +90,9 @@ use clap_sys::ext::surround::{CLAP_EXT_SURROUND, CLAP_EXT_SURROUND_COMPAT, clap_
 use clap_sys::ext::tail::{CLAP_EXT_TAIL, clap_plugin_tail};
 use clap_sys::ext::thread_pool::{CLAP_EXT_THREAD_POOL, clap_plugin_thread_pool};
 use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_plugin_timer_support};
+use clap_sys::ext::track_info::{
+    CLAP_EXT_TRACK_INFO, CLAP_EXT_TRACK_INFO_COMPAT, clap_plugin_track_info,
+};
 use clap_sys::ext::voice_info::{CLAP_EXT_VOICE_INFO, clap_plugin_voice_info};
 use clap_sys::plugin::clap_plugin;
 
@@ -145,6 +148,7 @@ extensions! {
     ambisonic: clap_plugin_ambisonic = [CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT];
     surround: clap_plugin_surround = [CLAP_EXT_SURROUND, CLAP_EXT_SURROUND_COMPAT];
     params: clap_plugin_params = [CLAP_EXT_PARAMS];
+    track_info: clap_plugin_track_info = [CLAP_EXT_TRACK_INFO, CLAP_EXT_TRACK_INFO_COMPAT];
     param_indication: clap_plugin_param_indication = [CLAP_EXT_PARAM_INDICATION, CLAP_EXT_PARAM_INDICATION_COMPAT];
     state: clap_plugin_state = [CLAP_EXT_STATE];
     state_context: clap_plugin_state_context = [CLAP_EXT_STATE_CONTEXT];
@@ -630,6 +634,12 @@ impl Plugin {
     ) {
         let color_ptr = color.as_ref().map_or(ptr::null(), ptr::from_ref);
         call!(self.param_indication.set_automation(param_id, state.raw(), color_ptr) else ());
+    }
+
+    /// `track-info.changed`: the host's answer to `get` is different now. A
+    /// plugin without the extension is not told.
+    pub fn track_info_changed(&self, _main: &MainThread) {
+        call!(self.track_info.changed() else ());
     }
 
     // ---- state -----------------------------------------------------------

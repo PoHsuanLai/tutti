@@ -25,6 +25,7 @@ use arrayvec::ArrayVec;
 
 use crate::{
     Layout, MaxBlock, PluginError, PluginTail, RenderMode, SampleFormat, SampleRate, Samples,
+    TransportRequest,
 };
 
 /// How many effects one [`step`] can emit.
@@ -232,7 +233,7 @@ pub enum HostOp {
 /// What the plugin called on the host.
 ///
 /// Exhaustive: [`step`] and every shell match every variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Request {
     /// The plugin asked to be restarted.
     Restart,
@@ -259,6 +260,10 @@ pub enum Request {
     Timer(TimerId),
     /// A registered file descriptor is ready.
     Fd(FdId),
+    /// The plugin asked the transport to do something (CLAP
+    /// `transport-control`). Not the plugin's own affair: the lifecycle passes
+    /// it on as a [`Notice::Transport`] for the application to answer.
+    Transport(TransportRequest),
 }
 
 /// How much of the parameter set a rescan touches.
@@ -366,6 +371,8 @@ pub enum Notice {
     ParamTitlesChanged,
     /// The instance was rebuilt.
     Reloaded,
+    /// The plugin asked the host's transport to do something.
+    Transport(TransportRequest),
     /// The plugin refused to run at `rate`; it renders nothing until an
     /// activation succeeds.
     Refused {
@@ -661,6 +668,11 @@ impl State {
         match event {
             Event::Died => self.poison(),
             Event::Op(op) => self.on_op(op, out),
+            // Not the plugin's own affair: nothing is pending, the one event
+            // is the one notice.
+            Event::Request(Request::Transport(asked)) => {
+                emit(out, Effect::Notify(Notice::Transport(asked)));
+            }
             Event::Request(request) => self.on_request(request),
             Event::Tick => self.tick(out, true),
             Event::Replied(reply) => self.on_reply(reply, out),
@@ -834,6 +846,8 @@ impl State {
                     p.fds.push(id);
                 }
             }
+            // Passed on by `on_event`, before this runs.
+            Request::Transport(_) => {}
         }
     }
 }

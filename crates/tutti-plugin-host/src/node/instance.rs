@@ -36,6 +36,8 @@ pub(super) struct Changes {
     /// The plugin raised [`Request::IoChanged`](tutti_plugin_types::Request::IoChanged): its pin counts or latency
     /// may differ.
     pub(super) io: bool,
+    /// What the plugin asked the transport to do, in the order it asked.
+    pub(super) transport: Vec<tutti_plugin_types::TransportRequest>,
 }
 
 /// A plugin of hosting `F` and where it is in its life.
@@ -176,6 +178,7 @@ impl<F: Loaded> Instance<F> {
                     Notice::LatencyChanged(latency) => changes.latency = Some(latency),
                     Notice::TailChanged(tail) => changes.tail = Some(tail),
                     Notice::IoChanged => changes.io = true,
+                    Notice::Transport(request) => changes.transport.push(request),
                     Notice::Refused { reason, .. }
                     | Notice::Stuck { reason }
                     | Notice::Lost { reason } => refused = Some(reason.to_string()),

@@ -14,9 +14,9 @@
 //!
 //! CI runs it as a test (`test = true`).
 //!
-//! **Not built yet, so not here:** MIDI Time Code out, MIDI-CI (discovery,
-//! profiles, property exchange are only a codec: `tutti-midi-device`'s
-//! `CiMessage`).
+//! **Not covered here:** MIDI Time Code out, and the MIDI-CI session
+//! ([`Midi::enable_ci`](tutti::Midi::enable_ci) and
+//! [`Midi::ci_peers`](tutti::Midi::ci_peers)), which needs a peer device.
 
 use tutti::midi::{self, MidiRouteRule, TakePlacement};
 use tutti::midi_file::{FileEvent, SmfFormat};

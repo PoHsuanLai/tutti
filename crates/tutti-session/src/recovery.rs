@@ -161,44 +161,17 @@ impl std::fmt::Display for GiveUp {
 }
 
 /// Why a plugin needs a replacement: what a reload follows.
-#[derive(Debug, Clone)]
+///
+/// The failure behind is its [`source`](std::error::Error::source).
+#[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum ReloadCause {
     /// The plugin died or was ended: the cause the engine latched.
-    Died(PluginFailure),
+    #[error("{0}")]
+    Died(#[from] PluginFailure),
     /// The attempt to replace it failed, and another follows.
-    Attempt(RecoveryFailure),
-}
-
-impl std::fmt::Display for ReloadCause {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Died(cause) => cause.fmt(f),
-            Self::Attempt(failure) => failure.fmt(f),
-        }
-    }
-}
-
-/// The failure behind is its [`source`](std::error::Error::source).
-impl std::error::Error for ReloadCause {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Died(cause) => Some(cause),
-            Self::Attempt(failure) => Some(failure),
-        }
-    }
-}
-
-impl From<PluginFailure> for ReloadCause {
-    fn from(cause: PluginFailure) -> Self {
-        Self::Died(cause)
-    }
-}
-
-impl From<RecoveryFailure> for ReloadCause {
-    fn from(failure: RecoveryFailure) -> Self {
-        Self::Attempt(failure)
-    }
+    #[error("{0}")]
+    Attempt(#[from] RecoveryFailure),
 }
 
 /// How many ports a node has, for a [`RecoveryFailure::ReplacementPorts`].

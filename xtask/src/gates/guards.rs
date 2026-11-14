@@ -64,6 +64,18 @@ const MAIN_THREAD: &[&str] = &[
     "host_surround_changed",
     "host_timer_register",
     "host_timer_unregister",
+    "host_track_info_get",
+    "host_transport_continue",
+    "host_transport_enable_loop",
+    "host_transport_jump",
+    "host_transport_loop_region",
+    "host_transport_pause",
+    "host_transport_record",
+    "host_transport_start",
+    "host_transport_stop",
+    "host_transport_toggle_loop",
+    "host_transport_toggle_play",
+    "host_transport_toggle_record",
     "host_voice_info_changed",
 ];
 

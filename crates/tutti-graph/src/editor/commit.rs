@@ -3,13 +3,11 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::NodeKey;
-
 use super::{BusLanes, CommitError, Editor, starting};
+use crate::NodeKey;
 use crate::compile::compile;
 use crate::exec::Commit;
 use crate::exec::Opened;
-
 use crate::node::Node;
 use crate::plan::{Delta, Placement, Plan};
 

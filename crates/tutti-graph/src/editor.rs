@@ -53,11 +53,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::EdgeId;
-use crate::{EventTapId, MeterId, NodeKey, TapId};
-
 use tutti_types::At;
 
+use crate::EdgeId;
 use crate::bus_edge::{BusError, BusFold, BusRef, BusSource, Lowering};
 use crate::command::{CommandId, ScheduleError, command_channel};
 use crate::compile::{CompileError, Shapes};
@@ -73,6 +71,7 @@ use crate::param::{ParamIn, ParamRange};
 use crate::plan::{Delta, Plan};
 use crate::spec::{EventIn, GraphSpec, ValidGraph};
 use crate::tap::TapWriter;
+use crate::{EventTapId, MeterId, NodeKey, TapId};
 
 mod cells;
 mod commit;

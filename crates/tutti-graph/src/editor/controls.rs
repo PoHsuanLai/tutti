@@ -1,19 +1,17 @@
 //! The controls a running graph takes without a commit: param ranges, edge
 //! gains and fades, pass states, modes and mixes.
 
-use crate::NodeKey;
-use crate::{Edge, EdgeId, Sink};
+use tutti_types::{Amplitude, Mix, ParamCell};
 
 use super::{CommitError, Editor};
+use crate::NodeKey;
 use crate::bus_edge::{BusRef, BusSource};
-
 use crate::gain::{EdgeFade, EdgeGain, GainCell};
 use crate::mode::{MixError, ModeCell, ModeError, NodeMix, NodeMode};
-
 use crate::param::{ParamIn, ParamRange, ParamRangeReader};
 use crate::pass::Pass;
 use crate::spec::GraphInvalid;
-use tutti_types::{Amplitude, Mix, ParamCell};
+use crate::{Edge, EdgeId, Sink};
 
 impl Editor {
     /// Sets param port `at`'s range — what its driven value is clamped

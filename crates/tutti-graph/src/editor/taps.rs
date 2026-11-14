@@ -1,20 +1,18 @@
 //! Taps, event taps and meters: opening, closing and reaping the copies
 //! out of the graph.
 
+use tutti_types::Samples;
+
+use super::{CloseError, CommitError, Editor, MAX_ROOT_CHANNELS, MissingSource, TapOpened};
 use crate::Source;
+use crate::event_tap::EventTapReader;
+use crate::meter::MeterReader;
+use crate::spec::{EventIn, EventOut};
+use crate::tap::TapReader;
 use crate::{
     EventCapacity, EventTapId, EventTapSource, EventTapSpec, MeterId, MeterSpec, TapAlign, TapId,
     TapSpec,
 };
-use tutti_types::Samples;
-
-use super::{CloseError, CommitError, Editor, MAX_ROOT_CHANNELS, MissingSource, TapOpened};
-use crate::event_tap::EventTapReader;
-
-use crate::meter::MeterReader;
-
-use crate::spec::{EventIn, EventOut};
-use crate::tap::TapReader;
 
 impl Editor {
     /// Declares a tap on `sources` (one lane each, any ports) and returns its

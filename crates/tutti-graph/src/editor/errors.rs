@@ -1,12 +1,11 @@
 //! Why an editor call was refused.
 
-use crate::{EventTapId, MeterId, NodeKey, TapId};
 use tutti_types::{Latency, Samples};
 
 use crate::compile::{CompileError, VerifyError};
 use crate::exec::QUEUE_CAPACITY;
-
 use crate::spec::GraphInvalid;
+use crate::{EventTapId, MeterId, NodeKey, TapId};
 
 /// Why [`Editor::commit`](crate::Editor::commit) failed.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]

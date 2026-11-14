@@ -3,12 +3,10 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::NodeKey;
-
 use super::{BusLanes, CommitError, Editor, panic_text};
+use crate::NodeKey;
 use crate::compile::{CompileError, Shapes, compile};
 use crate::exec::Commit;
-
 use crate::node::{Node, Prepare, Shape};
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::GraphSpec;

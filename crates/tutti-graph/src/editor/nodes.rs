@@ -3,9 +3,6 @@
 
 use std::collections::BTreeSet;
 
-use crate::{Edge, EdgeId, FeedbackFrom, NodeSpec, Sink, Source};
-use crate::{MAX_NODE_LATENCY, MAX_NODE_TAIL};
-use crate::{MeterSpec, NodeKey, TapSpec};
 use tutti_types::{Latency, Tail};
 
 use super::outlets::Closed;
@@ -17,6 +14,9 @@ use crate::gain::{EdgeFade, EdgeGain};
 use crate::node::{IntoNode, Node, NodeParts, Shape};
 use crate::spec::EventEdge;
 use crate::wake::Wake;
+use crate::{Edge, EdgeId, FeedbackFrom, NodeSpec, Sink, Source};
+use crate::{MAX_NODE_LATENCY, MAX_NODE_TAIL};
+use crate::{MeterSpec, NodeKey, TapSpec};
 
 impl Editor {
     /// Adds `node` at `key`, or replaces the unit there (a new generation).

@@ -74,17 +74,19 @@ use crate::fade::Fade;
 use crate::fork::{ForkHealth, ForkSource};
 use crate::gain::{EdgeFade, EdgeGain, GainCell};
 use crate::meter::{MeterReader, MeterWriter};
-use crate::mode::{MixError, ModeCell, ModeError, ModeState, NodeMix, NodeMode};
+use crate::mode::{MixError, ModeCell, ModeError, NodeMix, NodeMode};
 use crate::node::{IntoNode, Node, NodeParts, Prepare, Resolution, Shape};
-use crate::param::{ParamIn, ParamRange, ParamRangeReader, ParamRanges, ParamState};
+use crate::param::{ParamIn, ParamRange, ParamRangeReader};
 use crate::pass::Pass;
 use crate::plan::{Delta, Placement, Plan};
 use crate::spec::{EventEdge, EventIn, EventOut, GraphInvalid, GraphSpec, ValidGraph};
 use crate::tap::{TapReader, TapWriter};
 use crate::wake::Wake;
 
+mod cells;
 mod link;
 mod outlets;
+use cells::LiveCells;
 use link::Link;
 use outlets::{Closed, Outlets};
 use tutti_types::{Amplitude, Mix, ParamCell};
@@ -487,20 +489,12 @@ pub struct Editor {
     /// On a **fork** only: the health probe each forked unit's source handed
     /// over, by key (see `src/fork.rs`, "When a forked unit fails").
     fork_health: Vec<(NodeKey, Arc<dyn ForkHealth>)>,
-    /// Per key with declared params: its ports' live ranges
-    /// (`src/param.rs`, `ParamRanges`), shared with the running unit's
-    /// state. Written from the spec by every commit, and by
-    /// [`set_param_range`](Self::set_param_range) at once.
-    param_ranges: BTreeMap<NodeKey, Arc<ParamRanges>>,
-    /// The live base of each weighted lane of the plan sent last
-    /// (`src/gain.rs`), shared with the running executor's lane state.
-    /// Written from the spec by every commit, and by
-    /// [`set_edge_gain`](Self::set_edge_gain) at once.
-    edge_gains: BTreeMap<EdgeId, GainCell>,
-    /// The live mode of each key the plan sent last places
-    /// (`src/mode.rs`), shared with the running unit. Written from the spec
-    /// by every commit, and by [`set_mode`](Self::set_mode) at once.
-    mode_cells: BTreeMap<NodeKey, ModeCell>,
+    /// The cells shared with running units: param ranges, lane gains,
+    /// modes. Written from the spec by every commit, and by the controls
+    /// ([`set_param_range`](Self::set_param_range),
+    /// [`set_edge_gain`](Self::set_edge_gain), [`set_mode`](Self::set_mode)
+    /// ...) at once.
+    cells: LiveCells,
     /// Nodes [`remove_declicked`](Self::remove_declicked) is keeping until
     /// the edges they feed have faded out.
     leaving: BTreeSet<NodeKey>,
@@ -522,7 +516,7 @@ impl std::fmt::Debug for Editor {
             .field("poisoned", &self.poison_cause())
             .field("limits", &self.limits)
             .field("event_capacity", &self.event_capacity)
-            .field("param_ranges", &self.param_ranges.len())
+            .field("param_ranges", &self.cells.ranges.len())
             .field("revision", &self.revision)
             .finish_non_exhaustive()
     }
@@ -1036,9 +1030,7 @@ impl Editor {
             forks: BTreeMap::new(),
             event_capacity: cap,
             fork_health: Vec::new(),
-            param_ranges: BTreeMap::new(),
-            edge_gains: BTreeMap::new(),
-            mode_cells: BTreeMap::new(),
+            cells: LiveCells::new(),
             leaving: BTreeSet::new(),
             revision: 0,
         };
@@ -1728,11 +1720,11 @@ impl Editor {
         self.spec.set_param_range(at, range);
         if at.param == NodeMix::ADDR {
             // The node's mix: its range is the mode cell's.
-            if let Some(cell) = self.mode_cells.get(&at.node) {
+            if let Some(cell) = self.cells.modes.get(at.node) {
                 cell.store_range(range);
             }
-        } else if let Some(cells) = self.param_ranges.get(&at.node) {
-            cells.store(at.param, range);
+        } else {
+            self.cells.ranges.store(at, range);
         }
         // The cells hold it now, so the spec last committed holds it too: a
         // later commit with nothing else to send is the plain comparison,
@@ -1760,11 +1752,9 @@ impl Editor {
     /// nothing writes. Ask again after such a commit (a rebind).
     pub fn param_range_cell(&self, at: ParamIn) -> Option<ParamRangeReader> {
         if at.param == NodeMix::ADDR {
-            return self.mode_cells.get(&at.node).map(ModeCell::range_reader);
+            return self.cells.modes.get(at.node).map(ModeCell::range_reader);
         }
-        self.param_ranges
-            .get(&at.node)
-            .and_then(|cells| cells.reader(at.param))
+        self.cells.ranges.reader(at)
     }
 
     /// Moves edge `id`'s weight to `base` from the next block on, without a
@@ -1797,7 +1787,7 @@ impl Editor {
         self.check_gain_edge(id)?;
         self.touch();
         self.spec.set_edge_gain(id, gain);
-        if let Some(cell) = self.edge_gains.get(&id) {
+        if let Some(cell) = self.cells.gains.get(id) {
             cell.store(base);
         }
         // As for a range: the cell holds it, so the spec last committed
@@ -1836,7 +1826,7 @@ impl Editor {
             ..self.spec.gains.get(&id).copied().unwrap_or_default()
         };
         self.spec.set_edge_gain(id, gain);
-        if let Some(cell) = self.edge_gains.get(&id) {
+        if let Some(cell) = self.cells.gains.get(id) {
             cell.store_fade(fade);
         }
         if let Some((committed, _)) = &mut self.committed
@@ -2105,7 +2095,7 @@ impl Editor {
         self.check_gain_edge(id)?;
         self.touch();
         self.spec.set_edge_gain(id, gain);
-        if let Some(cell) = self.edge_gains.get(&id) {
+        if let Some(cell) = self.cells.gains.get(id) {
             cell.store_range(range);
         }
         if let Some((committed, _)) = &mut self.committed
@@ -2124,7 +2114,7 @@ impl Editor {
     /// entry (and again once a commit drops the entry: the view then reads a
     /// range nothing writes).
     pub fn edge_gain_range_cell(&self, id: EdgeId) -> Option<ParamRangeReader> {
-        self.edge_gains.get(&id).map(GainCell::range_reader)
+        self.cells.gains.get(id).map(GainCell::range_reader)
     }
 
     /// Edge `id`'s live base: the very cell [`set_edge_gain`](Self::set_edge_gain)
@@ -2134,7 +2124,7 @@ impl Editor {
     /// base without touching the spec: [`edge_gain`](Self::edge_gain) reads
     /// the cell, never the spec's copy, once there is one.
     pub fn edge_gain_cell(&self, id: EdgeId) -> Option<ParamCell> {
-        self.edge_gains.get(&id).map(GainCell::knob)
+        self.cells.gains.get(id).map(GainCell::knob)
     }
 
     /// Whether `key` has a pass: where its input goes when it does not run (a
@@ -2212,7 +2202,7 @@ impl Editor {
         }
         self.touch();
         self.spec.set_mode(key, mode);
-        if let Some(cell) = self.mode_cells.get(&key) {
+        if let Some(cell) = self.cells.modes.get(key) {
             cell.store(mode);
         }
         // As for a range: the cell holds it, so the spec last committed holds
@@ -2265,7 +2255,7 @@ impl Editor {
         }
         self.touch();
         self.spec.set_mix(key, mix);
-        if let Some(cell) = self.mode_cells.get(&key) {
+        if let Some(cell) = self.cells.modes.get(key) {
             cell.store_mix(mix);
         }
         if let Some((committed, _)) = &mut self.committed {
@@ -2280,8 +2270,9 @@ impl Editor {
     /// knob), the spec's before; it is the base a driving lane modulates
     /// around, not the lane's value.
     pub fn mix(&self, key: NodeKey) -> Mix {
-        self.mode_cells
-            .get(&key)
+        self.cells
+            .modes
+            .get(key)
             .filter(|_| self.spec.topology.nodes.contains_key(&key))
             .map_or_else(|| self.spec.mix(key), ModeCell::load_mix)
     }
@@ -2292,7 +2283,7 @@ impl Editor {
     /// one writer. `None` until a commit has placed the unit. Writing it moves
     /// the mix without touching the spec: [`mix`](Self::mix) reads the cell.
     pub fn mix_cell(&self, key: NodeKey) -> Option<ParamCell> {
-        self.mode_cells.get(&key).map(ModeCell::knob)
+        self.cells.modes.get(key).map(ModeCell::knob)
     }
 
     /// Edge `id`'s base, if the edge has an entry: the live cell's once a
@@ -2301,65 +2292,14 @@ impl Editor {
     /// before.
     pub fn edge_gain(&self, id: EdgeId) -> Option<Amplitude> {
         let gain = self.spec.gains.get(&id)?;
-        Some(self.edge_gains.get(&id).map_or(gain.base, GainCell::load))
+        Some(self.cells.gains.get(id).map_or(gain.base, GainCell::load))
     }
 
-    /// Writes `base`, the spec's, into `cell` when the spec's base moved
-    /// since the last commit (a spec edit that bypassed
-    /// [`set_edge_gain`](Self::set_edge_gain)). Otherwise the cell is left as
-    /// it is: it is the lane's knob and its one writer's, and the spec's copy
-    /// may be behind it.
-    fn carry_base(
-        committed: &Option<(GraphSpec, Shapes)>,
-        id: EdgeId,
-        cell: &GainCell,
-        base: Amplitude,
-    ) {
-        let seen = committed
-            .as_ref()
-            .and_then(|(spec, _)| spec.gains.get(&id))
-            .map(|g| g.base);
-        if seen.is_none_or(|s| s.get().to_bits() != base.get().to_bits()) {
-            cell.store(base);
-        }
-    }
-
-    /// Writes `mix`, the spec's, into `cell` when the spec's mix moved since
-    /// the last commit (a spec edit that bypassed [`set_mix`](Self::set_mix)).
-    /// Otherwise the cell is left as it is: it is a driving lane's knob and
-    /// its one writer's, and the spec's copy may be behind it.
-    fn carry_mix(
-        committed: &Option<(GraphSpec, Shapes)>,
-        node: NodeKey,
-        cell: &ModeCell,
-        mix: Mix,
-    ) {
-        let seen = committed.as_ref().map(|(spec, _)| spec.mix(node));
-        if seen.is_none_or(|s| s.get().to_bits() != mix.get().to_bits()) {
-            cell.store_mix(mix);
-        }
-    }
-
-    /// Write every live range cell, and every edge gain's range, from the spec,
-    /// and a base the spec moved; and every live mode.
+    /// Write every live cell from the spec: every range and mode, and a base
+    /// or mix the spec moved since the last commit.
     fn sync_ranges(&self) {
-        for (&node, cell) in &self.mode_cells {
-            cell.store(self.spec.mode(node));
-            Self::carry_mix(&self.committed, node, cell, self.spec.mix(node));
-            cell.store_range(mix_range_of(&self.spec, node));
-        }
-        for (id, cell) in &self.edge_gains {
-            if let Some(g) = self.spec.gains.get(id) {
-                Self::carry_base(&self.committed, *id, cell, g.base);
-                cell.store_range(g.range);
-                cell.store_fade(g.fade);
-            }
-        }
-        for (&node, cells) in &self.param_ranges {
-            for &param in cells.declared().as_slice() {
-                cells.store(param, range_of(&self.spec, ParamIn { node, param }));
-            }
-        }
+        let committed = self.committed.as_ref().map(|(spec, _)| spec);
+        self.cells.sync(&self.spec, committed);
     }
 
     /// Removes `key` and every edge that touches it. Output channels it fed
@@ -3148,73 +3088,18 @@ impl Editor {
         self.touch();
         let fades = starting(&delta);
         let plan = Arc::new(plan);
-        let (ranges, spec) = (&mut self.param_ranges, &self.spec);
+        let committed = self.committed.as_ref().map(|(spec, _)| spec);
+        let spec = &self.spec;
+        let (ranges, modes_cells) = (&mut self.cells.ranges, &mut self.cells.modes);
         let params = |key: NodeKey, ports: usize, max: usize| {
-            if ports == 0 {
-                ranges.remove(&key);
-                return ParamState::default();
-            }
             let declared = plan.unit(key).map(|u| u.shape.params);
-            // The key's range cells, kept for a unit declaring the same
-            // params (a crossfade keeps the running state, which reads
-            // them); fresh ones, from the spec, for another list.
-            let list = declared.unwrap_or(crate::param::ParamPorts::NONE);
-            let cells = ranges
-                .entry(key)
-                .and_modify(|c| {
-                    if c.declared() != list {
-                        *c = ParamRanges::new(list);
-                    }
-                })
-                .or_insert_with(|| ParamRanges::new(list));
-            for &param in list.as_slice() {
-                cells.store(param, range_of(spec, ParamIn { node: key, param }));
-            }
-            ParamState::new(ports, max, Some(Arc::clone(cells)))
+            ranges.state(key, ports, max, declared, spec)
         };
-        // One cell per weighted lane of the plan, kept across commits for an
-        // edge that stays, and written from the spec.
-        let committed = &self.committed;
-        let lanes: BTreeSet<EdgeId> = plan.sum_lanes.iter().flatten().copied().collect();
-        self.edge_gains.retain(|id, _| lanes.contains(id));
-        let gains: BTreeMap<EdgeId, GainCell> = lanes
-            .into_iter()
-            .map(|id| {
-                // A lane a bus edge made: the fold's static weight, in a cell
-                // of its own that nothing writes and no one is handed.
-                if let Some(&(w, fade)) = bus_weights.get(&id) {
-                    let cell = GainCell::new(w, EdgeGain::DEFAULT_RANGE);
-                    cell.store_fade(fade);
-                    return (id, cell);
-                }
-                let gain = self.spec.gains.get(&id).copied().unwrap_or_default();
-                let cell = self
-                    .edge_gains
-                    .entry(id)
-                    .or_insert_with(|| GainCell::new(gain.base, gain.range));
-                Self::carry_base(committed, id, cell, gain.base);
-                cell.store_range(gain.range);
-                cell.store_fade(gain.fade);
-                (id, cell.clone())
-            })
-            .collect();
-        // A unit's mode cell, kept for a key that stays and written from the
-        // spec: a unit placed now starts steady in the spec's mode.
-        let (mode_cells, spec, max_block) = (
-            &mut self.mode_cells,
-            &self.spec,
-            plan.prepare.max_block().get(),
-        );
-        let modes = |key: NodeKey| {
-            let cell = mode_cells
-                .entry(key)
-                .or_insert_with(|| ModeCell::new(NodeMode::Active, spec.mix(key)));
-            cell.store(spec.mode(key));
-            Self::carry_mix(committed, key, cell, spec.mix(key));
-            cell.store_range(mix_range_of(spec, key));
-            let shape = &plan.unit(key).expect("a placed unit is in its plan").shape;
-            ModeState::new(cell.clone(), shape, max_block)
-        };
+        let gains = self
+            .cells
+            .gains
+            .for_plan(&plan, spec, committed, bus_weights);
+        let modes = |key: NodeKey| modes_cells.state(key, &plan, spec, committed);
         let wake_cells = &self.wakes;
         // A unit handed in whole (`send`'s callers) was never bound: its flag
         // is a fresh one nothing holds.
@@ -3237,13 +3122,7 @@ impl Editor {
                 meters,
             },
         );
-        // A mix's range is the spec's for every unit the plan keeps, as the
-        // gains' are (a unit placed now has it from `modes`).
-        for (&key, cell) in &self.mode_cells {
-            cell.store_range(mix_range_of(&self.spec, key));
-        }
-        self.param_ranges.retain(|k, _| plan.unit(*k).is_some());
-        self.mode_cells.retain(|k, _| plan.unit(*k).is_some());
+        self.cells.keep_placed(&plan, &self.spec);
         self.link.send(commit, fades);
         self.life = Lifecycle::Running(plan);
     }

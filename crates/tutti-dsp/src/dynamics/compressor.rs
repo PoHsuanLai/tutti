@@ -220,7 +220,7 @@ impl Family for CompressorFamily {
         *out = CompressorMember::designed(c, rate);
     }
 
-    fn recurrence(&self) -> CompressorRecurrence {
+    fn recurrence(&self, _: SampleRate) -> CompressorRecurrence {
         CompressorRecurrence { key: self.key }
     }
 }

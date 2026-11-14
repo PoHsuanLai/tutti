@@ -209,7 +209,7 @@ impl Family for GateFamily {
         *out = GateMember::of(c, rate);
     }
 
-    fn recurrence(&self) -> GateRecurrence {
+    fn recurrence(&self, _: SampleRate) -> GateRecurrence {
         GateRecurrence { key: self.key }
     }
 }

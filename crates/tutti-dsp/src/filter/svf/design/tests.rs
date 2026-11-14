@@ -192,10 +192,10 @@ fn a_blend_arrives_on_the_new_set_at_its_last_frame() {
     let d = design();
     let rate = SampleRate::SR_48K;
     let model = |hz| d.member(&controls(SvfType::LowPass, hz, 0.707, 0.0), rate);
-    let mut blended = d.realized();
+    let mut blended = d.realized(rate);
     blended.retarget(&model(500.0));
     blended.retarget(&model(5_000.0));
-    let mut held = d.realized();
+    let mut held = d.realized(rate);
     held.retarget(&model(5_000.0));
 
     let mut x = [0.0f32; 16];

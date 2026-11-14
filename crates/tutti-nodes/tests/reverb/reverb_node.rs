@@ -206,7 +206,7 @@ fn the_reported_tail_is_honest() {
 fn the_cut_discards_only_what_is_below_the_floor() {
     for c in [gm(), controls(0.9, 0.2), controls(0.1, 0.9)] {
         let tail = tail_of(c);
-        let mut tuned = FreeverbFamily.realized();
+        let mut tuned = FreeverbFamily.realized(SR);
         tuned.prepare(
             &FreeverbFamily.reach(&Reach::at(SR)),
             &Setup {
@@ -490,4 +490,23 @@ fn it_is_inserted_with_a_param_set() {
     );
     let (_, fixed) = FreeverbNode::general_midi().into_node();
     assert!(!fixed.set(UnitParam::RoomSize, 0.7), "the send has no room");
+}
+
+/// A node has no rate until it is prepared: it declares no latency and an unknown tail
+/// (nothing is derived from a rate it was not given), and once prepared its tail is the
+/// finite figure at the rate it was given, so the same node prepared at two rates
+/// declares two tails.
+#[test]
+fn an_unprepared_node_declares_nothing_derived_from_a_rate() {
+    let node = FreeverbNode::general_midi();
+    let shape = node.shape();
+    assert_eq!(shape.latency.samples().get(), 0);
+    assert_eq!(shape.tail, Tail::Unknown);
+
+    let tail_at = |rate: SampleRate| match prepared(node.clone(), rate, BLOCK).shape().tail {
+        Tail::Finite(frames) => frames.get(),
+        other => panic!("a fixed network's tail is finite once prepared, got {other:?}"),
+    };
+    let (low, high) = (tail_at(SampleRate::SR_44K1), tail_at(SampleRate::SR_96K));
+    assert!(high > low, "{high} frames at 96 kHz, {low} at 44.1 kHz");
 }

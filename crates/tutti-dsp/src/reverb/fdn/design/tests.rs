@@ -446,7 +446,7 @@ fn a_diagonal_network_is_the_identity_a_comb_a_line_with_a_positive_sign() {
     use crate::Setup;
     let rate = SampleRate::SR_48K;
     let d = freezable();
-    let mut k = d.realized();
+    let mut k = d.realized(rate);
     k.prepare(
         &d.reach(&Reach::at(rate)),
         &Setup {
@@ -506,7 +506,7 @@ fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
     use crate::Setup;
     let rate = SampleRate::SR_48K;
     let d = freezable();
-    let mut k = d.realized();
+    let mut k = d.realized(rate);
     k.prepare(
         &d.reach(&Reach::at(rate)),
         &Setup {

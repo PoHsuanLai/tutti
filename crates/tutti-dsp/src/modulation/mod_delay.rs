@@ -466,7 +466,7 @@ impl Family for ModDelayFamily {
         *out = ModDelayMember::of(self, c, rate);
     }
 
-    fn recurrence(&self) -> ModDelayRecurrence {
+    fn recurrence(&self, _: SampleRate) -> ModDelayRecurrence {
         let mut offsets = [PhaseIncrement(0.0); MAX_MOD_DELAY_CHANNELS];
         for (c, o) in offsets.iter_mut().enumerate().take(self.width()) {
             *o = self.stagger.offset(c);

@@ -43,6 +43,8 @@ use core::ops::Range;
 
 use super::design::CROSSOVER;
 use crate::reverb::network::{Absorption, Band, Matrix, Network, NetworkCapacity, Stage};
+use tutti_types::SampleRate;
+
 use crate::{Approach, Effort, Feed, Glide, Recurrence, Setup, Start, Steps};
 
 /// The frames between control updates: every ramp advances once a chunk.
@@ -295,9 +297,9 @@ impl FdnState {
 }
 
 impl FdnRecurrence {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(rate: SampleRate) -> Self {
         Self {
-            rate: 48_000.0,
+            rate: rate.get(),
             max_lines: 0,
             cap: 0,
             pre_cap: 0,

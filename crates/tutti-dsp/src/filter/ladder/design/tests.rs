@@ -185,7 +185,7 @@ fn a_blend_is_linear_and_arrives_on_the_new_set() {
     let model = |hz, drive| d.member(&controls(LadderType::HP12, hz, 0.3, drive), rate);
     let (old, new) = (model(500.0, 1.0), model(5_000.0, 4.0));
     for i in [7usize, 15] {
-        let mut blended = d.realized();
+        let mut blended = d.realized(rate);
         blended.retarget(&old);
         blended.retarget(&new);
         let mut x = [0.0f32; 16];
@@ -207,12 +207,12 @@ fn a_blend_is_linear_and_arrives_on_the_new_set() {
         );
         assert_eq!(y[i], want as f32, "frame {i}");
     }
-    let mut held = d.realized();
+    let mut held = d.realized(rate);
     held.retarget(&new);
     let mut x = [0.0f32; 16];
     x[15] = 0.5;
     let (mut y, mut z) = ([0.0f32; 16], [0.0f32; 16]);
-    let mut blended = d.realized();
+    let mut blended = d.realized(rate);
     blended.retarget(&old);
     blended.retarget(&new);
     blended.process(&crate::Feed::new(&[&x]), &mut [&mut y], 16);
@@ -231,7 +231,7 @@ fn the_cut_ramp_goes_on_from_where_it_was() {
     let rate = SampleRate::SR_48K;
     let model = |hz| d.member(&controls(LadderType::HP12, hz, 0.3, 1.0), rate);
     let (a, b) = (model(500.0), model(5_000.0));
-    let mut r = d.realized();
+    let mut r = d.realized(rate);
     r.retarget(&a);
     r.retarget(&b);
     r.process(&crate::Feed::new(&[&[0.0; 8]]), &mut [&mut [0.0; 8]], 8);

@@ -114,6 +114,10 @@ pub struct MainThreadMarker {
 impl MainThreadMarker {
     /// The proof, if the OS says the calling thread is the process's main
     /// thread, and `None` on any other thread.
+    ///
+    /// On Windows, inside a DLL loaded off the primary thread, the main thread
+    /// is the thread that loaded it; an embedder in that case makes its token
+    /// with [`new_unchecked`](Self::new_unchecked).
     #[must_use]
     pub fn new() -> Option<MainThreadMarker> {
         os::is_main_thread().then_some(MainThreadMarker {

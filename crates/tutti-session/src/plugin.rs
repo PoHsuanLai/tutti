@@ -110,7 +110,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
-use tutti_plugin::MainThreadMarker;
+use tutti_plugin_types::MainThreadMarker;
 
 use dpi::Size;
 use tutti_graph::NodeKey;

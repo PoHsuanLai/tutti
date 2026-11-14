@@ -3,9 +3,9 @@
 //! All native plugin formats (VST2, VST3, CLAP, AU) require that the calls
 //! other than the real-time audio path (the editor, state, parameter
 //! enumeration, timers and the run loop) run on the host's main/UI thread. The
-//! rule is in the types: an entry that must run there takes a `&`[`MainThreadMarker`],
-//! `tutti_rt`'s proof that the holder is on the OS's main thread, and runs no
-//! check of its own.
+//! rule is in the types: an entry that must run there takes a
+//! [`MainThreadMarker`], `tutti_rt`'s proof that the holder is on the OS's main
+//! thread, by value, and runs no check of its own.
 //!
 //! A `Drop` cannot take a token. One that releases something the formats close
 //! on the main thread, and finds itself on another, hands the close to its

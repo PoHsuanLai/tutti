@@ -486,12 +486,13 @@ pub struct Session {
 }
 
 impl Drop for Session {
-    /// The fallback of [`close`](Self::close): on the main thread, runs the work
-    /// other threads handed over, and the plugins then drop with the fields, their
-    /// closes collected by the last field's own drop. **An app that drops a session
-    /// off the main thread should call [`close`](Self::close) first**: off it, a
-    /// plugin's close goes to the collector, which is dropped with the session and
-    /// counts what it never ran (`tutti_plugin_types::MainWork::stranded`, with the `plugin` feature).
+    /// The fallback of `Session::close` (with the `plugin` feature): on the main
+    /// thread, runs the work other threads handed over, and the plugins then drop
+    /// with the fields, their closes collected by the last field's own drop.
+    ///
+    /// End a session that hosted an in-process plugin with `close` on the main
+    /// thread; dropped elsewhere, it leaks those plugins and counts them in
+    /// `tutti_plugin_types::MainWork::stranded()`.
     fn drop(&mut self) {
         #[cfg(feature = "plugin")]
         if let Some(main) = tutti_plugin_types::MainThreadMarker::new() {
@@ -506,28 +507,20 @@ impl Session {
     /// to the session's collector), and runs what that handed over. Nothing a
     /// plugin owes the main thread is left undone.
     ///
-    /// **An app that drops a session off the main thread should call `close`
-    /// first.** [`Drop`] is the fallback: on the main thread it drains, drops and
-    /// drains the same way; off it the plugins' closes go to a collector that is
-    /// going away, which runs them at once on the main thread, and otherwise counts
-    /// them as stranded (`tutti_plugin_types::MainWork::stranded`, with the `plugin` feature).
-    pub fn close(self, main: tutti_rt::MainThreadMarker) {
-        #[cfg(feature = "plugin")]
-        {
-            let mut session = self;
-            session.main_work.run(main);
-            // The plugins close in the drop below and hand what they cannot do
-            // there to their handles, which feed the collector taken out here;
-            // the session keeps an empty one.
-            let (inert, _) = tutti_plugin_types::MainWork::new();
-            let collected = std::mem::replace(&mut session.main_work, inert);
-            drop(session);
-            collected.run(main);
-        }
-        #[cfg(not(feature = "plugin"))]
-        {
-            let _ = main;
-        }
+    /// End a session that hosted an in-process plugin with `close` on the main
+    /// thread; dropped elsewhere, it leaks those plugins and counts them in
+    /// [`stranded()`](tutti_plugin_types::MainWork::stranded).
+    #[cfg(feature = "plugin")]
+    pub fn close(self, main: tutti_plugin_types::MainThreadMarker) {
+        let mut session = self;
+        session.main_work.run(main);
+        // The plugins close in the drop below and hand what they cannot do
+        // there to their handles, which feed the collector taken out here;
+        // the session keeps an empty one.
+        let (inert, _) = tutti_plugin_types::MainWork::new();
+        let collected = std::mem::replace(&mut session.main_work, inert);
+        drop(session);
+        collected.run(main);
     }
 
     /// A builder with the defaults: offline, 48 kHz, stereo, blocks of up to

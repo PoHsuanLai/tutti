@@ -2,6 +2,9 @@
 //! before `main`, and it records that thread's id (the method winit uses).
 //! Windows has no "is the main thread" call; the id recorded at startup is the
 //! primary thread's for the life of the process, even once it has exited.
+//! Inside a DLL loaded off the primary thread, `.CRT$XCU` runs from `DllMain`
+//! on the loading thread, so the answer is that thread: such an embedder makes
+//! its token with `MainThreadMarker::new_unchecked`.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 

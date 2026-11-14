@@ -10,11 +10,12 @@ use std::time::Instant;
 use crate::audio_pipeline::Clock;
 use crate::render::{RenderConfig, RenderLink, RenderSide, ToRender, link};
 use crate::served::AnyServed;
+use dpi::Size;
 use tutti_plugin_ipc::state_chunk::{self, ChunkError, Reassembler};
 use tutti_plugin_ipc::{AudioSlab, BridgeMessage, HostMessage, MAX_STATE_BYTES, StagedState};
 use tutti_plugin_types::{
-    BridgeError, BridgeResult, EditorError, EditorSize, Load, MainThread, ParameterQueue,
-    PluginError, Ready, SampleFormat, SampleRate, StateUse, Wakeups, WindowHandle,
+    BridgeError, BridgeResult, EditorError, Load, MainThread, ParameterQueue, PluginError, Ready,
+    SampleFormat, SampleRate, StateUse, Wakeups, WindowHandle,
 };
 
 /// What [`Session::handle`] asks the transport loop to do.
@@ -537,7 +538,7 @@ impl Session {
         main: &MainThread,
         parent: Option<u64>,
         scale: tutti_plugin_types::ContentScale,
-    ) -> Result<Option<EditorSize>, String> {
+    ) -> Result<Option<Size>, String> {
         if self.editor_open {
             return Err("an editor is already open".into());
         }
@@ -574,11 +575,7 @@ impl Session {
     }
 
     /// Asks the open editor to take `size`; the size it took.
-    fn set_editor_size(
-        &mut self,
-        main: &MainThread,
-        size: EditorSize,
-    ) -> Result<EditorSize, String> {
+    fn set_editor_size(&mut self, main: &MainThread, size: Size) -> Result<Size, String> {
         if !self.editor_open {
             return Err("editor not open".into());
         }

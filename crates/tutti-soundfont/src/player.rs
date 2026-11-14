@@ -495,7 +495,7 @@ impl Player {
             MidiChannel::new(i as u8).map_or(Semitones(0.0), |c| self.voicing.channel_pitch(c))
         });
         self.voices.process(
-            self.font.wave_data(),
+            self.font.sample_pool(),
             &self.channels,
             self.voicing.channels(),
             &bends,
@@ -574,11 +574,6 @@ impl Player {
         player.voicing.forget_notes();
         player.master_applied = self.master_applied;
         Some(player)
-    }
-
-    /// How many voices were not started because their sample states no rate.
-    pub(crate) fn unrated_starts(&self) -> u64 {
-        self.voices.unrated()
     }
 
     /// The longest the player can keep sounding once its last key is up: the

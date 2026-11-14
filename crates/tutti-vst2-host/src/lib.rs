@@ -38,7 +38,7 @@
 //! ## What it does not own
 //!
 //! **The shared vocabulary.** [`ParameterInfo`], [`TransportInfo`],
-//! [`WindowHandle`], [`EditorSize`] and [`Samples`] are
+//! [`WindowHandle`] and [`Samples`] are
 //! [`tutti-plugin-types`](../tutti-plugin-types)' — re-exported here so a caller
 //! can stay format-agnostic, not defined here. MIDI into a plugin is a block's
 //! `(Offset, Ump)` list (`tutti_graph::Offset`, `tutti_ump::Ump`); MIDI out of one
@@ -142,7 +142,7 @@
 //! // The editor is the same `AEffect` the audio path drives, hence in-process.
 //! // VST2 has no content scale: the argument is accepted and ignored.
 //! let size = plugin.open_editor(&main, WindowHandle::from_window(window)?, ContentScale::IDENTITY)?;
-//! println!("editor is {}x{}", size.width, size.height);
+//! println!("editor is {size:?}");
 //! plugin.close_editor(&main);
 //! # Ok(()) }
 //! ```
@@ -207,7 +207,6 @@
 //! [`ParameterInfo`]: crate::ParameterInfo
 //! [`TransportInfo`]: crate::TransportInfo
 //! [`WindowHandle`]: crate::WindowHandle
-//! [`EditorSize`]: crate::EditorSize
 //! [`Samples`]: crate::Samples
 //! [`WireMidi`]: crate::WireMidi
 //! [`ParamId`]: tutti_plugin_types::ParamId
@@ -252,8 +251,8 @@ pub use param_properties::{
     ParameterPropertyFlags,
 };
 pub use types::{
-    ChannelLayout, EditorSize, MidiEventVec, ParameterInfo, PluginInfo, Samples, TimeSignature,
-    TransportInfo, Vst2Category, Vst2ProcessContext, WindowHandle, WireMidi,
+    ChannelLayout, MidiEventVec, ParameterInfo, PluginInfo, Samples, TimeSignature, TransportInfo,
+    Vst2Category, Vst2ProcessContext, WindowHandle, WireMidi,
 };
 
 // Test-only global allocator for RT-safety regression tests. Panics on

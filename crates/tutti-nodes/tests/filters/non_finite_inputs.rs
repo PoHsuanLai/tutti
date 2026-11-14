@@ -87,7 +87,10 @@ fn a_delay_with_a_nan_initial_time_starts_at_zero() {
 #[test]
 fn the_strip_holds_off_non_finite_volume_and_pan() {
     type Cell = fn(&BusStripNode) -> std::sync::Arc<AtomicF32>;
-    let cells: [(&str, Cell); 2] = [("volume", BusStripNode::volume), ("pan", BusStripNode::pan)];
+    let cells: [(&str, Cell); 2] = [
+        ("volume", |n| n.volume().as_atomic()),
+        ("pan", |n| n.pan().as_atomic()),
+    ];
     for (name, cell) in cells {
         for bad in BAD {
             let mut node = BusStripNode::stereo();

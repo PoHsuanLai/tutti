@@ -637,3 +637,49 @@ fn velocity_forces_the_velocity_of_a_zone() {
     assert!(loud > 1.5 * soft, "{loud} {soft}");
     assert!((got / soft - 1.0).abs() < 0.05, "{got} against {soft}");
 }
+
+// ---- 6.2 the sm24 sample pool -----------------------------------------------
+
+/// A font of the built sample whose 2100 `smpl` points are all zero, with an
+/// `sm24` chunk of 2100 bytes of 0x80 under `ifil` `version`.
+fn silent_smpl_with_sm24(
+    version: (u16, u16),
+    sm24_bytes: usize,
+) -> std::sync::Arc<tutti_sf2::SoundFont> {
+    let file = tutti_fixtures::sf2::bytes(
+        &[Preset {
+            name: "p",
+            bank: 0,
+            program: 0,
+            zones: vec![(vec![], 0)],
+        }],
+        &[Inst {
+            name: "i",
+            zones: vec![vec![]],
+        }],
+    );
+    let file = tutti_fixtures::sf2::with_pool(
+        &file,
+        version,
+        Some(&vec![0; 4200]),
+        Some(&vec![0x80; sm24_bytes]),
+    );
+    std::sync::Arc::new(tutti_sf2::SoundFont::from_reader(&mut std::io::Cursor::new(file)).unwrap())
+}
+
+/// 6.2: the player renders the `smpl` points alone when `sm24` is ignored, and
+/// the 24-bit points when it counts. The `smpl` points are all zero, so the
+/// render is exact silence when only they sound, and a low byte of 0x80 (one
+/// half of a `smpl` step, 2^-16 of full scale) makes the same note audible.
+/// Spec: sf2.sdta.sm24.ignored.render-smpl-only, sf2.sdta.sm24.low-byte
+#[test]
+fn an_ignored_sm24_is_not_rendered_and_a_valid_one_is() {
+    let heard = |version, size| {
+        let mut rig = Rig::dry(&silent_smpl_with_sm24(version, size));
+        rig.note_on(0, 69, 127);
+        rig.energy(4096)
+    };
+    assert!(heard((2, 4), 2100) > 0.0, "a valid sm24 sounds");
+    assert_eq!(heard((2, 3), 2100), 0.0, "an ifil before 2.04");
+    assert_eq!(heard((2, 4), 2099), 0.0, "a size that is not half of smpl");
+}

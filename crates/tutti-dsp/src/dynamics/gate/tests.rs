@@ -590,7 +590,7 @@ fn a_reset_clears_the_follower_and_the_hold() {
 /// length renders (a default gate passes the signal).
 #[test]
 fn a_block_of_the_prepared_length_renders() {
-    let mut k = design().realized();
+    let mut k = design().realized(RATE);
     k.prepare(
         &(),
         &Setup {

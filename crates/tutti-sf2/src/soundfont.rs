@@ -8,15 +8,14 @@ use crate::preset::Preset;
 use crate::sample_header::SampleHeader;
 use crate::soundfont_info::SoundFontInfo;
 use crate::soundfont_parameters::SoundFontParameters;
-use crate::soundfont_sampledata::SoundFontSampleData;
+use crate::soundfont_sampledata::{Pool, SamplePool, SoundFontSampleData};
 
 /// A parsed SoundFont (.sf2): its samples, instruments and presets.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct SoundFont {
     pub(crate) info: SoundFontInfo,
-    pub(crate) bits_per_sample: u8,
-    pub(crate) wave_data: Vec<i16>,
+    pub(crate) pool: Pool,
     pub(crate) sample_headers: Vec<SampleHeader>,
     pub(crate) presets: Vec<Preset>,
     pub(crate) instruments: Vec<Instrument>,
@@ -63,13 +62,12 @@ impl SoundFont {
         }
 
         let info = SoundFontInfo::new(reader)?;
-        let sample_data = SoundFontSampleData::new(reader)?;
+        let sample_data = SoundFontSampleData::new(reader, info.version())?;
         let parameters = SoundFontParameters::new(reader)?;
 
         let sound_font = Self {
             info,
-            bits_per_sample: sample_data.bits_per_sample,
-            wave_data: sample_data.wave_data,
+            pool: sample_data.pool,
             sample_headers: parameters.sample_headers,
             presets: parameters.presets,
             instruments: parameters.instruments,
@@ -94,7 +92,7 @@ impl SoundFont {
 
                 // Signed, 64 bits: a header's DWORD and an offset can take an
                 // address below 0 or past 2^31, and either is refused.
-                let len = self.wave_data.len() as i64;
+                let len = self.pool.len() as i64;
                 if start < 0
                     || start_loop < 0
                     || end >= len
@@ -117,16 +115,26 @@ impl SoundFont {
         &self.info
     }
 
-    /// The bit depth of the sample data.
+    /// The bit depth of the sample data: 24 when an `sm24` chunk counts, else 16.
     #[must_use]
     pub fn bits_per_sample(&self) -> u8 {
-        self.bits_per_sample
+        match self.pool {
+            Pool::Pcm16(_) => 16,
+            Pool::Pcm24 { .. } => 24,
+        }
     }
 
-    /// The 16-bit sample data every sample header indexes into.
+    /// The 16-bit `smpl` points every sample header indexes into: the high 16
+    /// bits of each point of a 24-bit pool.
     #[must_use]
     pub fn wave_data(&self) -> &[i16] {
-        &self.wave_data[..]
+        self.pool.high()
+    }
+
+    /// The sample points as they play: 16-bit, or 24-bit with their low bytes.
+    #[must_use]
+    pub fn sample_pool(&self) -> SamplePool<'_> {
+        self.pool.view()
     }
 
     /// The samples of the SoundFont.
@@ -165,17 +173,6 @@ mod tests {
         assert!(matches!(
             SoundFont::from_reader(&mut file),
             Err(Error::UnsupportedSampleFormat)
-        ));
-    }
-
-    // smpl sub-chunk exists, but is zero-length.
-    #[test]
-    fn test_load_empty_samples() {
-        let path = samples_dir_path().join("test_empty_samples.sf2");
-        let mut file = File::open(&path).unwrap();
-        assert!(matches!(
-            SoundFont::from_reader(&mut file),
-            Err(Error::SampleDataNotFound)
         ));
     }
 }

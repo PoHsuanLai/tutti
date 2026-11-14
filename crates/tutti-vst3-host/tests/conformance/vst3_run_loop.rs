@@ -54,7 +54,7 @@ fn plugin_with_editor(module: &Arc<Module>, editor: u32) -> Plugin {
 fn try_open(
     plugin: &mut Plugin,
     main: &MainThread,
-) -> Result<Option<tutti_plugin_types::EditorSize>, tutti_vst3_ffi::EditorError> {
+) -> Result<Option<dpi::Size>, tutti_vst3_ffi::EditorError> {
     // The plugin ignores the handle; it is never dereferenced.
     let parent = tutti_fixtures::StandInWindow.handle();
     plugin.open_editor(main, parent, ContentScale::default())
@@ -204,13 +204,7 @@ fn a_registration_from_a_later_call_is_purged_on_close() {
     open(&mut plugin, &main);
     assert_eq!(registered(&plugin), (0, 0), "attached registered nothing");
     plugin
-        .resize_editor(
-            &main,
-            tutti_plugin_types::EditorSize {
-                width: 300,
-                height: 200,
-            },
-        )
+        .resize_editor(&main, dpi::PhysicalSize::new(300, 200).into())
         .expect("resize");
     assert_eq!(registered(&plugin), (1, 1), "onSize registered");
     plugin.close_editor(&main);

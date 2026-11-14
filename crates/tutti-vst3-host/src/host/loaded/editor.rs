@@ -1,11 +1,13 @@
 //! The plugin's editor surface.
 
 use super::*;
+use dpi::Size;
 use tutti_plugin_types::MainThread;
 
 impl Vst3Loaded {
     /// Creates the plugin editor, attach it to `parent`, and return its initial
-    /// pixel size. Only one editor may be open at a time per instance —
+    /// size, in the unit of this platform's `ViewRect` (pixels on Win32 and X11,
+    /// points on macOS). Only one editor may be open at a time per instance —
     /// opening a second replaces the first.
     ///
     /// `scale` is `parent`'s backing-store scale. On a physical-pixel window
@@ -26,7 +28,7 @@ impl Vst3Loaded {
         main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> Result<EditorSize> {
+    ) -> Result<Size> {
         let size = self
             .plugin
             .open_editor(main, parent, scale)
@@ -47,10 +49,10 @@ impl Vst3Loaded {
                 _ => Vst3Error::EditorError("Failed to open the plugin editor".to_string()),
             })?;
 
-        let (width, height) = size
-            .map(|size| (size.width, size.height))
-            .unwrap_or(DEFAULT_EDITOR_SIZE);
-        Ok(EditorSize { width, height })
+        Ok(size.unwrap_or_else(|| {
+            let (width, height) = DEFAULT_EDITOR_SIZE;
+            tutti_vst3_ffi::rect_size(width, height)
+        }))
     }
 
     /// What the currently open editor supports, queried live from the view.
@@ -75,7 +77,7 @@ impl Vst3Loaded {
     /// The latest `IPlugFrame::resizeView` request since the last poll, if
     /// any. Earlier requests in between are superseded, not queued: only the
     /// size the plugin wants now matters.
-    pub fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<EditorSize> {
+    pub fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<Size> {
         self.plugin.take_editor_resize_request(main)
     }
 
@@ -102,11 +104,7 @@ impl Vst3Loaded {
     /// Exposed for the conformance suite, which uses it to check that a size
     /// the host granted is genuinely one the plugin accepts.
     #[cfg(feature = "conformance")]
-    pub fn check_editor_size_constraint(
-        &self,
-        main: &MainThread,
-        requested: EditorSize,
-    ) -> Option<EditorSize> {
+    pub fn check_editor_size_constraint(&self, main: &MainThread, requested: Size) -> Option<Size> {
         self.plugin.editor_size_constraint(main, requested)
     }
 
@@ -141,11 +139,7 @@ impl Vst3Loaded {
     ///
     /// Returns [`Vst3Error::EditorError`] if no editor is open, or
     /// [`Vst3Error::PluginError`] if the view rejects `onSize`.
-    pub fn resize_editor(
-        &mut self,
-        main: &MainThread,
-        requested: EditorSize,
-    ) -> Result<EditorSize> {
+    pub fn resize_editor(&mut self, main: &MainThread, requested: Size) -> Result<Size> {
         if !self.plugin.editor_open() {
             return Err(Vst3Error::EditorError("editor not open".to_string()));
         }

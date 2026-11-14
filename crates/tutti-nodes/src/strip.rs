@@ -28,8 +28,6 @@
 //! exactly on the new gain at the block's last sample. See
 //! `BusStripNode::render`.
 
-use std::sync::Arc;
-
 use crate::ramp::LastGood;
 use tutti_dsp::balance_gains;
 use tutti_graph::{
@@ -156,19 +154,18 @@ impl BusStripNode {
         self.topology.layout().count() as usize
     }
 
-    /// Atomic handle for the UI / automation to share the volume cell.
-    ///
-    /// Untyped by the shape of the contract, not by omission: this is the
-    /// cell the strip's `ParamSet` addresses as `Volume`, and a control-rate
-    /// route's target speaks `Arc<AtomicF32>`.
-    pub fn volume(&self) -> Arc<tutti_types::AtomicF32> {
-        self.volume.as_atomic()
+    /// A handle on the shared volume cell, the one the strip's `ParamSet`
+    /// addresses as `Volume`.
+    #[must_use]
+    pub fn volume(&self) -> Param<Amplitude> {
+        self.volume.handle()
     }
 
-    /// Atomic handle for the UI / automation to share the pan cell. See
-    /// [`volume`](Self::volume) on why this one is untyped.
-    pub fn pan(&self) -> Arc<tutti_types::AtomicF32> {
-        self.pan.as_atomic()
+    /// A handle on the shared pan cell, the one the strip's `ParamSet`
+    /// addresses as `Pan`.
+    #[must_use]
+    pub fn pan(&self) -> Param<Pan> {
+        self.pan.handle()
     }
 
     /// Sets the fader position as a linear [`Amplitude`], unclamped.
@@ -424,7 +421,6 @@ impl IntoNode for BusStripNode {
 mod tests {
     use super::*;
     use crate::test_support::{RATE, tick};
-    use std::sync::atomic::Ordering;
     use tutti_graph::contract::{assert_param_fork, drive};
     use tutti_types::ChannelLayout;
     use tutti_types::UnitParam;
@@ -512,10 +508,10 @@ mod tests {
         let s = BusStripNode::stereo();
 
         assert!(set_param(&s, UnitParam::Volume, 0.25));
-        assert_eq!(s.volume().load(Ordering::Relaxed), 0.25);
+        assert_eq!(s.volume().load().get(), 0.25);
 
         assert!(set_param(&s, UnitParam::Pan, -1.0));
-        assert_eq!(s.pan().load(Ordering::Relaxed), -1.0);
+        assert_eq!(s.pan().load().get(), -1.0);
     }
 
     /// A strip refuses params it does not own, and they change nothing — the
@@ -585,8 +581,8 @@ mod tests {
         let clone = original.clone();
         clone.set_volume(Amplitude(0.1));
         set_pan(&clone, 0.5);
-        assert_eq!(original.volume().load(Ordering::Relaxed), 0.1);
-        assert_eq!(original.pan().load(Ordering::Relaxed), 0.5);
+        assert_eq!(original.volume().load().get(), 0.1);
+        assert_eq!(original.pan().load().get(), 0.5);
     }
 
     /// Channels past the stereo pair are faded but not balanced —

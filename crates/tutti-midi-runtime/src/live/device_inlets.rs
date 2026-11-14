@@ -110,15 +110,15 @@ pub enum InletChange {
     /// A device took `slot`: add `node` to the graph and feed the slot's input
     /// from its one event output.
     Attach {
-        /// The slot's index.
-        slot: usize,
+        /// The slot taken.
+        slot: DeviceSlot,
         /// The inlet the device pushes into.
         node: EventInletNode,
     },
     /// The device let go of `slot`: take its inlet out.
     Detach {
-        /// The slot's index.
-        slot: usize,
+        /// The slot let go of.
+        slot: DeviceSlot,
     },
 }
 
@@ -241,11 +241,10 @@ impl DeviceInlets {
         // with the node's acquire load.
         self.epochs[index].fetch_add(1, Ordering::Release);
         let (node, writer) = EventInletNode::pair(self.capacity);
-        state
-            .changes
-            .push_back(InletChange::Attach { slot: index, node });
+        let slot = DeviceSlot { index, generation };
+        state.changes.push_back(InletChange::Attach { slot, node });
         Ok(DeviceInput {
-            slot: DeviceSlot { index, generation },
+            slot,
             counts: writer.counts(),
             writer,
             inlets: Weak::clone(&self.this),
@@ -272,16 +271,15 @@ impl DeviceInlets {
                 // An inlet the graph's owner has not taken yet never reached
                 // the graph: its attach and this detach cancel, so a device
                 // that comes and goes with no owner draining leaves nothing.
-                let pending = state.changes.iter().position(
-                    |c| matches!(c, InletChange::Attach { slot: s, .. } if *s == slot.index),
-                );
+                let pending = state
+                    .changes
+                    .iter()
+                    .position(|c| matches!(c, InletChange::Attach { slot: s, .. } if *s == slot));
                 match pending {
                     Some(at) => {
                         state.changes.remove(at);
                     }
-                    None => state
-                        .changes
-                        .push_back(InletChange::Detach { slot: slot.index }),
+                    None => state.changes.push_back(InletChange::Detach { slot }),
                 }
             }
             _ => {}

@@ -1,20 +1,76 @@
 //! A voice's per-note (MPE) expression, and the one place it is applied.
 
-use tutti_types::Amplitude;
+use tutti_midi_protocol::value_to_unit_f32;
+use tutti_ump::ControlValue;
+
+/// One per-note expression value, `0..=1`: a pressure, a slide position or a
+/// per-note gain, as the controller that carries it.
+///
+/// **Range-checked**: [`new`](Self::new) refuses NaN, the infinities and
+/// anything outside `0..=1`. [`of`](Self::of) is for a literal;
+/// [`from_control`](Self::from_control) is the one total construction, from a
+/// controller word.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub(crate) struct Expression(f32);
+
+impl Expression {
+    /// The bottom of the range.
+    pub(crate) const MIN: Self = Self(0.0);
+    /// The top of the range.
+    pub(crate) const MAX: Self = Self(1.0);
+
+    /// The value, or `None` when `raw` is NaN, infinite or outside `0..=1`.
+    #[must_use]
+    pub(crate) const fn new(raw: f32) -> Option<Self> {
+        if raw >= 0.0 && raw <= 1.0 {
+            Some(Self(raw))
+        } else {
+            None
+        }
+    }
+
+    /// The value for a literal or a constant.
+    ///
+    /// # Panics
+    ///
+    /// When `raw` is NaN or outside `0..=1`; in a `const` that is a compile
+    /// error.
+    #[must_use]
+    #[track_caller]
+    pub(crate) const fn of(raw: f32) -> Self {
+        match Self::new(raw) {
+            Some(value) => value,
+            None => panic!("an expression value is within 0..=1"),
+        }
+    }
+
+    /// The position a controller word stands for: `0` is the bottom of the
+    /// range and `u32::MAX` the top, so every word lands inside `0..=1`.
+    #[must_use]
+    pub(crate) fn from_control(value: ControlValue) -> Self {
+        Self(value_to_unit_f32(value))
+    }
+
+    /// The raw position.
+    #[must_use]
+    pub(crate) const fn get(self) -> f32 {
+        self.0
+    }
+}
 
 /// Slide (CC74) centre: "no timbre shift". The cutoff factor is
 /// `4^(slide - SLIDE_CENTER)`, so a note with no CC74 must start here.
-pub(crate) const SLIDE_CENTER: f32 = 0.5;
+pub(crate) const SLIDE_CENTER: Expression = Expression::of(0.5);
 
 /// One per-note expression value, as a message addresses it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum MpeControl {
-    /// Key pressure, `0..=1`.
-    Pressure(f32),
-    /// Slide (CC74), `0..=1`, centred at [`SLIDE_CENTER`].
-    Slide(f32),
-    /// Per-note volume, `0..=1`.
-    Gain(f32),
+    /// Key pressure.
+    Pressure(Expression),
+    /// Slide (CC74), centred at [`SLIDE_CENTER`].
+    Slide(Expression),
+    /// Per-note volume.
+    Gain(Expression),
 }
 
 /// A voice's MPE state: whether it is applied at render time and the
@@ -23,21 +79,21 @@ pub(crate) enum MpeControl {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MpeVoiceState {
     enabled: bool,
-    /// Per-note pressure, `0..=1`.
-    pub pressure: f32,
-    /// Per-note slide, `0..=1`, centred at [`SLIDE_CENTER`].
-    pub slide: f32,
-    /// Per-note gain, `0..=1`.
-    pub gain: Amplitude,
+    /// Per-note pressure.
+    pub pressure: Expression,
+    /// Per-note slide, centred at [`SLIDE_CENTER`].
+    pub slide: Expression,
+    /// Per-note gain.
+    pub gain: Expression,
 }
 
 impl MpeVoiceState {
     pub(crate) fn new(enabled: bool) -> Self {
         Self {
             enabled,
-            pressure: 0.0,
+            pressure: Expression::MIN,
             slide: SLIDE_CENTER,
-            gain: Amplitude::UNITY,
+            gain: Expression::MAX,
         }
     }
 
@@ -62,10 +118,9 @@ impl MpeVoiceState {
     /// Stores one controller.
     pub(crate) fn apply(&mut self, control: MpeControl) {
         match control {
-            MpeControl::Pressure(p) => self.pressure = p.clamp(0.0, 1.0),
-            MpeControl::Slide(s) => self.slide = s.clamp(0.0, 1.0),
-            // Per-note Volume's `0..1`, narrower than `Amplitude`'s own floor.
-            MpeControl::Gain(g) => self.gain = Amplitude(g.clamp(0.0, 1.0)),
+            MpeControl::Pressure(p) => self.pressure = p,
+            MpeControl::Slide(s) => self.slide = s,
+            MpeControl::Gain(g) => self.gain = g,
         }
     }
 
@@ -75,8 +130,9 @@ impl MpeVoiceState {
     }
 
     /// The slide in effect: `None` when disabled or at centre.
-    pub(crate) fn effective_slide(&self) -> Option<f32> {
-        (self.enabled && (self.slide - SLIDE_CENTER).abs() > 0.001).then_some(self.slide)
+    pub(crate) fn effective_slide(&self) -> Option<Expression> {
+        (self.enabled && (self.slide.get() - SLIDE_CENTER.get()).abs() > 0.001)
+            .then_some(self.slide)
     }
 
     /// The gain factors in effect, `(pressure, note)`. The pressure is the
@@ -85,7 +141,7 @@ impl MpeVoiceState {
     pub(crate) fn gain_factors(&self, channel_pressure: f32) -> (f32, f32) {
         if self.enabled {
             (
-                1.0 + self.pressure.max(channel_pressure) * 0.5,
+                1.0 + self.pressure.get().max(channel_pressure) * 0.5,
                 self.gain.get(),
             )
         } else {
@@ -93,3 +149,6 @@ impl MpeVoiceState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -302,8 +302,9 @@ fn a_report_waits_for_the_reply_and_the_reply_starts_the_wait_for_the_end() {
 }
 
 #[test]
-fn a_timeout_wait_ack_extends_the_named_transaction_and_never_shortens_it() {
-    // §5.10, Table 14: Status Data is the time to wait in 100 ms.
+fn a_timeout_wait_ack_adds_its_time_to_the_named_transaction() {
+    // §5.10, Table 14: Status Data is the time to wait in 100 ms, added to the
+    // time left (M2-103 §12.2.1); a wait of 0 adds nothing.
     let (mut initiator, _, now) = start();
     initiator.on_message(
         &wait(
@@ -313,7 +314,10 @@ fn a_timeout_wait_ack_extends_the_named_transaction_and_never_shortens_it() {
         ),
         now,
     );
-    assert_eq!(initiator.deadline(), Some(now + Duration::from_secs(10)));
+    assert_eq!(
+        initiator.deadline(),
+        Some(now + PROCESS_TIMEOUT + Duration::from_secs(10))
+    );
     initiator.on_message(
         &wait(
             CiDeviceId::FunctionBlock,
@@ -322,7 +326,10 @@ fn a_timeout_wait_ack_extends_the_named_transaction_and_never_shortens_it() {
         ),
         now,
     );
-    assert_eq!(initiator.deadline(), Some(now + Duration::from_secs(10)));
+    assert_eq!(
+        initiator.deadline(),
+        Some(now + PROCESS_TIMEOUT + Duration::from_secs(10))
+    );
 
     let (mut initiator, now) = known(ProcessFeatures::MIDI_MESSAGE_REPORT);
     initiator.report(function_block(), now).unwrap();
@@ -334,7 +341,10 @@ fn a_timeout_wait_ack_extends_the_named_transaction_and_never_shortens_it() {
         ),
         now,
     );
-    assert_eq!(initiator.deadline(), Some(now + Duration::from_secs(5)));
+    assert_eq!(
+        initiator.deadline(),
+        Some(now + PROCESS_TIMEOUT + Duration::from_secs(5))
+    );
     // On another Device ID, or naming another message, it is not this report's.
     initiator.on_message(
         &wait(CiDeviceId::Group, SUB_ID2_MESSAGE_REPORT_INQUIRY, 120),
@@ -348,7 +358,10 @@ fn a_timeout_wait_ack_extends_the_named_transaction_and_never_shortens_it() {
         ),
         now,
     );
-    assert_eq!(initiator.deadline(), Some(now + Duration::from_secs(5)));
+    assert_eq!(
+        initiator.deadline(),
+        Some(now + PROCESS_TIMEOUT + Duration::from_secs(5))
+    );
 }
 
 #[test]

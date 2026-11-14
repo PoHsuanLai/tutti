@@ -55,7 +55,7 @@ fn a_moving_room_glides_its_combs() {
     use tutti_types::{MaxBlock, Mix};
     let rate = SampleRate::SR_48K;
     let d = FreeverbFamily;
-    let mut r = d.realized();
+    let mut r = d.realized(rate);
     r.prepare(
         &d.reach(&Reach::at(rate)),
         &Setup {

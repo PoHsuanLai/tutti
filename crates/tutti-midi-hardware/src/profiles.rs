@@ -25,8 +25,9 @@ use std::sync::Arc;
 
 use tutti_midi_device::{
     CiDeviceId, DeviceId, Muid, Outcome, ProfileChange, ProfileChannels, ProfileEntry, ProfileId,
-    ProfileState, ProfileTable, ProfileTarget, Request, RequestError,
+    ProfileState, ProfileTable, ProfileTarget, Request, RequestError, SpecificData,
 };
+use tutti_midi_protocol::{ChannelResponse, MpeZoneConfig, MpeZones, PitchBendSensitivity};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 /// The Channels a Profile is asked to use when it is enabled on a Channel: the
@@ -270,6 +271,46 @@ impl PeerProfiles {
         &self.table
     }
 
+    /// The zones of the MPE Profile (M2-120) the peer has enabled, lowest
+    /// Manager first: one per Channel it lists the Profile enabled on, with the
+    /// Number of Channels its Enabled Report gave. A Profile enabled without
+    /// a count (a Version 1 peer sends none), or with one that makes no zone
+    /// (fewer than two Channels, or past Channel 16), is not a zone, and a
+    /// zone sharing a Channel with a lower one is left out (section 3.4).
+    #[must_use]
+    pub fn mpe_zones(&self) -> Option<MpeZones> {
+        let mut zones: Option<MpeZones> = None;
+        for address in self.table.addresses() {
+            let CiDeviceId::Channel(manager) = address else {
+                continue;
+            };
+            let Some((_, entry)) = self
+                .table
+                .profiles(address)
+                .find(|(profile, _)| *profile == ProfileId::MPE)
+            else {
+                continue;
+            };
+            let zone = (entry.state() == ProfileState::Enabled)
+                .then(|| entry.channels())
+                .flatten()
+                .and_then(|count| u8::try_from(count.get()).ok())
+                .and_then(|count| {
+                    MpeZoneConfig::profile(
+                        manager,
+                        count,
+                        PitchBendSensitivity::MPE_PROFILE_DEFAULT,
+                    )
+                });
+            let Some(zone) = zone else { continue };
+            zones = match zones {
+                None => Some(MpeZones::single(zone)),
+                Some(held) => Some(held.with(zone).unwrap_or(held)),
+            };
+        }
+        zones
+    }
+
     /// Every Profile the peer lists, as handles to switch them from.
     pub fn listed(&self) -> impl Iterator<Item = ListedProfile> + '_ {
         self.table.addresses().flat_map(move |address| {
@@ -368,6 +409,21 @@ pub enum ProfilesChange {
         /// Why.
         error: RequestError,
     },
+    /// The peer sent Profile Specific Data (M2-101 §7.12): a Profile's own
+    /// message, which [`mpe_channel_response`](ProfilesChange::mpe_channel_response)
+    /// reads for the MPE Profile.
+    SpecificData {
+        /// The Group.
+        group: MidiGroup,
+        /// The peer.
+        muid: Muid,
+        /// The Device ID it came on.
+        address: CiDeviceId,
+        /// The Profile it belongs to.
+        profile: ProfileId,
+        /// The data, uninterpreted.
+        data: SpecificData,
+    },
     /// The peer is gone (lost, or MIDI-CI ended): its Profiles and the
     /// Initiator that kept them went with it.
     Dropped {
@@ -376,6 +432,30 @@ pub enum ProfilesChange {
         /// The peer.
         muid: Muid,
     },
+}
+
+impl ProfilesChange {
+    /// The Channel Response Type Notification of the MPE Profile (M2-120
+    /// section 3.6.3) this is, with the Channel it came on (the zone's
+    /// Manager), or `None` for any other change, another Profile's data, a
+    /// notification on the Group or Function Block, and data that is not one
+    /// of the notification's two values.
+    #[must_use]
+    pub fn mpe_channel_response(&self) -> Option<(MidiChannel, ChannelResponse)> {
+        let Self::SpecificData {
+            address: CiDeviceId::Channel(channel),
+            profile,
+            data,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        (*profile == ProfileId::MPE)
+            .then(|| ChannelResponse::from_data(data.as_bytes()))
+            .flatten()
+            .map(|response| (*channel, response))
+    }
 }
 
 /// A [`ProfileSwitch`] that cannot be made.

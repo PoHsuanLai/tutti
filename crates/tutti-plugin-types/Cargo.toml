@@ -16,10 +16,10 @@ workspace = true
 [features]
 default = []
 # Enables Serialize/Deserialize on the wire-eligible types (TransportInfo,
-# ParameterChanges, EditorSize, EditorCapabilities, WindowHandle). Required
+# ParameterChanges, EditorCapabilities, WindowHandle). Required
 # by the plugin IPC protocol (postcard); host crates that don't need IPC
 # don't pay for the serde dep.
-serde = ["dep:serde", "arrayvec/serde", "bitflags/serde", "keyboard-types/serde", "rgb/serde", "tutti-types/serde"]
+serde = ["dep:serde", "arrayvec/serde", "bitflags/serde", "dpi/serde", "keyboard-types/serde", "rgb/serde", "tutti-types/serde"]
 
 # The probe's result file (`ProbeOutcome`, `write_result`, `read_result`): the
 # wire between `tutti-plugin-probe` and the host that spawned it.
@@ -52,6 +52,8 @@ serde = { version = "1", features = ["derive"], optional = true }
 raw-window-handle = "0.6"
 # The result file's payload encoding, with `probe-wire`.
 postcard = { version = "1.1.3", default-features = false, features = ["use-std"], optional = true }
+# The editor's sizes, which name their unit (`dpi::Size`), and `ContentScale`'s check.
+dpi.workspace = true
 # The editor key vocabulary (`KeyEvent`).
 keyboard-types.workspace = true
 # Structured editor-open errors (`EditorError`).

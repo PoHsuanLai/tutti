@@ -126,6 +126,7 @@ impl Listener {
     pub fn apply(&mut self) {
         for change in self.inlets.take_changes() {
             if let InletChange::Attach { slot, node } = change {
+                let slot = slot.index();
                 let key = NodeKey(100 + slot as u64);
                 self.editor.insert(key, "inlet", node);
                 self.editor.spec_mut().connect_events(

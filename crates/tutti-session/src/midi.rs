@@ -430,7 +430,10 @@ impl UmpOut {
     fn send_all(&mut self, events: &[UmpAt]) {
         let mut out = core::mem::take(&mut self.outgoing);
         out.clear();
-        // A JR stamp is at its event's offset, so it is sent with it.
+        // A JR stamp is at its event's offset, so it is sent with it. An offset
+        // is its frame less the batch's first and a send time is a function of
+        // the frame, so events on one offset share one send time and any
+        // match of the search is the right one.
         out.extend(events.iter().map(|&(at, ump)| {
             Outgoing {
                 at,
@@ -2538,6 +2541,31 @@ mod tests {
             Frame::new(1_001),
             "the origin moved by the span"
         );
+    }
+
+    /// **Events sharing a frame are sent at that frame's time, whichever
+    /// event of the frame a send is looked up by.** The send time is a pure
+    /// function of the frame, and an offset is the frame less the batch's
+    /// first, so one offset names one frame and one time: three events on two
+    /// frames, with stamping on, each go out at the time its own frame has.
+    #[test]
+    fn events_on_one_frame_share_that_frames_send_time() {
+        let t0 = Instant::now() + Duration::from_secs(60);
+        let (mut out, log) = timed_out();
+        out.set_stamping(true);
+        let timing = timing_at(t0, OutputTerms::default());
+        let map = timing.map.unwrap();
+        out.send_frames(&[at(1_000), at(2_000), at(1_000)], Some(&timing));
+        let sent = taken(&log);
+        let notes: Vec<_> = sent.iter().filter(|e| e.ump == note(0).1).collect();
+        assert_eq!(notes.len(), 3);
+        for (note, frame) in notes.iter().zip([1_000, 2_000, 1_000]) {
+            assert_eq!(
+                note.send,
+                SendAt::At(map.os_at(Frame::new(frame)).unwrap()),
+                "frame {frame}"
+            );
+        }
     }
 
     /// Keeps every batch's events with the time each was sent at.

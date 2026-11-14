@@ -190,6 +190,60 @@ fn an_iver_that_is_not_four_bytes_is_ignored() {
     }
 }
 
+/// `base()` with its instrument's `sampleID` generator turned into an unused
+/// one, so its only zone is a global zone and no region names a sample, and its
+/// `smpl` sub-chunk replaced by `smpl` (or removed).
+fn without_regions(smpl: Option<&[u8]>) -> Vec<u8> {
+    let file = bytes(
+        &[Preset {
+            name: "p",
+            bank: 0,
+            program: 0,
+            zones: vec![(vec![], 0)],
+        }],
+        &[Inst {
+            name: "i",
+            zones: vec![vec![]],
+        }],
+    );
+    let mut file = file;
+    let igen = file.windows(4).position(|w| w == b"igen").unwrap() + 8;
+    let igen_end = igen + word(&file, igen - 4) as usize;
+    for record in (igen..igen_end).step_by(4) {
+        if file[record..record + 2] == 53u16.to_le_bytes() {
+            file[record..record + 2].copy_from_slice(&14u16.to_le_bytes());
+        }
+    }
+    let at = file.windows(4).position(|w| w == b"smpl").unwrap();
+    let old = 8 + word(&file, at + 4) as usize;
+    let new = smpl.map(|d| chunk(b"smpl", d)).unwrap_or_default();
+    let mut list = at - 8;
+    while &file[list..list + 4] != b"LIST" || &file[list + 8..list + 12] != b"sdta" {
+        list -= 1;
+    }
+    let mut out = file[..at].to_vec();
+    out.extend(&new);
+    out.extend(&file[at + old..]);
+    let delta = new.len() as i64 - old as i64;
+    let size = word(&out, list + 4);
+    set_word(&mut out, list + 4, (i64::from(size) + delta) as u32);
+    let riff = word(&out, 4);
+    set_word(&mut out, 4, (i64::from(riff) + delta) as u32);
+    out
+}
+
+/// Section 6: the sdta list may have no `smpl` sub-chunk, or a zero-length
+/// one, and the file still loads, with no sample data.
+/// Spec: sf2.sdta.smpl.optional
+#[test]
+fn a_missing_or_empty_smpl_loads_with_no_sample_data() {
+    for (what, smpl) in [("missing", None), ("zero-length", Some(&[][..]))] {
+        let font = load(without_regions(smpl)).unwrap_or_else(|e| panic!("{what} smpl: {e}"));
+        assert!(font.wave_data().is_empty(), "{what} smpl");
+        assert!(font.instruments()[0].regions().is_empty(), "{what} smpl");
+    }
+}
+
 /// A file cut anywhere is an error and never a panic.
 /// Spec: sf2.riff.damage.rejected
 #[test]

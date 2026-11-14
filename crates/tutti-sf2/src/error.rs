@@ -52,9 +52,6 @@ pub enum Error {
     /// header fits in what is left of the list.
     #[error("the '{}' chunk has an invalid size", Code(.0))]
     InvalidChunkSize([u8; 4]),
-    /// The file has no usable `smpl` chunk.
-    #[error("no valid sample data was found")]
-    SampleDataNotFound,
     /// The sample data is compressed (SoundFont 3).
     #[error("SoundFont3 is not yet supported")]
     UnsupportedSampleFormat,

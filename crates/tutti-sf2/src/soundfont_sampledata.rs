@@ -41,17 +41,12 @@ impl SoundFontSampleData {
             skip_pad(reader, size, end)?;
         }
 
-        let Some(wave_data) = wave_data else {
-            return Err(Error::SampleDataNotFound);
-        };
-
-        if wave_data.len() < 2 {
-            return Err(Error::SampleDataNotFound);
-        }
+        // A file with no `smpl`, or an empty one, has no sample data.
+        let wave_data = wave_data.unwrap_or_default();
 
         // SoundFont3 compressed sample format: the first four bytes read "OggS".
         let ogg_magic = [i16::from_le_bytes(*b"Og"), i16::from_le_bytes(*b"gS")];
-        if wave_data[..2] == ogg_magic {
+        if wave_data.starts_with(&ogg_magic) {
             return Err(Error::UnsupportedSampleFormat);
         }
 

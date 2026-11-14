@@ -1,4 +1,5 @@
 use super::*;
+use crate::virtual_endpoint::VirtualProtocol;
 use tutti_fixtures::midi;
 
 /// Enumeration must not panic on a machine with no MIDI devices, and must
@@ -140,10 +141,11 @@ fn a_scheduled_packet_is_held_until_its_time_and_now_goes_at_once() {
     use tutti_ump::MidiChannel;
 
     let (tx, rx) = mpsc::channel();
-    let _destination = UmpVirtualDestination::new("tutti-sched-out", move |ump| {
-        let _ = tx.send((Instant::now(), ump));
-    })
-    .expect("a virtual UMP destination");
+    let _destination =
+        UmpVirtualDestination::new("tutti-sched-out", VirtualProtocol::Midi2, move |ump| {
+            let _ = tx.send((Instant::now(), ump));
+        })
+        .expect("a virtual UMP destination");
     let backend = CoreMidiEndpoints::new();
     let id = backend
         .outputs()

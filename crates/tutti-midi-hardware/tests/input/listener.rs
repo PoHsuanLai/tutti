@@ -6,6 +6,7 @@
 //! block begins and its frame) and renders blocks as real time passes, logging
 //! what the inlets emit.
 
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tutti_types::MaxBlock;
@@ -14,7 +15,7 @@ use tutti_graph::{
     Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, Io, Node, NodeKey, OutPort,
     Prepare, Shape, Source, Status, TransportPosition, Unforkable,
 };
-use tutti_midi_hardware::DeviceInlets;
+use tutti_midi_hardware::{DeviceInlets, MidiIngestNode};
 use tutti_midi_runtime::InletChange;
 use tutti_types::{ChannelLayout, Frame, SampleRate, Samples};
 use tutti_ump::Ump;
@@ -47,6 +48,7 @@ impl BlockClock {
 const RATE: f64 = 44_100.0;
 const BLOCK: usize = 64;
 const SINK: NodeKey = NodeKey(1);
+const INGEST: NodeKey = NodeKey(2);
 
 /// Logs every event its inputs receive.
 struct Sink {
@@ -82,12 +84,31 @@ pub struct Listener {
     clock: BlockClock,
     origin: Instant,
     frames: u64,
+    /// Where an inlet is wired: the sink, or an ingest node in front of it.
+    entry: NodeKey,
 }
 
 impl Listener {
     /// A graph over `inlets`, whose clock reads the wall time now at frame 0.
     pub fn over(inlets: &Arc<DeviceInlets>) -> Self {
-        let slots = inlets.slots();
+        Self::build(inlets, false)
+    }
+
+    /// As [`over`](Self::over), with the engine's ingest node between the
+    /// inlets and the log: a MIDI 1.0 message arrives widened.
+    pub fn over_ingest(inlets: &Arc<DeviceInlets>) -> Self {
+        Self::build(inlets, true)
+    }
+
+    fn build(inlets: &Arc<DeviceInlets>, ingest: bool) -> Self {
+        // The sink hears an event input per inlet slot, or, behind the ingest
+        // node, per output port of its first Group.
+        let ports = tutti_midi_runtime::MidiInputPorts::FIRST_GROUP.count();
+        let slots = if ingest {
+            NonZeroUsize::new(ports).expect("a port")
+        } else {
+            inlets.slots()
+        };
         let (mut editor, exec) = Editor::new(Prepare::new(
             SampleRate::of(RATE),
             MaxBlock::of(Samples(BLOCK)),
@@ -108,6 +129,15 @@ impl Listener {
                 node: SINK,
                 port: 0,
             })]);
+        if ingest {
+            editor.insert(INGEST, "ingest", MidiIngestNode::new(inlets.slots()));
+            for port in 0..ports as u16 {
+                editor.spec_mut().connect_events(
+                    EventIn { node: SINK, port },
+                    EventEdge::Direct(EventOut { node: INGEST, port }),
+                );
+            }
+        }
         editor.commit().expect("commits");
         let clock = BlockClock::new();
         inlets.set_clock(Some(clock.reader()));
@@ -119,6 +149,7 @@ impl Listener {
             clock,
             origin: Instant::now(),
             frames: 0,
+            entry: if ingest { INGEST } else { SINK },
         }
     }
 
@@ -131,7 +162,7 @@ impl Listener {
                 self.editor.insert(key, "inlet", node);
                 self.editor.spec_mut().connect_events(
                     EventIn {
-                        node: SINK,
+                        node: self.entry,
                         port: slot as u16,
                     },
                     EventEdge::Direct(EventOut { node: key, port: 0 }),

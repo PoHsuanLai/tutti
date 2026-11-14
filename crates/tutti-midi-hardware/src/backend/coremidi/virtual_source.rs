@@ -1,28 +1,32 @@
-//! A **native-UMP** virtual MIDI source (macOS / CoreMIDI).
+//! A virtual MIDI source on CoreMIDI, in the UMP protocol the spec asks for.
 //!
 //! The safe `coremidi` wrapper only exposes a MIDI-1.0 virtual source
-//! (`MIDISourceCreate`), whose only send path is legacy packet bytes, which
-//! carries MIDI 1.0 messages only, so a MIDI-2-only message
-//! (per-note controllers, **and JR Timestamps**) cannot reach the wire through it. Publishing
-//! a genuine UMP stream, the one transport where a JR Timestamp actually
-//! reaches the wire, needs a MIDI-2.0-protocol endpoint. The raw CoreMIDI calls
-//! for it are `tutti-coremidi-ffi`'s (`UmpSource`); this module names the
-//! endpoint and puts its errors in this crate's.
+//! (`MIDISourceCreate`), whose only send path is legacy packet bytes: a
+//! MIDI-2-only message (per-note controllers, JR Timestamps) cannot reach the
+//! wire through it. A UMP endpoint is created with `MIDISourceCreateWithProtocol`;
+//! the raw CoreMIDI calls for it are `tutti-coremidi-ffi`'s (`UmpSource`), and
+//! this module names the endpoint and puts its errors in this crate's.
 //!
-//! [`UmpVirtualSource`] creates one such endpoint and sends `&[u32]` UMP words
-//! directly. It owns the endpoint, disposed on drop.
+//! [`UmpVirtualSource`] owns the endpoint, disposed on drop.
 
 use tracing::debug;
-use tutti_coremidi_ffi::UmpSource;
+use tutti_coremidi_ffi::{Protocol, UmpSource};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
+use crate::virtual_endpoint::{SourceBackend, VirtualProtocol, VirtualSpec};
 
-/// A CoreMIDI virtual source that speaks the **MIDI 2.0 (UMP) protocol**.
+/// CoreMIDI's protocol for the spec's.
+pub(super) fn protocol_of(protocol: VirtualProtocol) -> Protocol {
+    match protocol {
+        VirtualProtocol::Midi1 => Protocol::Midi1,
+        VirtualProtocol::Midi2 => Protocol::Midi2,
+    }
+}
+
+/// A CoreMIDI virtual source that speaks the UMP protocol it was created with.
 ///
-/// Unlike a MIDI-1.0 virtual source (byte packets, which carry MIDI 1.0
-/// messages only), this endpoint carries UMP
-/// words end to end, so JR Timestamps and other MIDI-2-only messages survive to
-/// the wire. Owns its endpoint, which is disposed on drop.
+/// It carries UMP words end to end, so JR Timestamps and other MIDI-2-only
+/// messages survive to the wire. Owns its endpoint, which is disposed on drop.
 #[must_use = "dropping it removes the virtual source"]
 pub struct UmpVirtualSource {
     source: UmpSource,
@@ -39,52 +43,45 @@ impl core::fmt::Debug for UmpVirtualSource {
 }
 
 impl UmpVirtualSource {
-    /// Creates a MIDI-2.0 virtual source named `name`, visible to other apps as a
-    /// UMP-capable MIDI source.
-    ///
-    /// Keep the value alive: dropping it disposes the endpoint.
+    /// Publishes the source `spec` describes. The endpoint carries a name and a
+    /// protocol: CoreMIDI's endpoint API takes no Function Blocks.
     ///
     /// # Errors
     ///
-    /// [`Error::CoreMidi`](crate::Error::CoreMidi) if CoreMIDI refuses either the
-    /// client or the endpoint.
-    pub fn new(name: &str) -> Result<Self> {
+    /// [`Error::VirtualBlocksUnsupported`] when `spec` declares blocks,
+    /// and [`Error::CoreMidi`] if CoreMIDI refuses the client or the endpoint.
+    pub(crate) fn open(spec: &VirtualSpec) -> Result<Self> {
+        if !spec.function_blocks().is_empty() {
+            return Err(Error::VirtualBlocksUnsupported);
+        }
+        Self::new(spec.name().as_str(), spec.protocol())
+    }
+
+    /// Creates a virtual source named `name` carrying `protocol`.
+    pub(crate) fn new(name: &str, protocol: VirtualProtocol) -> Result<Self> {
         // CoreMIDI sends notifications to the run loop of the process's first
         // client, so the device watch's client starts before the source's own
         // (see `hub_first`).
         super::hub_first();
-        let source = UmpSource::new(name)?;
-        debug!(name, "Created native-UMP virtual MIDI source");
+        let source = UmpSource::new(name, protocol_of(protocol))?;
+        debug!(name, ?protocol, "Created virtual MIDI source");
         Ok(Self {
             source,
             name: name.to_string(),
         })
     }
+}
 
-    /// Publish one UMP message (1-4 words) to the endpoint's subscribers.
-    ///
-    /// `words` is a complete UMP message; its length must match the message type
-    /// (a JR Timestamp is 1 word, a note is 1-2, SysEx8 is 4). Empty input is a
-    /// no-op. CoreMIDI copies the words, so no lifetime escapes this call.
+impl SourceBackend for UmpVirtualSource {
+    /// Publishes one UMP message (1-4 words) to the endpoint's subscribers;
+    /// CoreMIDI copies the words, so no lifetime escapes the call.
     ///
     /// # Errors
     ///
-    /// [`Error::CoreMidi`](crate::Error::CoreMidi) when the message will not fit
-    /// the event list, or when `MIDIReceivedEventList` returns a non-zero
-    /// `OSStatus`.
-    pub fn send_ump(&self, words: &[u32]) -> Result<()> {
+    /// [`Error::CoreMidi`] when the message will not fit the event list, or when
+    /// `MIDIReceivedEventList` returns a non-zero `OSStatus`.
+    fn send(&self, words: &[u32]) -> Result<()> {
         Ok(self.source.send(words)?)
-    }
-
-    /// The source's display name.
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-}
-
-impl Drop for UmpVirtualSource {
-    fn drop(&mut self) {
-        debug!(name = %self.name, "Dropping native-UMP virtual MIDI source");
     }
 }
 

@@ -1,6 +1,7 @@
 use super::super::CoreMidiEndpoints;
 use super::*;
 use crate::endpoints::MidiEndpoints;
+use crate::virtual_endpoint::VirtualProtocol;
 use std::sync::mpsc;
 use std::time::Duration;
 use tutti_fixtures::midi;
@@ -17,7 +18,7 @@ use tutti_ump::{DiscoveryFilter, Message, MidiChannel, Protocol, Stream, Ump, Um
 fn a_packet_sent_to_the_destination_reaches_its_callback() {
     let (tx, rx) = mpsc::channel();
     let name = "tutti-vdest-delivery";
-    let _destination = UmpVirtualDestination::new(name, move |ump| {
+    let _destination = UmpVirtualDestination::new(name, VirtualProtocol::Midi2, move |ump| {
         let _ = tx.send(ump);
     })
     .expect("a virtual UMP destination");

@@ -32,3 +32,25 @@ fn devices_over_the_stub_is_empty_and_quiet() {
         Err(crate::RecvTimeoutError::Timeout)
     ));
 }
+
+/// A platform with no backend publishes no virtual endpoint, and says so with
+/// the named error rather than returning an endpoint that does nothing.
+#[test]
+fn virtual_endpoints_report_unsupported() {
+    let spec = VirtualSpec::new(tutti_midi_device::EndpointName::new("tutti-stub").unwrap());
+    assert!(matches!(
+        open_virtual_source(&spec),
+        Err(Error::Unsupported(_))
+    ));
+    let inlets = tutti_midi_runtime::DeviceInlets::new(
+        std::num::NonZeroUsize::MIN,
+        tutti_graph::EventCapacity::of(8),
+        std::time::Duration::ZERO,
+    );
+    let ports = crate::HardwareMidiInputs::new(inlets);
+    let producer = ports.open_input_port("virtual").expect("a slot");
+    assert!(matches!(
+        open_virtual_destination(&spec, producer),
+        Err(Error::Unsupported(_))
+    ));
+}

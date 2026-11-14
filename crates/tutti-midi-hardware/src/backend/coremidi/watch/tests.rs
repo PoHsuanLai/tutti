@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use super::*;
 use crate::Devices;
 use crate::backend::coremidi::UmpVirtualDestination;
+use crate::virtual_endpoint::VirtualProtocol;
 use tutti_midi_device::DeviceEvent;
 
 /// `Devices` with one subscription, and the blocking batch `wait` these tests
@@ -68,7 +69,8 @@ fn a_virtual_destination_comes_and_goes_and_the_watch_unregisters() {
     let devices = Watched::open();
     assert_eq!(registered(), 1);
 
-    let destination = UmpVirtualDestination::new(&name, |_| {}).expect("creates");
+    let destination =
+        UmpVirtualDestination::new(&name, VirtualProtocol::Midi2, |_| {}).expect("creates");
     let added = until(
         &devices,
         |e| matches!(e, DeviceEvent::Added(i) if i.name.contains(&name)),
@@ -93,7 +95,8 @@ fn notifications_reach_the_hub_when_the_shared_client_is_created() {
     hub().expect("hub");
     let before = CALLBACKS.load(std::sync::atomic::Ordering::Relaxed);
     let name = format!("tutti-callbacks-{}", std::process::id());
-    let destination = UmpVirtualDestination::new(&name, |_| {}).expect("creates");
+    let destination =
+        UmpVirtualDestination::new(&name, VirtualProtocol::Midi2, |_| {}).expect("creates");
     let deadline = Instant::now() + PATIENCE;
     while CALLBACKS.load(std::sync::atomic::Ordering::Relaxed) == before {
         assert!(
@@ -113,7 +116,7 @@ fn notifications_reach_the_hub_when_a_virtual_source_comes_first() {
     use crate::backend::coremidi::UmpVirtualSource;
     let name = format!("tutti-source-{}", std::process::id());
     let before = CALLBACKS.load(std::sync::atomic::Ordering::Relaxed);
-    let source = UmpVirtualSource::new(&name).expect("creates");
+    let source = UmpVirtualSource::new(&name, VirtualProtocol::Midi2).expect("creates");
     let deadline = Instant::now() + PATIENCE;
     while CALLBACKS.load(std::sync::atomic::Ordering::Relaxed) == before {
         assert!(

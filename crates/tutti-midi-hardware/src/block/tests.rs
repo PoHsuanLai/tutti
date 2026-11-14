@@ -97,3 +97,24 @@ fn the_other_fields_come_through() {
     assert_eq!(hint(3), UiHint::Both);
     assert_eq!(hint(9), UiHint::Unknown);
 }
+
+// A block handed to an OS is read back as the same block: `RawBlock::of` is
+// `function_block`'s inverse over every field the spec's Function Block Info
+// carries (§7.1.8).
+#[test]
+fn a_block_written_to_an_os_record_reads_back_whole() {
+    let block = FunctionBlock::builder(
+        FunctionBlockId::new(5).unwrap(),
+        BlockDirection::Bidirectional,
+        FirstGroup::new(3).unwrap(),
+        GroupSpan::new(1).unwrap(),
+    )
+    .active(false)
+    .ui_hint(UiHint::Both)
+    .midi1(Midi1Port::Restricted)
+    .midi_ci(2, 4)
+    .name(BlockName::new("Pads").unwrap())
+    .build()
+    .unwrap();
+    assert_eq!(RawBlock::of(&block).function_block(), Some(block));
+}

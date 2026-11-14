@@ -34,9 +34,16 @@ impl SoundFontSampleData {
             let (id, size) = next_chunk(reader, end)?;
 
             match id.as_bytes() {
+                // The low bytes of a 24-bit pool: not read.
+                b"sm24" => reader.discard_data(size)?,
                 b"smpl" => wave_data = Some(reader.read_wave_data(size)?),
-                // A reader ignores what it does not know (section 4).
-                _ => reader.discard_data(size)?,
+                // Only the INFO list may hold what a reader does not know.
+                _ => {
+                    return Err(Error::UnknownChunk {
+                        list: *b"sdta",
+                        id: *id.as_bytes(),
+                    });
+                }
             }
             skip_pad(reader, size, end)?;
         }

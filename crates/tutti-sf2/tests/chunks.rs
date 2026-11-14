@@ -60,28 +60,50 @@ fn insert_first(mut file: Vec<u8>, kind: &[u8; 4], chunk: &[u8]) -> Vec<u8> {
     file
 }
 
-/// Section 4: a reader ignores a sub-chunk it does not know, in each of the
-/// three lists, whatever its size.
+/// A reader ignores an INFO sub-chunk it does not know, whatever its size.
 /// Spec: sf2.riff.info.unknown.ignored
 #[test]
-fn an_unknown_sub_chunk_is_ignored_in_every_list() {
-    for kind in [b"INFO", b"sdta", b"pdta"] {
+fn an_unknown_info_sub_chunk_is_ignored() {
+    let junk = chunk(b"JUNK", &[1, 2, 3, 4]);
+    let font = load(insert_first(base(), b"INFO", &junk)).unwrap();
+    assert_eq!(font.presets().len(), 1);
+}
+
+/// An unknown sub-chunk in `sdta` or `pdta` is a structural error, refused by
+/// name with the list and the sub-chunk, not skipped. The known sub-chunks of
+/// each list (`sm24` in `sdta`) are not unknown.
+/// Spec: sf2.riff.unknown.outside-info.structural
+#[test]
+fn an_unknown_sub_chunk_outside_info_is_refused() {
+    for kind in [b"sdta", b"pdta"] {
         let junk = chunk(b"JUNK", &[1, 2, 3, 4]);
-        let font = load(insert_first(base(), kind, &junk))
-            .unwrap_or_else(|e| panic!("{}: {e}", String::from_utf8_lossy(kind)));
-        assert_eq!(font.presets().len(), 1);
+        let error = load(insert_first(base(), kind, &junk)).unwrap_err();
+        assert!(
+            matches!(error, Error::UnknownChunk { list, id } if &list == kind && &id == b"JUNK"),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "the '{}' list has an unknown 'JUNK' sub-chunk",
+                String::from_utf8_lossy(kind)
+            )
+        );
     }
+    let sm24 = chunk(b"sm24", &[0; 4]);
+    assert!(load(insert_first(base(), b"sdta", &sm24)).is_ok());
 }
 
 /// RIFF pads a chunk of odd size to an even length, and the pad is not in the
-/// chunk's size. An odd-sized chunk (an unknown one, and a known string one)
+/// chunk's size. An odd-sized chunk (an unknown INFO one, a known string one,
+/// and a known one of the other two lists, `sm24` and `pmod`)
 /// before the rest leaves the rest where it was: the comment reads whole and
 /// the file still parses.
 /// Spec: sf2.riff.chunk.pad
 #[test]
 fn an_odd_sized_chunk_is_padded_to_even() {
-    for kind in [b"INFO", b"sdta", b"pdta"] {
-        let font = load(insert_first(base(), kind, &chunk(b"JUNK", &[7, 7, 7]))).unwrap();
+    for (kind, id) in [(b"INFO", b"JUNK"), (b"sdta", b"sm24"), (b"pdta", b"pmod")] {
+        let font = load(insert_first(base(), kind, &chunk(id, &[7, 7, 7]))).unwrap();
         assert_eq!(font.presets().len(), 1);
     }
     let font = load(insert_first(base(), b"INFO", &chunk(b"ICMT", b"abcd\0"))).unwrap();

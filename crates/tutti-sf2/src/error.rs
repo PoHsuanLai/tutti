@@ -55,6 +55,16 @@ pub enum Error {
     /// The sample data is compressed (SoundFont 3).
     #[error("SoundFont3 is not yet supported")]
     UnsupportedSampleFormat,
+    /// A list has a sub-chunk the format does not define there. Only the INFO
+    /// list may carry sub-chunks a reader does not know (and skips); an unknown
+    /// one in `sdta` or `pdta` is a structural error (section 10.2).
+    #[error("the '{}' list has an unknown '{}' sub-chunk", Code(.list), Code(.id))]
+    UnknownChunk {
+        /// The list type, `sdta` or `pdta`.
+        list: [u8; 4],
+        /// The sub-chunk's id; a byte that is not printable ASCII is `?`.
+        id: [u8; 4],
+    },
     /// A required sub-chunk is missing.
     #[error("the '{}' sub-chunk was not found", Code(.0))]
     SubChunkNotFound([u8; 4]),

@@ -12,7 +12,7 @@ use tutti_session::{
     SessionEvent,
 };
 use tutti_transport::MotionEvent;
-use tutti_types::{Beat, ChannelLayout, InterleavedMut, MaxBlock, SampleRate, Samples};
+use tutti_types::{Beat, ChannelLayout, InterleavedMut, SampleRate};
 
 const RATE: f64 = 48_000.0;
 /// File frames.
@@ -31,11 +31,8 @@ fn write_ramp(path: &Path) {
 
 fn session() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds")
 }
 

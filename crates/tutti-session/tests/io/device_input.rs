@@ -81,6 +81,7 @@ fn live(record: &Arc<Mutex<Record>>) -> (LiveSession, ManualStream) {
     let (driver, stream) = ManualStreamDriver::new();
     let live = Session::builder()
         .input_opener(Capture(Arc::clone(record)))
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .expect("builds with no device");
     (live, stream)

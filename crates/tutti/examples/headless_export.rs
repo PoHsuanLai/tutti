@@ -27,11 +27,9 @@ use tutti::{
 /// The rate every render below runs at.
 const RATE: SampleRate = SampleRate::SR_48K;
 
-/// A detached session whose outputs hear `node`, one second of a project.
+/// A session whose outputs hear `node`, one second of a project.
 fn session_with(node: impl tutti::graph::Node + Clone + 'static) -> Session {
-    let mut session = Session::builder()
-        .build_detached(RATE)
-        .expect("a detached session builds");
+    let mut session = Session::new(RATE).expect("a session builds");
     let (node, _) = session.graph().add(tutti::graph::ForkByClone(node));
     session.graph().connect(node, Root).unwrap();
     session

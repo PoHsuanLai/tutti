@@ -684,7 +684,10 @@ fn pull(s: &Session, layout: ChannelLayout, frames: usize, block: usize) -> Vec<
 #[test]
 fn an_offline_session_renders_a_sines_analytic_rms() {
     let mut s = Session::builder()
-        .build_offline(RATE, ChannelLayout::MONO, MaxBlock::of(Samples(512)))
+        .sample_rate(RATE)
+        .outputs(ChannelLayout::MONO)
+        .max_block(MaxBlock::of(Samples(512)))
+        .build()
         .expect("builds");
     let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
     for c in 0..s.graph_ref().outputs() {
@@ -719,7 +722,9 @@ fn an_offline_session_renders_a_sines_analytic_rms() {
 fn a_latent_branch_is_compensated_on_the_other_to_the_sample() {
     const N: usize = 37;
     let mut s = Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(256)))
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(256)))
+        .build()
         .expect("builds");
     let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(440.0))));
     let (late, _) = s.graph().add(ForkByClone(Late::<N>::new()));

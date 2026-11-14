@@ -15,7 +15,9 @@ const RATE: SampleRate = SampleRate::SR_48K;
 
 fn offline_session() -> Session {
     Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(128)))
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(128)))
+        .build()
         .expect("an offline session builds")
 }
 

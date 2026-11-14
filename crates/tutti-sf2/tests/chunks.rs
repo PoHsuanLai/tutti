@@ -38,7 +38,7 @@ fn set_word(file: &mut [u8], at: usize, value: u32) {
 /// A chunk's bytes: id, size, data, and the pad byte an odd size takes.
 fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
     let mut bytes = id.to_vec();
-    bytes.extend((data.len() as u32).to_le_bytes());
+    bytes.extend(u32::try_from(data.len()).unwrap().to_le_bytes());
     bytes.extend(data);
     if data.len() % 2 == 1 {
         bytes.push(0);
@@ -50,12 +50,13 @@ fn chunk(id: &[u8; 4], data: &[u8]) -> Vec<u8> {
 fn insert_first(mut file: Vec<u8>, kind: &[u8; 4], chunk: &[u8]) -> Vec<u8> {
     let mut at = 12;
     while &file[at + 8..at + 12] != kind {
-        at += 8 + word(&file, at + 4) as usize;
+        at += 8 + usize::try_from(word(&file, at + 4)).unwrap();
     }
+    let grow = u32::try_from(chunk.len()).unwrap();
     let size = word(&file, at + 4);
-    set_word(&mut file, at + 4, size + chunk.len() as u32);
+    set_word(&mut file, at + 4, size.checked_add(grow).unwrap());
     let riff = word(&file, 4);
-    set_word(&mut file, 4, riff + chunk.len() as u32);
+    set_word(&mut file, 4, riff.checked_add(grow).unwrap());
     file.splice(at + 12..at + 12, chunk.iter().copied());
     file
 }
@@ -230,14 +231,14 @@ fn without_regions(smpl: Option<&[u8]>) -> Vec<u8> {
     );
     let mut file = file;
     let igen = file.windows(4).position(|w| w == b"igen").unwrap() + 8;
-    let igen_end = igen + word(&file, igen - 4) as usize;
+    let igen_end = igen + usize::try_from(word(&file, igen - 4)).unwrap();
     for record in (igen..igen_end).step_by(4) {
         if file[record..record + 2] == 53u16.to_le_bytes() {
             file[record..record + 2].copy_from_slice(&14u16.to_le_bytes());
         }
     }
     let at = file.windows(4).position(|w| w == b"smpl").unwrap();
-    let old = 8 + word(&file, at + 4) as usize;
+    let old = 8 + usize::try_from(word(&file, at + 4)).unwrap();
     let new = smpl.map(|d| chunk(b"smpl", d)).unwrap_or_default();
     let mut list = at - 8;
     while &file[list..list + 4] != b"LIST" || &file[list + 8..list + 12] != b"sdta" {
@@ -246,11 +247,21 @@ fn without_regions(smpl: Option<&[u8]>) -> Vec<u8> {
     let mut out = file[..at].to_vec();
     out.extend(&new);
     out.extend(&file[at + old..]);
-    let delta = new.len() as i64 - old as i64;
+    // Each size loses the old chunk and gains the new one, in u32: a size that
+    // would leave the range fails here rather than wrapping.
+    let (old, new) = (
+        u32::try_from(old).unwrap(),
+        u32::try_from(new.len()).unwrap(),
+    );
+    let resize = |size: u32| {
+        size.checked_sub(old)
+            .and_then(|s| s.checked_add(new))
+            .unwrap()
+    };
     let size = word(&out, list + 4);
-    set_word(&mut out, list + 4, (i64::from(size) + delta) as u32);
+    set_word(&mut out, list + 4, resize(size));
     let riff = word(&out, 4);
-    set_word(&mut out, 4, (i64::from(riff) + delta) as u32);
+    set_word(&mut out, 4, resize(riff));
     out
 }
 

@@ -207,14 +207,13 @@ fn an_unused_number_after_the_sample_id_leaves_the_zone_local() {
 
 /// 7.10: a rate of 0 is illegal and the nearest practical rate is used in its
 /// place: 400 Hz, the low end of the practical range 400 to 50 000 Hz, on the
-/// header and on the region that names it. A rate above 0 is read as stated,
-/// 96 000 Hz included.
+/// header and on the region that names it.
 /// Spec: sf2.pdta.shdr.rate.zero
 #[test]
 fn a_header_rate_of_zero_reads_as_the_nearest_practical_rate() {
     let file = bytes(&[preset("a", 0, 1)], &[inst(1)]);
     let shdr = chunk(&file, b"shdr");
-    for (stated, played) in [(0, 400.0), (44_100, 44_100.0), (96_000, 96_000.0)] {
+    for (stated, played) in [(0, 400.0), (44_100, 44_100.0)] {
         let mut file = file.clone();
         put(&mut file, shdr + 36, stated, 4);
         let font = load(file).unwrap();
@@ -225,4 +224,25 @@ fn a_header_rate_of_zero_reads_as_the_nearest_practical_rate() {
         );
     }
     assert_eq!(tutti_sf2::NEAREST_PRACTICAL_RATE.get(), 400.0);
+}
+
+/// 7.10: a rate outside 400 to 50 000 Hz other than 0 may be replaced by the
+/// nearest practical one; it is kept as stated, so a sample plays at the pitch
+/// it was recorded for, on the header and on the region that names it.
+/// Spec: sf2.pdta.shdr.rate.impractical
+#[test]
+fn a_rate_outside_the_practical_range_is_kept_as_stated() {
+    let file = bytes(&[preset("a", 0, 1)], &[inst(1)]);
+    let shdr = chunk(&file, b"shdr");
+    for stated in [1, 200, 399, 50_001, 96_000, 192_000] {
+        let mut file = file.clone();
+        put(&mut file, shdr + 36, stated, 4);
+        let font = load(file).unwrap();
+        let played = f64::from(stated);
+        assert_eq!(font.sample_headers()[0].sample_rate().get(), played);
+        assert_eq!(
+            font.instruments()[0].regions()[0].sample_rate().get(),
+            played
+        );
+    }
 }

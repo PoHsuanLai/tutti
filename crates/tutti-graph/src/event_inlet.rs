@@ -385,11 +385,11 @@ impl From<EventCapacity> for u32 {
 ///
 /// ```
 /// use tutti_graph::{EventCapacity, EventInletNode, Stamp};
-/// use tutti_fixtures::midi::m1_note_on;
-/// use tutti_ump::{MidiChannel, NoteNumber, U7};
+/// use tutti_fixtures::midi;
+/// use tutti_ump::{MidiChannel, U7};
 ///
 /// let (node, mut writer) = EventInletNode::pair(EventCapacity::of(256));
-/// let note_on = m1_note_on(MidiChannel::FIRST, NoteNumber::of(60), U7::of(100));
+/// let note_on = midi::m1_note_on(MidiChannel::FIRST, 60, U7::of(100));
 /// writer.push(Stamp::NextBlock, note_on).unwrap(); // from any one thread
 /// assert_eq!(node.capacity(), EventCapacity::of(256));
 /// ```

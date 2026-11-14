@@ -65,7 +65,7 @@ pub fn interleave<S: Sample>(
 /// The same as [`convert`].
 pub fn deinterleave<S: Sample>(
     src: Interleaved<'_, S>,
-    mut dst: PlanesMut<'_, S>,
+    mut dst: PlanesMut<'_, '_, S>,
 ) -> Result<(), BufferError> {
     same_shape(src.layout(), dst.layout(), src.len(), dst.len())?;
     let stride = src.stride();

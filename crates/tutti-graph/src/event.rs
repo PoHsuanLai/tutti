@@ -629,10 +629,10 @@ const _: () = {
 
 impl Event {
     /// A MIDI event at `offset`.
-    pub const fn midi(offset: Offset, ump: Ump) -> Self {
+    pub fn midi(offset: Offset, ump: impl Into<Ump>) -> Self {
         Self {
             offset,
-            kind: EventKind::Midi(ump),
+            kind: EventKind::Midi(ump.into()),
         }
     }
 
@@ -1171,9 +1171,9 @@ pub(crate) fn merge_into(sources: &[&[Event]], out: &mut Vec<Event>, cap: usize)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_fixtures::midi::{m1_note_off, m1_note_on};
+
     use tutti_types::MaxBlock;
-    use tutti_ump::{MidiChannel, NoteNumber, U7};
+    use tutti_ump::{Message, MidiChannel, NoteNumber, U7, Voice1};
 
     fn ev(offset: u32, tag: u32) -> Event {
         Event::midi(Offset::raw(offset), Ump([tag, 0, 0, 0]))
@@ -1372,8 +1372,8 @@ mod tests {
     #[test]
     fn only_a_midi_note_off_event_is_a_note_off() {
         let (c, n, v) = (MidiChannel::FIRST, NoteNumber::of(60), U7::of(0x40));
-        assert!(Event::midi(Offset::ZERO, m1_note_off(c, n, v)).is_note_off());
-        assert!(!Event::midi(Offset::ZERO, m1_note_on(c, n, v)).is_note_off());
+        assert!(Event::midi(Offset::ZERO, Message::midi1(c, Voice1::note_off(n, v))).is_note_off());
+        assert!(!Event::midi(Offset::ZERO, Message::midi1(c, Voice1::note_on(n, v))).is_note_off());
         assert!(!Event::ramp(Offset::ZERO, ParamRamp::foreign(1, 0.0, Samples(0))).is_note_off());
     }
 
@@ -1441,7 +1441,10 @@ mod tests {
     fn off(offset: u32) -> Event {
         Event::midi(
             Offset::raw(offset),
-            m1_note_off(MidiChannel::FIRST, NoteNumber::of(60), U7::of(0)),
+            Message::midi1(
+                MidiChannel::FIRST,
+                Voice1::note_off(NoteNumber::of(60), U7::of(0)),
+            ),
         )
     }
 

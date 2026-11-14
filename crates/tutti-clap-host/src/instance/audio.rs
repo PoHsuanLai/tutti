@@ -64,14 +64,15 @@ impl<'a> ProcessOutputRef<'a> {
 /// fields you don't need — compiles to zero-cost empty slices and None.
 ///
 /// ```no_run
-/// # use tutti_ump::{MidiChannel, MidiGroup};
+/// # use tutti_fixtures::midi;
+/// # use tutti_ump::{MidiChannel, NoteVelocity};
 /// # use tutti_graph::Offset;
 /// # use tutti_plugin_types::AudioBufferMut;
 /// # use tutti_clap_host::{ClapProcessor, ClapProcessContext, TransportInfo};
 /// # fn ex(plugin: &mut ClapProcessor, buffer: &mut AudioBufferMut<'_, '_>)
 /// # -> tutti_clap_host::Result<()> {
 /// let transport = TransportInfo::default().with_tempo(120.0);
-/// let midi = [(Offset::ZERO, tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384))];
+/// let midi = [(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 16384))];
 /// plugin.process(buffer, &ClapProcessContext {
 ///     midi: &midi,
 ///     transport: Some(&transport),
@@ -138,14 +139,15 @@ impl ClapProcessor {
     /// # Examples
     ///
     /// ```no_run
-    /// # use tutti_ump::{MidiChannel, MidiGroup};
+    /// # use tutti_fixtures::midi;
+    /// # use tutti_ump::{MidiChannel, NoteVelocity};
     /// # use tutti_graph::Offset;
     /// # use tutti_plugin_types::AudioBufferMut;
     /// # use tutti_clap_host::{ClapProcessor, ClapProcessContext, TransportInfo};
     /// # fn ex(active: &mut ClapProcessor, buffer: &mut AudioBufferMut<'_, '_>)
     /// # -> tutti_clap_host::Result<()> {
     /// let transport = TransportInfo::default().with_tempo(120.0);
-    /// let midi = [(Offset::ZERO, tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 16384))];
+    /// let midi = [(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 16384))];
     /// active.process(buffer, &ClapProcessContext {
     ///     midi: &midi,
     ///     transport: Some(&transport),

@@ -41,7 +41,6 @@ use std::sync::Mutex;
 use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
-use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::ParamId;
 use tutti_types::Samples;
@@ -62,6 +61,7 @@ fn at(k: usize) -> Offset {
 use crate::active;
 #[allow(unused_imports)]
 use active::{Activate, Active, ActiveExt, LoadError, ParamExt, StateExt};
+use tutti_fixtures::midi;
 
 /// A VST3 `ParamID` as the automation vocabulary's address.
 ///
@@ -719,10 +719,7 @@ fn note_on_takes_effect_at_its_sample_offset() {
     let mut failures = Vec::new();
 
     for &offset in &[0usize, 1, 63, 128, 511] {
-        let midi = [(
-            at(offset),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
-        )];
+        let midi = [(at(offset), midi::note_on(MidiChannel::FIRST, 60, 0x8000))];
         let rendered = render(&mut inst, FRAMES, &midi, None, |_, _, _| 0.0);
         let ch0 = &rendered.out[0][0];
 
@@ -855,26 +852,11 @@ fn full_midi_event_list_survives_intact() {
     // Deliberately out of order, with two events sharing offset 256 — the host
     // must sort without merging, and must not drop the note-offs.
     let midi = [
-        (
-            at(300),
-            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x4000),
-        ),
-        (
-            at(0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
-        ),
-        (
-            at(100),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x6000),
-        ),
-        (
-            at(256),
-            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
-        ),
-        (
-            at(256),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 72, 0x7000),
-        ),
+        (at(300), midi::note_off(MidiChannel::FIRST, 64, 0x4000)),
+        (at(0), midi::note_on(MidiChannel::FIRST, 60, 0x8000)),
+        (at(100), midi::note_on(MidiChannel::FIRST, 64, 0x6000)),
+        (at(256), midi::note_off(MidiChannel::FIRST, 60, 0x4000)),
+        (at(256), midi::note_on(MidiChannel::FIRST, 72, 0x7000)),
     ];
 
     let rendered = render(&mut inst, FRAMES, &midi, None, |_, _, _| 0.0);
@@ -1085,10 +1067,7 @@ fn note_expression_reaches_the_plugin_with_its_value() {
 
     // A note to attach the expressions to, then two expressions of different
     // types and values at distinct offsets.
-    let midi = [(
-        at(0),
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
-    )];
+    let midi = [(at(0), midi::note_on(MidiChannel::FIRST, 60, 0x8000))];
     let expressions = [
         NoteExpressionValue {
             sample_offset: 64,
@@ -1178,24 +1157,15 @@ fn a_per_note_pitch_bend_reaches_the_plugin_as_tuning() {
     let quarter_bend = |frame: usize| {
         (
             at(frame),
-            midi::per_note_pitch_bend(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                60,
-                signed_f32_to_bend(0.25).get(),
-            ),
+            midi::per_note_pitch_bend(MidiChannel::FIRST, 60, signed_f32_to_bend(0.25).get()),
         )
     };
     let midi = [
-        (
-            at(0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
-        ),
+        (at(0), midi::note_on(MidiChannel::FIRST, 60, 0x8000)),
         quarter_bend(64),
         (
             at(100),
-            midi::registered_rpn(
-                MidiGroup::FIRST,
+            midi::registered(
                 MidiChannel::FIRST,
                 tutti_ump::Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
                 PitchBendSensitivity::of(24).to_rpn_bits(),

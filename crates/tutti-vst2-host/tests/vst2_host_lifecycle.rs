@@ -23,13 +23,12 @@ use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
 use keyboard_types::{Code, Key, KeyState, Modifiers, NamedKey};
-use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{
     ContentScale, Control, Controller, EditorWindow, KeyEvent, KeyUse, ModifierConvention,
     Normalized, ParamEdit, ParamId, Request,
 };
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::MidiChannel;
 use tutti_vst2_host::{Samples, TimeSignature, TransportInfo, Vst2Loaded, Vst2ProcessContext};
 use tutti_vst2_test_plugin::ProcessCapture;
 
@@ -37,6 +36,7 @@ use tutti_vst2_test_plugin::ProcessCapture;
 mod active;
 
 use active::{Active, ActiveExt};
+use tutti_fixtures::midi;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 64;
@@ -772,7 +772,7 @@ fn midi_is_delivered_in_the_piece_it_falls_in() {
     let at = |frame: usize, note: u8| {
         (
             Offset::of(Samples(frame), Samples(200)),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0x4000),
+            midi::note_on(MidiChannel::FIRST, note, 0x4000),
         )
     };
     let midi = [at(10, 60), at(150, 62)];
@@ -799,7 +799,7 @@ fn the_realtime_flag_is_set_live_and_clear_offline() {
     let mut instance = load(BLOCK);
     let note = [(
         Offset::of(Samples(10), Samples(64)),
-        midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
+        midi::note_on(MidiChannel::FIRST, 60, 0x4000),
     )];
     let flags = |instance: &mut Active| {
         render_f32(instance, 64, &note, None, 0.0);

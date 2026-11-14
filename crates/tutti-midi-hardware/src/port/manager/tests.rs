@@ -3,16 +3,17 @@ use crate::Pushed;
 use crate::testing::{RATE, Rig, ports};
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
-use tutti_fixtures::midi::{noop, note_on};
+
+use tutti_fixtures::midi;
 use tutti_midi_runtime::DeviceInlets;
-use tutti_ump::{MidiChannel, MidiGroup, Ump};
+use tutti_ump::{Message, MidiChannel, Ump, Utility};
 
 fn now() -> Instant {
     Instant::now()
 }
 
 fn note(n: u8) -> Ump {
-    note_on(MidiGroup::FIRST, MidiChannel::FIRST, n, 0x8000)
+    midi::note_on(MidiChannel::FIRST, n, 0x8000)
 }
 
 /// A rig over `slots` inlets with `lead`, whose clock has read once (frame 0 at
@@ -346,7 +347,7 @@ fn a_full_inlet_counts_what_it_drops() {
     let mut handle = manager.open_input_port("Busy").unwrap();
     let id = handle.slot();
     let taken = (0..10)
-        .filter(|_| handle.push(noop(), now()) == Pushed::Sent)
+        .filter(|_| handle.push(Ump::from(Message::Utility(Utility::Noop)), now()) == Pushed::Sent)
         .count();
     assert_eq!(taken, 4);
     assert_eq!(manager.port_info(id).map(|p| p.losses.lost), Some(6));

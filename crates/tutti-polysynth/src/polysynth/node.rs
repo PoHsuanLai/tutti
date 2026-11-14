@@ -48,7 +48,7 @@ impl PolySynth {
     /// [`MODERATE_LANES`] oscillator lanes, `Heavy` past them.
     ///
     /// The editor reads it at every insert and re-prepare. The lane count
-    /// can change only through `&mut` setters (`set_volume`, `set_mpe`),
+    /// can change only through `&mut` setters (`set_volume`),
     /// which a node in a graph is out of reach of, so every read agrees.
     pub(crate) fn cost(&self) -> tutti_graph::Cost {
         if self.config.polyphony.get() * usize::from(self.unison_voice_count().get())

@@ -11,12 +11,14 @@ use crate::{HardwareMidiInputs, Pushed};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
+use tutti_fixtures::midi;
 use tutti_graph::UmpAt;
 use tutti_midi_device::{
     BlockName, Capabilities, DeviceId, EndpointId, FunctionBlock, MAX_ATTEMPTS, PortDirection,
     STEP_TIMEOUT,
 };
 use tutti_ump::ControlValue;
+use tutti_ump::MidiChannel;
 use tutti_ump::{
     Direction as BlockDirection, FirstGroup, FunctionBlockId, GroupSpan, Message, Stream,
     SysexAssembler, SysexStep,
@@ -626,8 +628,6 @@ fn an_endpoint_with_no_output_is_described_not_waited_for() {
 #[test]
 fn stream_messages_never_reach_the_graph() {
     use crate::testing::Rig;
-    use tutti_fixtures::midi::note_on;
-    use tutti_ump::{MidiChannel, MidiGroup};
 
     let inlets = tutti_midi_runtime::DeviceInlets::new(
         NonZeroUsize::new(2).unwrap(),
@@ -651,7 +651,7 @@ fn stream_messages_never_reach_the_graph() {
             stream_configuration: false,
         },
     }));
-    let note = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+    let note = midi::note_on(MidiChannel::FIRST, 60, 0x8000);
     let arrival = rig.origin + Duration::from_millis(1);
     assert_eq!(producer.push(stream, arrival), Pushed::Diverted);
     assert_eq!(producer.push(note, arrival), Pushed::Sent);
@@ -736,15 +736,13 @@ fn rpn_ump(value: u32) -> Ump {
 /// Spec: m2-104/3.2#3
 #[test]
 fn a_midi1_port_is_never_sent_type_4() {
-    use tutti_fixtures::midi::note_on;
-    use tutti_ump::{MidiChannel, MidiGroup};
     let mut wire = session_over(
         UmpCapability::midi1(),
         PortDirection::Output,
         offering_both(),
     );
     wire.connect_output();
-    let note = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
+    let note = midi::note_on(MidiChannel::FIRST, 60, 0xFFFF);
     assert_eq!(
         wire.send(&[(Offset::ZERO, note), (Offset::ZERO, rpn_ump(12 << 25))]),
         2
@@ -769,8 +767,6 @@ fn a_midi1_port_is_never_sent_type_4() {
 /// Configuration Notification moves it again.
 #[test]
 fn the_output_follows_the_negotiated_protocol() {
-    use tutti_fixtures::midi::note_on;
-    use tutti_ump::{MidiChannel, MidiGroup};
     let device = Endpoint::new(Capabilities {
         midi1: true,
         midi2: true,
@@ -782,10 +778,7 @@ fn the_output_follows_the_negotiated_protocol() {
     let mut wire = session_over(UmpCapability::midi2(), PortDirection::Duplex, device);
     wire.session.connect_input(&wire.id.clone()).unwrap();
     wire.connect_output();
-    let note = [(
-        Offset::ZERO,
-        note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
-    )];
+    let note = [(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0xFFFF))];
     // ... but until then the output is what the OS said: MIDI 2.0.
     wire.send(&note);
     assert_eq!(received(&wire)[0].message_type(), 4);
@@ -829,12 +822,7 @@ fn jr_reaches_a_device_only_after_its_notification_enables_it() {
     assert!(!stream.config().rx_jr);
     wire.connect_output();
     let clock = Ump::from(Message::Utility(tutti_ump::Utility::JrClock(7)));
-    let note = tutti_fixtures::midi::note_on(
-        tutti_ump::MidiGroup::FIRST,
-        tutti_ump::MidiChannel::FIRST,
-        60,
-        0xFFFF,
-    );
+    let note = midi::note_on(tutti_ump::MidiChannel::FIRST, 60, 0xFFFF);
     let events = [(Offset::ZERO, clock), (Offset::ZERO, note)];
     received(&wire);
     assert_eq!(wire.send(&events), 2, "nothing was refused");
@@ -893,8 +881,8 @@ fn static_blocks_are_not_re_read_and_others_are() {
 #[test]
 fn a_jr_message_a_device_sends_never_reaches_the_graph() {
     use crate::testing::Rig;
-    use tutti_fixtures::midi::note_on;
-    use tutti_ump::{MidiChannel, MidiGroup, Utility};
+
+    use tutti_ump::Utility;
 
     let inlets = tutti_midi_runtime::DeviceInlets::new(
         NonZeroUsize::new(2).unwrap(),
@@ -906,7 +894,7 @@ fn a_jr_message_a_device_sends_never_reaches_the_graph() {
     rig.run(1);
     let mut producer = ports.open_input_port("dev").unwrap();
     rig.apply();
-    let note = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+    let note = midi::note_on(MidiChannel::FIRST, 60, 0x8000);
     let arrival = rig.origin + Duration::from_millis(1);
     for jr in [Utility::JrClock(10), Utility::JrTimestamp(20)] {
         assert_eq!(
@@ -925,8 +913,6 @@ fn a_jr_message_a_device_sends_never_reaches_the_graph() {
 /// its first send, not the OS's description (here MIDI 2.0, the device MIDI 1.0).
 #[test]
 fn an_output_connected_after_the_settle_starts_in_the_settled_protocol() {
-    use tutti_fixtures::midi::note_on;
-    use tutti_ump::{MidiChannel, MidiGroup};
     let device = Endpoint::new(Capabilities {
         midi1: true,
         ..Capabilities::default()
@@ -936,10 +922,7 @@ fn an_output_connected_after_the_settle_starts_in_the_settled_protocol() {
     wire.session.connect_input(&wire.id.clone()).unwrap();
     assert_eq!(settle(&mut wire).config().protocol, Protocol::Midi1);
     wire.connect_output();
-    wire.send(&[(
-        Offset::ZERO,
-        note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
-    )]);
+    wire.send(&[(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0xFFFF))]);
     assert_eq!(received(&wire)[0].message_type(), 2);
 }
 

@@ -9,13 +9,14 @@
 //! added the same way, and, unlike the audio inlet, there is no rate to refuse
 //! and an export fork is accepted.
 
-use tutti_fixtures::midi::{key_of, m1_note_on};
+use tutti_fixtures::midi;
+use tutti_fixtures::midi::key_of;
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_graph::{EventCapacity, EventInletNode, EventTapReader, TapAlign, TapEvent};
 use tutti_session::{Losses, OutPort, Root, Session, Stamp};
 use tutti_types::ChannelLayout;
 use tutti_types::{Frame, SampleRate};
-use tutti_ump::{MidiChannel, NoteNumber, U7, Ump};
+use tutti_ump::{MidiChannel, U7, Ump};
 
 fn session() -> Session {
     Session::builder()
@@ -26,7 +27,7 @@ fn session() -> Session {
 
 /// A MIDI 1.0 note-on, channel 0, velocity 100.
 fn note(n: u8) -> Ump {
-    m1_note_on(MidiChannel::FIRST, NoteNumber::of(n), U7::of(100))
+    midi::m1_note_on(MidiChannel::FIRST, n, U7::of(100))
 }
 
 fn frames(n: usize, s: &mut Session) {

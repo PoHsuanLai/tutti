@@ -16,6 +16,8 @@
 //! everything here is self-contained.
 
 use crate::support;
+use tutti_midi_protocol::widen_velocity;
+use tutti_ump::U7;
 
 use std::num::NonZeroUsize;
 use support::{BLOCK, Hand};
@@ -31,16 +33,11 @@ use tutti_ump::{MidiChannel, MidiGroup, Ump};
 const SR: f64 = 48_000.0;
 
 fn note_on(note: u8, vel: u8) -> Ump {
-    midi::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        note,
-        tutti_fixtures::midi::wide_velocity(vel),
-    )
+    midi::note_on(MidiChannel::FIRST, note, widen_velocity(U7::of(vel)).get())
 }
 
 fn note_off(note: u8) -> Ump {
-    midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, note, 0)
+    midi::note_off(MidiChannel::FIRST, note, 0)
 }
 
 /// An organ-like envelope: instant attack, full sustain, no decay. Keeps the
@@ -473,13 +470,14 @@ fn a_key_struck_twice_then_released_once_goes_silent() {
     let group_one = MidiGroup::new(1).expect("a second group");
     let on = |group: MidiGroup| {
         midi::note_on(
-            group,
-            MidiChannel::FIRST,
+            tutti_ump::Address::new(group, MidiChannel::FIRST),
             69,
-            tutti_fixtures::midi::wide_velocity(100),
+            widen_velocity(U7::of(100)).get(),
         )
     };
-    let off = |group: MidiGroup| midi::note_off(group, MidiChannel::FIRST, 69, 0);
+    let off = |group: MidiGroup| {
+        midi::note_off(tutti_ump::Address::new(group, MidiChannel::FIRST), 69, 0)
+    };
     let cases: [(&str, Vec<Ump>, Vec<Ump>); 2] = [
         (
             "one group twice",

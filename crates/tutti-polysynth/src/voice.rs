@@ -11,7 +11,7 @@
 use std::num::NonZeroUsize;
 
 use crate::note_id::PerNoteMap;
-use tutti_midi_protocol::{Heard, MpeZones, unit_f32_to_velocity, velocity_to_unit_f32};
+use tutti_midi_protocol::{Heard, unit_f32_to_velocity, velocity_to_unit_f32};
 use tutti_types::{Amplitude, Semitones};
 use tutti_ump::Voice2;
 use tutti_ump::{MidiChannel, NoteId, NoteNumber, NoteVelocity};
@@ -587,9 +587,9 @@ impl VoiceAllocator {
         let cc = Voice2::ControlChange {
             controller,
             value: if down {
-                ControlValue::new(u32::MAX)
+                ControlValue::MAX
             } else {
-                ControlValue::new(0)
+                ControlValue::MIN
             },
         };
         self.run(channel, &cc, None);
@@ -630,12 +630,6 @@ impl VoiceAllocator {
         // Program 0 of bank 0 exists in any capacity.
         let stored = self.core.store_tuning(zero, zero, table);
         debug_assert!(stored.is_ok());
-    }
-
-    /// Which channels are MPE zones: a master's pitch bend adds to each of
-    /// its members' own.
-    pub fn set_zones(&mut self, zones: Option<MpeZones>) {
-        self.core.set_zones(zones);
     }
 
     #[cfg(test)]

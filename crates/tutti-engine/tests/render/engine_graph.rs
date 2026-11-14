@@ -28,9 +28,10 @@ use tutti_types::MaxBlock;
 use crate::support;
 
 use support::{Change, Segment, beat_of_frame, model_beats, step_map};
-use tutti_buffers::InterleavedMut;
 use tutti_engine::Engine;
-use tutti_fixtures::midi::m1_note_on;
+
+use tutti_buffers::InterleavedMut;
+use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     Cx, Editor, EventIn, EventKind, Executor, IntoNode, Io, Node, Prepare, Shape, Status,
@@ -41,7 +42,7 @@ use tutti_transport::{
     FadeOut, LoopEdit, MotionEvent, Then, Timeline, Transport, TransportCommand,
 };
 use tutti_types::{At, Beat, Bpm, ChannelLayout, Frame, LoopRange, SampleRate, Samples, Tail};
-use tutti_ump::{MidiChannel, NoteNumber, U7};
+use tutti_ump::{MidiChannel, U7};
 
 const SR: f64 = 48_000.0;
 /// Frames per beat at 120 BPM and `SR`.
@@ -716,11 +717,7 @@ fn a_graph_beat_note_after_a_timed_start_lands_on_its_frame() {
         node: NodeKey(1),
         port: 0,
     };
-    let note = EventKind::Midi(m1_note_on(
-        MidiChannel::FIRST,
-        NoteNumber::of(60),
-        U7::of(100),
-    ));
+    let note = EventKind::Midi(midi::m1_note_on(MidiChannel::FIRST, 60, U7::of(100)));
     ed.schedule(At::Beat(Beat(0.0)), to, note).expect("room");
     ed.schedule(At::Beat(Beat(0.5)), to, note).expect("room");
     transport
@@ -943,11 +940,7 @@ fn a_declick_stop_stops_the_transport_on_its_frame() {
             node: NodeKey(1),
             port: 0,
         },
-        EventKind::Midi(m1_note_on(
-            MidiChannel::FIRST,
-            NoteNumber::of(60),
-            U7::of(100),
-        )),
+        EventKind::Midi(midi::m1_note_on(MidiChannel::FIRST, 60, U7::of(100))),
     )
     .expect("room");
     t2.motion()

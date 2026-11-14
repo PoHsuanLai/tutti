@@ -1,7 +1,7 @@
 //! What the file tests share: a track of events and a note.
 
 use tutti_midi_file::{FileEvent, Tick, Track};
-use tutti_ump::{Message, MidiChannel, NoteNumber, U7};
+use tutti_ump::{Message, MidiChannel, NoteNumber, U7, Voice1};
 
 /// A track of `events` exactly as given: not sorted, so a test can hand the
 /// constructor events out of order.
@@ -19,5 +19,9 @@ pub fn track(events: Vec<(u64, FileEvent)>) -> Track {
 
 /// A Note On of `key` at velocity 100 on `channel`, in the first Group.
 pub fn note(channel: u8, key: u8) -> FileEvent {
-    Message::note_on(MidiChannel::of(channel), NoteNumber::of(key), U7::of(100)).into()
+    Message::midi1(
+        MidiChannel::of(channel),
+        Voice1::note_on(NoteNumber::of(key), U7::of(100)),
+    )
+    .into()
 }

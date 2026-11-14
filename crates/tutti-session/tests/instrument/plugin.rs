@@ -16,10 +16,11 @@ mod bounce {
     use tutti_tempo::TempoMap;
     use tutti_transport::{OfflineTimeline, OfflineTimelineConfig};
     use tutti_types::{Beat, Bpm, ChannelLayout, Seconds};
-    use tutti_ump::{MidiChannel, MidiGroup};
+    use tutti_ump::MidiChannel;
 
     use crate::instrument_support::rig::{RATE, offline_session};
     use crate::instrument_support::subjects::Plugin;
+    use tutti_ump::{Message, NoteNumber, NoteVelocity, Voice2};
 
     /// **A plugin told its render mode only by reactivation still plays the
     /// bounce's first block.** The shared plugin's CLAP shell has no
@@ -44,7 +45,10 @@ mod bounce {
         session.graph().connect(node, Root).unwrap();
         let on = tutti_midi_runtime::TimedMidiEvent::new(
             Beat(1.0),
-            tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF),
+            Message::midi2(
+                MidiChannel::FIRST,
+                Voice2::note_on(NoteNumber::of(60), NoteVelocity::MAX),
+            ),
         )
         .unwrap();
         session

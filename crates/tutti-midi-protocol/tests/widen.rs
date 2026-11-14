@@ -81,6 +81,7 @@ fn widen_velocity_keeps_the_anchors_and_narrow_inverts_it() {
     for (v, want) in [(0, 0x0000), (5, 0x0A00), (64, 0x8000), (127, 0xFFFF)] {
         assert_eq!(widen_velocity(U7::of(v)), NoteVelocity::new(want), "{v}");
     }
+    assert_eq!(widen_velocity(U7::of(64)), NoteVelocity::CENTER);
     for v in 0..=127 {
         assert_eq!(narrow_velocity(widen_velocity(U7::of(v))), U7::of(v));
         assert_eq!(widen_velocity(U7::of(v)).get(), velocity(v), "{v}");

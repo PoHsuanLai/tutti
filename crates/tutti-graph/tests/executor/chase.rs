@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex};
 use tutti_graph::testing as common;
 
 use common::{WORKERS, bits, prepare, test_pool};
-use tutti_fixtures::midi::m1_cc;
+
+use tutti_fixtures::midi;
 use tutti_graph::{
     Buses, Chase, CrossfadeCurve, Cx, Editor, Event, EventEdge, EventIn, EventKind, EventOut,
     Executor, Fade, Io, Node, Prepare, Shape, Status, TransportPosition, Unforkable,
@@ -121,7 +122,7 @@ impl Node for Deaf {
 }
 
 fn cc(controller: u8, value: u8) -> Ump {
-    m1_cc(
+    midi::m1_cc(
         MidiChannel::FIRST,
         CCNumber::new(controller).unwrap(),
         U7::of(value),

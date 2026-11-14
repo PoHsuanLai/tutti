@@ -1,4 +1,4 @@
-//! Every range-checked setting keeps the contract in `CLAUDE.md`: `new` refuses
+//! Every range-checked setting keeps the range contract: `new` refuses
 //! and never clamps, `of` panics, `TryFrom` agrees and carries the refused raw.
 //!
 //! The crate has no serde, so the check runs on the `try_from` shape written

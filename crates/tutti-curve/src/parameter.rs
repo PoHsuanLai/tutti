@@ -1,8 +1,6 @@
 //! The parameters of the laws that take one: [`Exponent`] and [`Curvature`].
 //!
-//! Each refuses what its law cannot evaluate instead of falling back. A bare
-//! `f32` in `Law::PowerIn(-2.0)` used to render a linear ramp, with nothing to
-//! say the `-2.0` was never read.
+//! Each refuses what its law cannot evaluate instead of falling back.
 
 /// The raw a checked parameter refused.
 macro_rules! refusal {

@@ -1,6 +1,5 @@
 //! Regression gate: the pool's command drain must not free on the audio
-//! thread, and a disk stream's ring is freed where the doc says (doc 025 §10
-//! Q4).
+//! thread, and a disk stream's ring is freed on the control thread.
 //!
 //! `tests/rt_no_alloc.rs` guards allocation, and says why it cannot see a
 //! free: `assert_no_alloc` counts allocations only. This file counts
@@ -121,7 +120,7 @@ fn the_add_voice_drain_frees_nothing() {
 }
 
 // ---------------------------------------------------------------------------
-// A disk stream's ring: who frees it (doc 025 §10 Q4).
+// A disk stream's ring: who frees it.
 // ---------------------------------------------------------------------------
 
 /// A ring is at least 4 096 frames of the file's width in 4-byte slots, so a
@@ -183,7 +182,7 @@ fn dropping_a_stream_frees_the_ring_in_the_streamers_step() {
     );
 }
 
-/// **A `Block` frees nothing when it ends** (doc 025 §10 Q4, the reader's
+/// **A `Block` frees nothing when it ends** (the reader's
 /// half). A block lends the stream's published control and holds it to its
 /// end; the streamer publishes a new one meanwhile (a loop edit), which
 /// retires the old one *behind* the block's loan. Dropping the block, on the
@@ -237,8 +236,8 @@ fn pool_holding_the_last_holder(
 /// **The remove path: a voice's last holder of a ring is never dropped on the
 /// audio thread.** The voice is removed through the handle; the drain frees
 /// nothing (the slot goes over the retirement channel) and the control thread's
-/// `collect_retired` frees the ring. Answers doc 025 §10 Q4 for the normal path:
-/// no, a disk voice's drop is on the control thread.
+/// `collect_retired` frees the ring. A disk voice's drop is on the
+/// control thread.
 #[test]
 fn a_removed_disk_voice_frees_its_ring_on_the_control_thread() {
     let (_dir, streamer, stream, reader) = stream();
@@ -272,7 +271,7 @@ fn a_removed_disk_voice_frees_its_ring_on_the_control_thread() {
 /// **The degraded path: it does.** When the retirement channel is full (the
 /// control thread has not collected), a removed voice is dropped in the
 /// callback, counted as `freed_in_callback`, and a voice that is the ring's
-/// last holder frees the ring there. This pins the doc's answer to §10 Q4: the
+/// last holder frees the ring there. The
 /// audio thread's "never frees" holds except on that counted path, for a
 /// stream's ring as for anything else the voice holds. A `Stream` is not
 /// involved: its handle is the control side's and was dropped first.

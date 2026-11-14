@@ -1,4 +1,4 @@
-//! Doc 025 stage 6: the streamer sleeps until a source rings its bell, one
+//! The streamer sleeps until a source rings its bell, one
 //! case per source (the table in [`bell`](super::bell)'s docs).
 //!
 //! Every case starts the streamer with a **60 s backstop** and allows 10 s: a
@@ -116,7 +116,7 @@ fn a_ring_below_threshold_wakes_a_sleeping_streamer() {
 
 /// **A jump outside the window wakes a sleeping streamer**: the reader seeks
 /// far past the window's end, and its block rings; the streamer moves the
-/// window to hold it. (`refill_one` used to find this by polling.)
+/// window to hold it.
 #[test]
 fn a_jump_outside_the_window_wakes_a_sleeping_streamer() {
     let dir = tempfile::tempdir().expect("a temp dir");

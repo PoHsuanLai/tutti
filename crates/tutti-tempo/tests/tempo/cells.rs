@@ -339,9 +339,7 @@ fn a_step_cell_has_the_segments_exact_tempo() {
 
 /// Cells over maps with ramps and steps shorter than a frame: every cell is
 /// finite, positive, tiles with the next, moves the beat forward, and has a
-/// tempo between the map's lowest and highest. The two literal maps are the
-/// ones that gave 1.19e10 BPM and -6.58 BPM when a cell was read from its
-/// segment's closed form past the segment's end.
+/// tempo between the map's lowest and highest.
 #[test]
 fn cells_over_sub_frame_segments_stay_inside_the_map() {
     fn check(

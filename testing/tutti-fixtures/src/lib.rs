@@ -25,8 +25,7 @@
 //! **Absence is a hard failure, never a skip.** The plugins are built by the
 //! same `cargo test` invocation that runs the tests, so a missing one is a build
 //! failure rather than a property of the machine. A skip would leave the suite
-//! one typo away from reporting success having executed nothing, as when nine
-//! VST3 tests skipped while printing `test result: ok. 9 passed`.
+//! one typo away from reporting success having executed nothing.
 //!
 //! **The newest candidate wins, not the first.** Cargo writes a cdylib to
 //! `<profile>/deps/<name>` and hardlinks it up to `<profile>/<name>` without
@@ -304,15 +303,11 @@ pub fn vst2_probe() -> &'static Path {
 /// The extension is load-bearing for a host that dispatches on it: cargo's
 /// `libtutti_clap_test_plugin.so` reads as VST2 there. The link path is shared
 /// by every test process of every suite, so it is published by atomic rename from a per-process
-/// staging name: a `remove_file` + `symlink` pair once left it briefly absent.
+/// staging name.
 ///
-/// **On Unix a link that already points at `real` is left alone.** On a macOS
-/// runner a process loading the link while other processes renamed fresh
-/// links over it read it as absent, and the load failed with "Plugin not
-/// found" (twice in a row, once more suites came to publish the link; APFS
-/// does not promise a concurrent lookup never misses a path being renamed
-/// over). Every test process used to republish; now only the first does, or
-/// one that finds the link naming something else. Nothing goes stale by
+/// **On Unix a link that already points at `real` is left alone.** Only the
+/// first process republishes, or one that finds the link naming something
+/// else. Nothing goes stale by
 /// skipping: a symlink is resolved at each open, so one naming `real` is as
 /// fresh as `real`. A Windows copy can go stale, so it is still republished.
 ///
@@ -325,7 +320,7 @@ pub fn vst2_probe() -> &'static Path {
 pub fn publish_with_extension(real: &Path, extension: &str) -> PathBuf {
     let link = real.with_extension(extension);
     // `real` already has the extension: it is its own link, and publishing
-    // one would replace the file with a link to itself (D18).
+    // one would replace the file with a link to itself.
     if link == real {
         return link;
     }

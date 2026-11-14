@@ -84,22 +84,13 @@ const SEEK_TOL_HZ: f64 = 40.0;
 /// Must exceed 30 s, and that is the whole point. `buffer_size_for_file`
 /// sizes the ring to hold the entire file when it is under 50 MB, capped at 30 s
 /// — so a shorter file is prefilled whole, a seek repositions the *writer* into
-/// a ring that already holds everything, and the audio never changes. These
-/// tests originally used a 20 s file and every seek "landed" at the file's end,
-/// which read as an engine bug and was not one.
-///
-/// 31 s rather than the 60 s this was: the cap is 30 s, so one second past it
-/// makes a seek real work, and the extra 29 s bought nothing but a 23 MB file
-/// written on every run.
+/// a ring that already holds everything, and the audio never changes.
 ///
 /// Only the two tests that move an *already running* stream pay this cost at
 /// all. [`streaming_from_an_offset_delivers_that_part_of_the_file`] does not: it
 /// checks where a stream *starts*, and the streamer seeks the writer to the offset
 /// before the first refill, so a short file is prefilled from the right place —
 /// it takes [`OFFSET_FILE_SECS`] instead.
-///
-/// Across the file the fixtures went from 220 s of runtime-generated WAV (~84 MB)
-/// to 90 s (~35 MB).
 const SEEK_FILE_SECS: f64 = 31.0;
 
 /// Length of the file the *start-offset* test streams, in seconds.
@@ -487,22 +478,6 @@ fn a_disk_voice_produces_audio_from_a_real_file() {
     );
 }
 
-// A test asserting "one priming pass leaves a *deeply* filled ring" was written
-// here and then removed, because it could not fail.
-//
-// `varifill_chunk` scales the refill chunk by how empty the ring is, so the
-// first cycle after a `Stream` sizes its read to the whole ring. Priming depth
-// is therefore not a property with a shallow failure mode to catch: reporting
-// `Healthy` unconditionally from `StreamerCycle::step` — i.e. stopping `prime`
-// after exactly one cycle — still leaves 8 s of audio resident, and a 6 s
-// streamer-free render still passes.
-//
-// Recorded rather than deleted silently: the next person to notice the gap
-// should know it was looked at, and that the assertion an obvious test would
-// make is one the engine satisfies by construction rather than by the code path
-// the test would be aimed at. `a_disk_voice_produces_audio_from_a_real_file`
-// covers what remains — that priming yields audio at all.
-
 // ---------------------------------------------------------------------------
 // Seek
 // ---------------------------------------------------------------------------
@@ -562,16 +537,7 @@ fn streaming_from_an_offset_delivers_that_part_of_the_file() {
 /// backward seek is the one a naive implementation is most likely to get wrong,
 /// since "refill forward from here" is the common path.
 ///
-/// # This was `#[ignore]`d, and stepping is what un-ignored it
-///
-/// The engine was never at fault: the in-crate
-/// `streamer::streamer::tests::a_backward_seek_repositions_the_live_stream` has
-/// always shown the streamer moving the stream. What failed was the *harness*: it polled for the
-/// new material by rendering, each poll advanced the clock, a placed voice
-/// follows the clock, and the read head chased its own tail — so the target moved
-/// while the test waited for it.
-///
-/// Stepping ends that. `step_once` refills from the new position before
+/// `step_once` refills from the new position before
 /// returning, with the clock held still, so the very next render is the
 /// post-seek material. There is nothing left to poll for.
 #[test]

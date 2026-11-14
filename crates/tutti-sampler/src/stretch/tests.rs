@@ -602,8 +602,6 @@ fn a_clone_arrives_with_its_block_scratch_sized() {
 ///
 /// Asserted on sample values rather than liveness — a quieter or truncated
 /// block is the failure mode, and every `!= 0.0` assertion here would pass it.
-/// (Under the shared bank this could only be asserted of an `isolate`d clone;
-/// a clone is independent now, and `isolate` has nothing to do.)
 #[test]
 fn a_clone_renders_identically() {
     let mut original = Unit::with_channels(SampleRate::SR_44K1, 2u16);
@@ -975,10 +973,8 @@ fn pitch_shift_preserves_level() {
 /// Measured: 16 of 256 blocks below 0.01, peaks spanning 0.003 to 0.60. The
 /// boundary is sharp — 0.4x and above hold a steady level.
 ///
-/// This is pinned rather than fixed because fixing it means changing the hop
-/// geometry (a smaller synthesis hop at slow factors, costing CPU), which is
-/// a design decision and not a bug fix. Pinned so it stays a known,
-/// bounded property that a later change cannot silently deepen.
+/// Pinned so it stays a known, bounded property that a later change cannot
+/// silently deepen.
 #[test]
 fn the_slowest_factor_ripples_because_its_frames_do_not_overlap() {
     let mut u = Unit::with_fft_size_and_channels(SampleRate::SR_44K1, FftSize::N1024, 1u16);
@@ -1314,22 +1310,17 @@ fn reset_clears_buffered_audio() {
 /// Stale audio survives a source discontinuity until something calls
 /// [`Unit::reset`] — and `reset` is sufficient to clear it.
 ///
-/// This is a characterization test: it passes today and documents the
-/// mechanism behind the seek bug rather than gating it. The gate lives one
-/// level up, where a transport can actually seek
+/// The seek gate lives one level up, where a transport can actually seek
 /// (`voice::voice_pool::tests::a_transport_seek_flushes_stretch_state`).
 ///
-/// What it pins is the two halves of the fix:
+/// What it pins:
 ///
 /// - the leak is large — the FIFOs hold up to `window * 4` samples and
 ///   the phase accumulators keep resynthesising from them, so the output
 ///   after the input goes silent is at signal level, not at noise level;
 /// - `reset()` clears it exactly, to zero, not merely to something
 ///   small.
-///
-/// The second half is why this test earns its place: if a later change makes
-/// `Vocoder::reset` cheaper by clearing less, the fix built on top of it
-/// stops working and this fails here rather than in an ear.
+
 #[test]
 fn stale_audio_survives_a_discontinuity_until_reset() {
     let fill = |u: &mut Unit, level: f32, n: usize| {
@@ -1357,7 +1348,7 @@ fn stale_audio_survives_a_discontinuity_until_reset() {
         "expected the pre-discontinuity signal to keep draining; peak {leaked}"
     );
 
-    // Same run, with the flush the fix will perform.
+    // Same run, with the flush.
     let mut flushed = Unit::with_channels(SampleRate::SR_44K1, 1u16);
     flushed.set_stretch_factor(StretchFactor::new(2.0));
     fill(&mut flushed, 0.5, 8192);

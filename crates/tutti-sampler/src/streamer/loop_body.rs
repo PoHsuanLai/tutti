@@ -21,8 +21,8 @@ use super::step::{StepOutcome, StreamerCycle};
 ///
 /// It is the bound on how late a refill can be if a ring is ever *missed* (the
 /// design has none: every source rings), and the control-side tick a cell that
-/// goes quiet still gets its `reclaim()` on (CLAUDE.md, "Publishing to the
-/// audio thread"; each cycle sweeps every ring's retired controls). 50 ms is
+/// goes quiet still gets its `reclaim()` on (each cycle sweeps every ring's retired
+/// controls). 50 ms is
 /// well inside the smallest ring's drain time at its refill threshold and long
 /// enough that an idle streamer costs twenty wake-ups a second.
 pub(super) const BACKSTOP: Duration = Duration::from_millis(50);

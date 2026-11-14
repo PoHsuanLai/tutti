@@ -76,8 +76,8 @@ pub struct TransportAudio {
     tempo_map: TempoReader,
     /// The publisher's count at the last block that took the map.
     seen: u64,
-    /// Whether the map in force changes tempo: the clock then follows it
-    /// (doc 020 stage 3), lending it for each step that needs it and
+    /// Whether the map in force changes tempo: the clock then follows it,
+    /// lending it for each step that needs it and
     /// dropping the loan at the end of the step. A constant map leaves this
     /// off and costs nothing.
     stepped: bool,
@@ -163,7 +163,7 @@ impl TransportAudio {
     /// only then, once, and the loan ends here.
     ///
     /// A map that changes tempo is taken here too: the clock re-seats on it at
-    /// the current beat (doc 020, section 3), and from then on follows it, the
+    /// the current beat, and from then on follows it, the
     /// tempo of the block being the walk's and not this scalar.
     fn tempo_for_block(&mut self) -> Bpm {
         let published = self.settings.map_generation.load(Ordering::Acquire);
@@ -202,7 +202,7 @@ impl TransportAudio {
 
     /// The tempo changes inside the next `frames` of the block that began
     /// under `from`, and where the block must end if one does not fit
-    /// (doc 020, section 2.3). `free` is how many changes the block can still
+    /// `free` is how many changes the block can still
     /// take: `MAX_TRANSPORT_CHANGES` less those already cut. Moves nothing.
     ///
     /// Nothing for a constant map (the common case: no lend, no walk) and for
@@ -518,7 +518,7 @@ mod tests {
 
     /// A rate change inside a ramp re-seats at the current beat on the map's
     /// timeline at the new rate, and takes the chord of the cell it lands in
-    /// there (doc 020, section 10: `chord_cell` takes the new rate). The ramp is
+    /// there. The ramp is
     /// 120 to 60 BPM over 4 beats (`r0` 2, `r1` 1 beats/s, `T = 8 / 3` s,
     /// `a = -3 / 8`, `B(s) = 2 s - 3 s^2 / 16`); after 60 000 frames at 48 kHz
     /// the playhead keeps its beat, the map frame at 96 kHz is the first at or

@@ -1,4 +1,4 @@
-//! The sampler's nodes declare a cost class (doc 013, "The cost model and coarsening"):
+//! The sampler's nodes declare a cost class:
 //! a plain read is `Moderate`, a stretched voice and a pool are `Heavy`.
 //! Declaring one changes only the parallel schedule: sibling reads pack into
 //! fewer tasks than undeclared ones, and the render on a pool is bit for bit

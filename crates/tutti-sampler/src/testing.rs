@@ -181,7 +181,7 @@ pub fn play(
 /// while the voice plays: dropping it ends the stream.
 ///
 /// A file the streamer can seek in is answered on the first step. One it
-/// cannot is decoded whole on the decode thread (doc 025 decision 21), which
+/// cannot is decoded whole on the decode thread, which
 /// no step runs: the wait between steps is a millisecond, up to ten seconds.
 ///
 /// # Errors

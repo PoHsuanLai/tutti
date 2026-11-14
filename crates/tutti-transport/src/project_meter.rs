@@ -10,9 +10,7 @@
 //! # Why a slot follows rather than holding the project's cell
 //!
 //! A plugin is given the project meter after it is built, and can be given
-//! another or none later. When the node read the project's cell through a
-//! slot holding it (a cell of cells), installing a meter swapped which cell
-//! the node read; a reader registered on a cell (an `arc-lend` `Reader`) is
+//! another or none later. A reader registered on a cell (an `arc-lend` `Reader`) is
 //! registered on the control side, and cannot be built on the audio thread
 //! for a cell it has never seen. So the node reads its own cell, built with it, and installing or
 //! clearing a meter is a publish into that cell, never a swap of it.
@@ -22,9 +20,7 @@
 //! `set_meter` publishes the project's cell and then each follower's, under
 //! one lock, before it returns. A block that starts after it returned reads
 //! the new meter in the metronome and in every plugin; a block that starts
-//! while it runs can read the old meter in some and the new in others, which
-//! a single shared cell allowed too (a publish landing between two nodes'
-//! reads of one block).
+//! while it runs can read the old meter in some and the new in others.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
@@ -334,8 +330,8 @@ mod tests {
     }
 
     /// **One `set_meter` reaches the metronome and every following slot
-    /// before it returns**, so a block after it reads the same meter in each,
-    /// as one shared cell did. A slot that stops following, or follows
+    /// before it returns**, so a block after it reads the same meter in each.
+    /// A slot that stops following, or follows
     /// another meter, no longer hears it.
     ///
     /// Not covered here: that a moved slot goes from the old meter's map to

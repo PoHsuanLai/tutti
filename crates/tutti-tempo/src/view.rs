@@ -96,7 +96,7 @@ impl<'a> TempoView<'a> {
 
     /// The tempo on `frame`: the curve's instantaneous tempo there, not a
     /// cell's chord. The slope a reader wants over a stretch of frames is the
-    /// difference of two of these over their distance (doc 020, section 5).
+    /// difference of two of these over their distance.
     #[must_use]
     #[inline]
     pub fn tempo_at_frame(&mut self, frame: Frame) -> Bpm {

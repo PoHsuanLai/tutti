@@ -135,7 +135,7 @@ fn a_ready_reader_has_registered_its_control_before_it_is_returned() {
 }
 
 /// Variant `Io`: a path with no file fails the open with the kind the
-/// filesystem reported, where the stream used to stay unopened for ever with no error.
+/// filesystem reported.
 #[test]
 fn a_missing_file_fails_with_io() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -199,16 +199,11 @@ fn an_abandoned_open_is_closed() {
     );
 }
 
-/// **B3, in its new form (doc 025 §1.6).** Two opens, the second made before
+/// Two opens, the second made before
 /// the streamer has run for the first: each `Opening` yields the reader of its
 /// own open, the first is not the second, each plays its own file, and the
 /// first ring is not freed (it is fed) while its stream is open and is freed
 /// when its stream closes.
-///
-/// Before this cut, a voice taken by channel after a second open of that
-/// channel was sent and before it was applied succeeded on the first stream's link: the
-/// voice was bound to a ring the streamer then stopped feeding. There is no
-/// such lookup now: a reader is the reply of the open it was asked from.
 ///
 /// How it passes: each `Opening` owns its own reply cell, written once by the
 /// streamer for that open's id, so `A.poll` can only return A's reader.
@@ -273,7 +268,7 @@ fn two_opens_each_yield_the_reader_of_their_own_stream() {
     );
 }
 
-/// **B4 (doc 025 §1.6).** A command meant for one stream cannot reach another.
+/// A command meant for one stream cannot reach another.
 /// Two streams of one file: a loop set through A's handle is A's alone (B's
 /// reader, and a fork of it, still see no loop); and then through B's, B's
 /// alone.

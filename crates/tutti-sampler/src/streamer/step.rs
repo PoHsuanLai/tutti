@@ -206,8 +206,7 @@ mod tests {
 
     /// `Idle` means no stream is **live**, not that no stream is open: a table
     /// holding only a stream that is still opening has nothing to refill, so
-    /// the loop sleeps (it used to report `Healthy` once any record existed, and
-    /// before the first stream polled at 1 kHz). Once the stream is answered
+    /// the loop sleeps. Once the stream is answered
     /// (`Cmd::Opened`) it is live and the cycle refills it.
     #[test]
     fn a_cycle_is_idle_until_a_stream_is_live() {

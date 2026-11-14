@@ -291,7 +291,7 @@ impl OfflineTimeline {
     /// That is `frames` unless more changes fall inside than a block holds
     /// ([`MAX_TRANSPORT_CHANGES`](tutti_graph::MAX_TRANSPORT_CHANGES)), when
     /// the block ends where the one that does not fit begins and the render
-    /// continues from there (doc 020, section 2.3): the cut is exact because
+    /// continues from there: the cut is exact because
     /// the walk is a function of the frame, not of where blocks begin.
     fn block(
         &self,

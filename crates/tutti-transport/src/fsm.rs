@@ -78,8 +78,7 @@ impl core::fmt::Display for MotionState {
 ///
 /// Decided at transition time and parked in the FSM, so completion is a lookup
 /// rather than a re-derivation. Loop state is deliberately absent: the FSM
-/// holds none, so routing loop writes through it was a round-trip that
-/// computed nothing.
+/// holds none.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub(crate) enum DeclickOutcome {
     /// Stop at the position the fade ended on.

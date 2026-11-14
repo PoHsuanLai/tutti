@@ -1,5 +1,4 @@
-//! The decode lane: whole-file decodes off the streamer's thread (doc 025
-//! §2.5, decision 21).
+//! The decode lane: whole-file decodes off the streamer's thread.
 //!
 //! A file that cannot seek (mp3, ogg: no frame count, or a decoder that will
 //! not seek) is decoded whole before its stream can exist, and that takes as

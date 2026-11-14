@@ -1,4 +1,4 @@
-//! The tempo walk (doc 020, section 2.2): a [`FrameClock`] that follows a
+//! The tempo walk: a [`FrameClock`] that follows a
 //! [`TempoMap`] that changes tempo, as one pure function of the map, the
 //! grid, the rate and the frame.
 //!
@@ -24,7 +24,7 @@ use tutti_tempo::{CellGrid, TempoMap, TempoView};
 use tutti_types::{Beat, Frame, FrameClock, LoopRange, Samples, first_frame_at_or_after};
 
 /// The one cell grid: a cell is at most this many frames, whatever the block
-/// length (doc 020, section 10: one engine constant, never per block).
+/// length (one engine constant, never per block).
 pub(crate) const CELL_GRID: CellGrid = CellGrid::of(128);
 
 /// The tempo changes inside a block, found ahead of the render

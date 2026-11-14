@@ -58,7 +58,7 @@ pub(crate) enum StreamerCommand {
     },
     /// The decode thread finished the whole-file decode an open of a file that
     /// cannot seek waits on: the streamer builds the stream's ring from it and
-    /// answers the open (doc 025 decision 21). Sent by the decode thread; an
+    /// answers the open. Sent by the decode thread; an
     /// id the streamer holds no pending open for is ignored.
     #[cfg_attr(
         not(codec),

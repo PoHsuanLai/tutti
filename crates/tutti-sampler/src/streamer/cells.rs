@@ -4,7 +4,7 @@
 //! One [`Cells`] per open stream (a re-open is a new stream with new cells), held
 //! by the streamer's `Record`, the stream's handle and its one voice. Nothing a
 //! second voice can reach: two voices opened in sequence on one file share no
-//! cell (doc 025 §2.7, review S3). Every field is a scalar atomic and has
+//! cell. Every field is a scalar atomic and has
 //! one writer:
 //!
 //! | Field | Writer | Readers |

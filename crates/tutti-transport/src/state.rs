@@ -170,8 +170,7 @@ impl ClockLinks {
     /// built from this reads no live state and writes to nothing live.
     ///
     /// The destructure is exhaustive on purpose: adding another shared field
-    /// becomes a compile error here rather than a field silently left shared,
-    /// which is the bug class this cut exists to prevent.
+    /// becomes a compile error here rather than a field silently left shared.
     #[cfg(test)]
     #[must_use]
     pub(crate) fn severed(&self) -> Self {

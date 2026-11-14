@@ -1,6 +1,6 @@
 //! What the control side can observe of a stream: its [`StreamStatus`], a
 //! level the streamer writes and [`Stream::status`](crate::Stream::status)
-//! reads (doc 025 §2.6).
+//! reads.
 //!
 //! A level, not a queue: a slow reader loses nothing it needs (it sees the
 //! current state), nothing allocates and there is no overflow policy to decide.

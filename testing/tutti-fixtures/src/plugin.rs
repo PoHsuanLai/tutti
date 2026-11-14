@@ -265,10 +265,8 @@ pub fn vst3_module() -> PathBuf {
         .join("Contents")
         .join(tutti_plugin_types::bundle::native_arch_subdirs()[0]);
     let module = dir.join(real.file_name().expect("file name"));
-    // Every case process stages the same link, and macOS CI has seen one find
-    // no module right after staging it ("no module at"). Each attempt stages
-    // again, and the panic says what the bundle held, so a recurrence shows its
-    // cause instead of only its symptom.
+    // Every case process stages the same link. Each attempt stages again, and
+    // the panic says what the bundle held.
     for _ in 0..STAGE_ATTEMPTS {
         stage_module(&real, &dir, &module);
         if module.exists() {

@@ -224,7 +224,7 @@ impl RingMap {
 
 /// Everything the streamer publishes about a stream's ring, in one value: how to
 /// read it ([`RingMap`]), the direction it is read in, and the loop as the
-/// streamer applied it (doc 025 §2.7).
+/// streamer applied it.
 ///
 /// Published through the ring's one `ArcLend` by the streamer, which is its
 /// only publisher, and lent once per block to the audio thread (the voice
@@ -910,9 +910,7 @@ mod tests {
     }
 
     /// A six-channel loop wraps at its full FRAME length: frame 100 of a
-    /// 100-frame loop is its frame 0, frame 150 its frame 50 — the failure
-    /// `CLAUDE.md` names for this boundary ("a 6-channel looped clip wraps at a
-    /// sixth of its length").
+    /// 100-frame loop is its frame 0, frame 150 its frame 50.
     #[test]
     fn a_six_channel_loop_wraps_at_its_frame_length() {
         const CH: usize = 6;

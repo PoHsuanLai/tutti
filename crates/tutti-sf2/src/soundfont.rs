@@ -79,9 +79,8 @@ impl SoundFont {
     }
 
     fn sanity_check(&self) -> Result<(), Error> {
-        // https://github.com/sinshu/rustysynth/issues/22
-        // https://github.com/sinshu/rustysynth/issues/33
-        // https://github.com/sinshu/rustysynth/pull/51
+        // Every region's sample and loop bounds lie inside the pool and in
+        // order: a malformed file otherwise indexes past the sample data.
         for instrument in &self.instruments {
             for region in &instrument.regions {
                 let start = region.raw_sample_start();

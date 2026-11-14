@@ -725,7 +725,7 @@ fn a_stretched_disk_voice_consumes_its_source_at_the_stretched_rate() {
         let ring = std::sync::Arc::clone(&reader);
         // ONE `Cells`, shared by the source and the gate — `DiskVoice::new`
         // requires it, and the published stretch rate is read back through
-        // the same cell. Two separate states here made the fix look inert.
+        // the same cell.
         let state = Arc::new(Cells::new());
         let inner = DiskSource::new(reader, pos, Arc::clone(&state));
         let voice = DiskVoice::new(
@@ -1122,7 +1122,7 @@ fn update_stretch_enables_processor() {
 
 /// Turning stretch on for a voice that spawned at unity/zero must be audible.
 ///
-/// The regression this pins: `AddVoice` correctly attaches no filter to a
+/// `AddVoice` correctly attaches no filter to a
 /// voice at unity, so if `set_stretch` only flipped atomics on a *resident*
 /// filter, `UpdateStretch` would mirror the values into `voice.play`,
 /// `needs_stretch()` would go true, `stretch.is_some()` would stay false, and

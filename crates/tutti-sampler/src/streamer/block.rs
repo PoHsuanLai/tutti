@@ -4,7 +4,7 @@
 //! read before it reads them (the position ring's protocol), and it lends the
 //! stream's published control once per block and never parks the loan. A
 //! `Block` is both at once, so a block that forgot to lend, or a loan that
-//! outlived its block, cannot be written (doc 025 §2.3).
+//! outlived its block, cannot be written.
 
 use std::marker::PhantomData;
 use std::ops::Range;
@@ -69,7 +69,7 @@ impl RingReader {
         let control = self.control.lend();
         // The streamer sleeps until something rings it: a ring below its
         // refill threshold, or a reader that jumped outside the window, is the
-        // streamer's work (doc 025 §7). The same predicate its refill uses.
+        // streamer's work. The same predicate its refill uses.
         // Wait-free, allocation-free.
         if let Some(wake) = &self.wake {
             let window = claim.window();

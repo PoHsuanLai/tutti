@@ -146,8 +146,8 @@ impl TransportSettings {
     /// block start.
     ///
     /// Any map is followed: the clock takes each step on the frame it falls
-    /// on (doc 020, stage 3) and each ramp cell by cell, a constant tempo of
-    /// 128 frames at the chord of the curve (stage 4).
+    /// on and each ramp cell by cell, a constant tempo of
+    /// 128 frames at the chord of the curve.
     pub fn set_tempo_map(&self, map: impl Into<Arc<TempoMap>>) {
         self.tempo_map.publish(map.into());
         self.map_generation.fetch_add(1, Ordering::Release);

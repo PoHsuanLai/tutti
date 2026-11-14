@@ -70,11 +70,6 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
     // it frame by frame against a transport that does not move would emit the
     // SAME sample over and over — a staircase that resamples the source
     // downward and fails every case, including an unprocessed one.
-    //
-    // The `dry` control is what distinguishes that from a real defect: driven
-    // wrongly it renders 440 Hz as 308 Hz with no processing engaged. The
-    // mistake is invisible in any single case, so only the control can say "the
-    // harness is wrong, not the engine".
     let mut out = Vec::with_capacity(FRAMES * 2);
     let mut rendered = 0usize;
     while rendered < FRAMES {

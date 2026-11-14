@@ -315,7 +315,7 @@ pub struct VoicePool {
     /// and not others, which is worse than flushing none.
     pub(crate) clock: Clock,
 
-    /// The project's tempo map, when the pool reads one (doc 020, stage 5):
+    /// The project's tempo map, when the pool reads one:
     /// lent once per block to the clock every slot's placement reads. Without
     /// one, a voice takes the tempo of the transport as the block carries it.
     tempo: Option<TempoReader>,
@@ -878,8 +878,7 @@ impl Node for VoicePool {
             .with_tail(self.ring_out())
             // Its voices arrive while it plays, each a `VoiceNode`'s cost:
             // measured 13 ns per frame and channel at one plain voice, 82 at
-            // eight, and one stretched voice alone is 288 (doc 013, "The
-            // cost model and coarsening"). The default, stated.
+            // eight, and one stretched voice alone is 288.
             .with_cost(tutti_graph::Cost::Heavy)
     }
 

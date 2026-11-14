@@ -431,15 +431,13 @@ impl PlaybackSlot {
                 // land a full piece ahead of where the previous one finished,
                 // so the stretch is discarded at every boundary.
                 //
-                // Without this the factor degenerates to pure varispeed —
-                // 2.0x turns 440 Hz into 880 Hz with the duration unchanged.
-                // Folding the rate into the step *only* is worse still
-                // (measured: pitch 35% off, purity 0.95 -> 0.54), because
-                // origin and step then disagree within each block as well as
-                // across them.
+                // Without the stretch the factor is pure varispeed (2.0x turns
+                // 440 Hz into 880 Hz), and folding the rate into the step alone
+                // makes origin and step disagree within each block.
                 //
-                // Both come from `placed_positions`, which seats at the gate
-                // with the stretch and steps by `read_rate` with the same
+                // The origin and the step both come from `placed_positions`,
+                // which seats at the gate with the stretch and steps by
+                // `read_rate` with the same
                 // stretch — the two must be derived together or they drift
                 // apart again. (The step is `read_rate`, not the gate's
                 // `window_rate`: a file at another rate than the session's

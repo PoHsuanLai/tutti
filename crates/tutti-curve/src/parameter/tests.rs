@@ -1,6 +1,5 @@
-//! The range contract of `CLAUDE.md` ("Range-checked values") for the two
-//! parameters. Neither has serde (nothing persists a curve), so only
-//! `check_range_contract` runs.
+//! The range contract for the two parameters. Neither has serde (nothing
+//! persists a curve), so only `check_range_contract` runs.
 
 use tutti_fixtures::{RangeContract, check_range_contract};
 

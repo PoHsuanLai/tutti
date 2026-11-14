@@ -1378,7 +1378,7 @@ impl Node for MemorySource {
             // A cubic Hermite read per frame and channel, behind the
             // placement gate: measured 16–17 ns per frame and channel,
             // placed or free-running, against `SvfFilterNode`'s 7.2 and
-            // `Heavy`'s 256 (doc 013, "The cost model and coarsening").
+            // `Heavy`'s 256.
             .with_cost(tutti_graph::Cost::Moderate)
             // Its gain, as a voice's: block-rate, read on the block's last
             // frame.

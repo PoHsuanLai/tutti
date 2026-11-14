@@ -208,7 +208,7 @@ impl Rig {
         let mut changes = TransportChanges::NONE;
         if let Some((at, to)) = change {
             changes
-                .push(Offset::new(at, Samples(len)).expect("inside"), to)
+                .push(Offset::new(Samples(at), Samples(len)).expect("inside"), to)
                 .expect("room");
         }
         let env = Env {

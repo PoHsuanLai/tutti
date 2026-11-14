@@ -503,7 +503,7 @@ fn feed(
     unit: &mut tutti_graph::contract::Direct<dyn tutti_graph::Node>,
     kinds: &[tutti_graph::EventKind],
 ) {
-    let at = tutti_graph::Offset::new(0, Samples(BLOCK / 2)).expect("inside the block");
+    let at = tutti_graph::Offset::of(Samples(0), Samples(BLOCK / 2));
     let events: Vec<tutti_graph::Event> = kinds
         .iter()
         .map(|kind| match kind {

@@ -104,7 +104,7 @@ pub enum OpenError {
     #[error("the file is not audio this build can decode")]
     Format,
     /// The file's channels cannot be placed into the voice's width: a channel
-    /// no speaker names (a second LFE, a wide or high speaker), or a
+    /// no speaker names (a `Speaker::Unknown` in its topology), or a
     /// narrowing with an unordered end (a 5.1 file into 5 channels).
     #[error("the file cannot be placed: {0}")]
     Placement(#[source] PlaceError),

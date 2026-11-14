@@ -1,18 +1,20 @@
 use super::*;
-use tutti_fixtures::{RangeContract, check_range_contract};
+use tutti_fixtures::{RangeContract, check_range_contract, check_range_serde};
 
 /// `Quality` keeps the range-checked contract: `new`, `TryFrom`, `of` and
 /// serde agree, and every raw outside `0.0..=1.0`, NaN and infinity included,
 /// is refused.
 #[test]
 fn quality_keeps_the_range_contract() {
-    check_range_contract(&RangeContract {
+    let c = RangeContract {
         new: Quality::new,
         get: Quality::get,
         of: Some(Quality::of),
         valid: &[0.0, 0.25, 0.5, 1.0],
         invalid: &[-0.1, 1.25, f32::NAN, f32::INFINITY, f32::NEG_INFINITY],
-    });
+    };
+    check_range_contract(&c);
+    check_range_serde(&c);
 }
 
 #[test]

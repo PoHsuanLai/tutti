@@ -130,8 +130,8 @@ std only. A rule the compiler already enforces is not a gate.
   `tutti-alsa-ffi` and `tutti-coremidi-ffi`. Everything above them forbids `unsafe`.
   Test-only `unsafe` is `tutti-fixtures`'.
 - New lock-free or `unsafe` runtime structure goes in `tutti-rt`, with a loom model that
-  runs the shipped code. The publish cell is its own crate, `arc-lend`, which names
-  nothing of tutti's.
+  runs the shipped code. The publish cell is the `arc-lend` crate from its own repository
+  (github.com/tutti-audio/arc-lend); a change to it is made there.
 - Store-load pairs use `SeqCst` fences, not `SeqCst` accesses.
 - A platform difference sits behind one seam: the `cfg` chooses a platform module, never
   each item.
@@ -216,7 +216,7 @@ adapter is [tutti-audio/bevy-tutti](https://github.com/tutti-audio/bevy-tutti).
 **Layering.** Normal and build dependencies point strictly down this list
 (dev-dependencies may go anywhere); `cargo xtask check-layout` holds it:
 
-0. `arc-lend`, `tutti-alsa-ffi`, `tutti-coremidi-ffi`, `tutti-ump`, `tutti-types`,
+0. `tutti-alsa-ffi`, `tutti-coremidi-ffi`, `tutti-ump`, `tutti-types`,
    `tutti-plugin-ipc-ffi`
 1. `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-curve`
 2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-metering`, `tutti-codec`,

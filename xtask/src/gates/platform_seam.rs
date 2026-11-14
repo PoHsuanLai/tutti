@@ -256,8 +256,6 @@ pub(super) fn owner(krate: &str) -> Option<&'static str> {
         "tutti-sampler",
         "tutti-cpal",
         "tutti",
-        "arc-lend",
-        "arc-lend-compare",
         "tutti-fixtures",
     ];
     const DSP_CRATES: &[&str] = &[

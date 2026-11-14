@@ -319,7 +319,7 @@ impl Batcher {
     }
 
     /// Reports to `counters` (the controls' cells) instead of its own.
-    pub fn with_counters(mut self, counters: Arc<ChunkCounters>) -> Self {
+    pub(crate) fn with_counters(mut self, counters: Arc<ChunkCounters>) -> Self {
         self.counters = counters;
         self
     }
@@ -338,7 +338,7 @@ impl Batcher {
 
     /// The slab's input writer, given back: a served plugin's deactivation
     /// rejoins it with the rest of the plugin (`Ipc::deactivate`).
-    pub fn into_slab(self) -> SlabWriter {
+    pub(crate) fn into_slab(self) -> SlabWriter {
         self.slab
     }
 

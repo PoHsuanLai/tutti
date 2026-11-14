@@ -52,7 +52,7 @@ pub use process_guard::ProcessGuard;
 pub use protocol::frame::{FrameTooLarge, read_frame, write_frame};
 pub use protocol::{
     BridgeMessage, HostMessage, MAX_FRAME_BYTES, MAX_STATE_BYTES, PROTOCOL_VERSION,
-    ProcessAudioData, STATE_CHUNK_BYTES, SlabLayout, StagedState, check_protocol_version,
+    ProcessAudioData, STATE_CHUNK_BYTES, SlabLayout, StagedState,
 };
 pub use subprocess::{LaunchedServer, Reaped, launch, resolve_bundle};
 pub use transport::control::socket_name;

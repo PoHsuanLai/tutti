@@ -179,7 +179,7 @@ pub const STATE_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 ///
 /// [`BridgeError::ProtocolMismatch`](tutti_plugin_types::BridgeError::ProtocolMismatch)
 /// when the versions differ.
-pub fn check_protocol_version(got: u32) -> tutti_plugin_types::BridgeResult<()> {
+pub(crate) fn check_protocol_version(got: u32) -> tutti_plugin_types::BridgeResult<()> {
     if got == PROTOCOL_VERSION {
         Ok(())
     } else {

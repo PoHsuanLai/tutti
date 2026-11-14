@@ -266,13 +266,13 @@ impl PluginBridge {
     /// Reserve the buffers a block's parameter changes travel in, each with
     /// room for `queues` queues of `points` points. Control thread. See
     /// [`AudioBridge::reserve_param_changes`].
-    pub fn reserve_param_changes(&self, queues: usize, points: usize) {
+    pub(crate) fn reserve_param_changes(&self, queues: usize, points: usize) {
         self.audio.reserve_param_changes(queues, points);
     }
 
     /// Block `seq`'s MIDI-out, and any earlier block's still queued. See
     /// [`AudioBridge::take_replies`].
-    pub fn take_replies(
+    pub(crate) fn take_replies(
         &self,
         seq: u64,
         midi_out: &mut MidiEventVec,
@@ -326,7 +326,7 @@ impl PluginBridge {
     }
 
     /// See [`AudioBridge::set_sample_rate_rt`].
-    pub fn set_sample_rate_rt(&self, rate: SampleRate) -> bool {
+    pub(crate) fn set_sample_rate_rt(&self, rate: SampleRate) -> bool {
         self.audio.set_sample_rate_rt(rate)
     }
 
@@ -341,7 +341,7 @@ impl PluginBridge {
     }
 
     /// See [`AudioBridge::reset_rt`].
-    pub fn reset_rt(&self) -> bool {
+    pub(crate) fn reset_rt(&self) -> bool {
         self.audio.reset_rt()
     }
 
@@ -388,7 +388,7 @@ impl PluginBridge {
     }
 
     /// See [`AudioBridge::mark_crashed`](super::audio::AudioBridge::mark_crashed).
-    pub fn mark_crashed(&self, cause: PluginFailure) {
+    pub(crate) fn mark_crashed(&self, cause: PluginFailure) {
         self.audio.mark_crashed(cause);
     }
 

@@ -371,7 +371,7 @@ fn drive_blocks_with_gap(blocks: usize, gap: std::time::Duration) -> Vec<Vec<Vec
     // output region must not alias the input region.
     let layout = stereo_layout();
     assert!(
-        layout.input_ring_bytes() > 0 && layout.output_ring_bytes() > 0,
+        layout.input_ring_bytes() > 0 && layout.ring_bytes(layout.output_channels()) > 0,
         "both directions must have their own region"
     );
     let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE, slab);

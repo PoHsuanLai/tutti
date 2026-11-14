@@ -6,7 +6,7 @@ use std::f32::consts;
 
 use tutti_dsp::{Biquad, DirectForm1, SOLVE_CEILING, SvfControls, SvfModel, SvfType};
 use tutti_midi_protocol::value_to_unit_f32;
-use tutti_sf2::Side;
+use tutti_sf2::{SamplePool, Side};
 use tutti_types::{Db, Hz, Q, SampleRate, Semitones};
 use tutti_ump::ControlValue;
 use tutti_ump::{MidiChannel, NoteNumber, RegisteredPerNoteController};
@@ -400,7 +400,7 @@ impl Voice {
 
     pub(crate) fn process(
         &mut self,
-        data: &[i16],
+        data: SamplePool<'_>,
         channels: &[Channel],
         states: &[ChannelState; MidiChannel::COUNT as usize],
         bends: &[Semitones; MidiChannel::COUNT as usize],

@@ -30,16 +30,16 @@
 
 use std::path::Path;
 
-use symphonia::core::audio::{AudioBuffer, Signal};
-use symphonia::core::codecs::{CODEC_TYPE_FLAC, Decoder, DecoderOptions};
-use symphonia::core::errors::Error;
+use symphonia::core::codecs::audio::well_known::CODEC_ID_FLAC;
+use symphonia::core::errors::{Error, SeekErrorKind};
 use symphonia::core::formats::{FormatReader, SeekMode, SeekTo};
+use symphonia::core::units::Timestamp;
 use tutti_types::{ChannelLayout, ChannelTopology, SampleRate, Samples};
 use tutti_types::{FiniteSource, Pull, Source};
 
 use super::error::convert;
 use super::placement::{topology_of, unstated};
-use super::read::{decode_packet_into, first_audio_track, probe_path, sample_rate_of};
+use super::read::{PacketDecoder, first_audio_track, probe_path, sample_rate_of, total_frames_of};
 use crate::DecodeError;
 
 /// A frame count from the file's `u64`, saturating where `usize` is narrower.
@@ -84,14 +84,12 @@ const TRUNCATED: &str = "stream ended before the container's frame count";
 /// ```
 pub struct FileIn {
     reader: Box<dyn FormatReader>,
-    decoder: Box<dyn Decoder>,
+    decoder: PacketDecoder,
     track_id: u32,
     /// Which speaker each channel feeds; its length is the interleave stride.
     topology: ChannelTopology,
     sample_rate: SampleRate,
     total_frames: Option<u64>,
-    /// Scratch buffer reused by `decode_packet_into` (allocated on first decode).
-    convert_buf: Option<AudioBuffer<f32>>,
     /// Decoded-but-unconsumed frames from the last packet, interleaved at the
     /// file's own width. Frame `f` channel `c` is at `leftover[f * width + c]`.
     leftover: Vec<f32>,
@@ -105,7 +103,14 @@ pub struct FileIn {
     /// [`decode_next_packet`](Self::decode_next_packet) call skipped, if any —
     /// the decoder primer. [`seek`](Self::seek) steps back past it when the
     /// frames it swallowed include the one asked for.
-    skipped_primer: Option<u64>,
+    skipped_primer: Option<i64>,
+    /// The container's timestamp of the first packet of the track, once one has
+    /// been read: the earliest a seek can land.
+    first_ts: Option<i64>,
+    /// The container's timestamp of the first frame the stream produces, once
+    /// one has: file frame 0. A packet's timestamp is that of its first decoded
+    /// frame, so the frame a packet starts at is its timestamp less this.
+    origin_ts: Option<i64>,
     /// The decode error that ended a [`pull`](Source::pull) stream
     /// early, kept for [`error`](Self::error). Sticky until a
     /// [`seek`](Self::seek) succeeds.
@@ -129,6 +134,7 @@ impl std::fmt::Debug for FileIn {
             .field("cursor", &self.cursor)
             .field("seekable", &self.seekable)
             .field("skipped_primer", &self.skipped_primer)
+            .field("origin_ts", &self.origin_ts)
             .field("faulted", &self.fault.is_some())
             .finish_non_exhaustive()
     }
@@ -178,30 +184,27 @@ impl FileIn {
     /// track states no sample rate ([`DecodeError::NoSampleRate`]).
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, DecodeError> {
         let reader = probe_path(path.as_ref()).map_err(convert)?;
-        let track = first_audio_track(&*reader)?;
+        let (track, params) = first_audio_track(&*reader)?;
         let track_id = track.id;
 
-        let total_frames = track.codec_params.n_frames;
-        let sample_rate = sample_rate_of(&track.codec_params)?;
+        let total_frames = total_frames_of(track, params);
+        let sample_rate = sample_rate_of(params)?;
         // At least one channel, so the interleave stride is never zero. Untested:
         // no container this build reads yields a zero-channel track, and a
         // fixture cannot be built or stubbed (symphonia's `Channels` come from
         // the demuxer).
-        let topology = track
-            .codec_params
+        let topology = params
             .channels
+            .as_ref()
             .filter(|ch| ch.count() > 0)
             .map_or_else(unstated, topology_of);
 
-        let decode_opts = DecoderOptions::default();
-        let decoder = symphonia::default::get_codecs()
-            .make(&track.codec_params, &decode_opts)
-            .map_err(convert)?;
+        let decoder = PacketDecoder::new(params).map_err(convert)?;
 
         // Seekable only when the container reports a frame count. Formats
         // without n_frames (some VBR/streamed) fall back to whole-file load.
         let seekable = total_frames.is_some();
-        let exact_length = track.codec_params.codec == CODEC_TYPE_FLAC;
+        let exact_length = params.codec == CODEC_ID_FLAC;
 
         // Reserve leftover for a typical packet's worth of frames so
         // sequential reads don't reallocate after warmup. WAV packets are
@@ -215,12 +218,13 @@ impl FileIn {
             topology,
             sample_rate,
             total_frames,
-            convert_buf: None,
             leftover,
             leftover_pos: 0,
             cursor: 0,
             seekable,
             skipped_primer: None,
+            first_ts: None,
+            origin_ts: None,
             fault: None,
             exact_length,
         })
@@ -234,9 +238,9 @@ impl FileIn {
 
     /// Refill `leftover` from the next packet of the selected track that
     /// decodes to audio. Returns the number of frames decoded, which is 0 only
-    /// at EOF, and the timestamp (`packet.ts()`, in frames) of the packet that
-    /// produced them. Retains a `convert_buf` scratch to stay allocation-free
-    /// after warmup.
+    /// at EOF, and the container's timestamp (`packet.pts`, in frames) of the
+    /// packet that produced them. Reuses the decoder's buffers to stay
+    /// allocation-free after warmup.
     ///
     /// A packet can decode to **zero** frames without the stream ending —
     /// Vorbis's first packet, and its first after a `reset`, only prime the
@@ -246,29 +250,34 @@ impl FileIn {
     /// the frames in `leftover` start at the returned packet's `ts`, not at
     /// the first packet read, and [`seek`](Self::seek) must count its preroll
     /// from there.
-    fn decode_next_packet(&mut self) -> Result<(usize, u64), DecodeError> {
+    fn decode_next_packet(&mut self) -> Result<(usize, i64), DecodeError> {
         self.skipped_primer = None;
         loop {
             let packet = match self.reader.next_packet() {
-                Ok(p) => p,
+                Ok(Some(p)) => p,
+                Ok(None) => return Ok((0, 0)),
+                // A file cut short inside a packet ends there: the frames
+                // before the cut are the file. FLAC's exact count
+                // (see `truncation`) is what tells a cut from an end.
                 Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     return Ok((0, 0));
                 }
                 Err(e) => return Err(convert(e)),
             };
-            if packet.track_id() != self.track_id {
+            if packet.track_id != self.track_id {
                 continue;
             }
 
-            let (buf, frames) =
-                decode_packet_into(&mut *self.decoder, &packet, &mut self.convert_buf)
-                    .map_err(convert)?;
+            let ts = packet.pts.get();
+            self.first_ts.get_or_insert(ts);
+            let frames = self.decoder.decode(&packet).map_err(convert)?;
             if frames == 0 {
-                self.skipped_primer.get_or_insert(packet.ts());
+                self.skipped_primer.get_or_insert(ts);
                 continue;
             }
-            let num_ch = buf.spec().channels.count();
-            let ts = packet.ts();
+            self.origin_ts.get_or_insert(ts);
+            let planes = self.decoder.planes();
+            let num_ch = planes.len();
 
             self.leftover.clear();
             self.leftover_pos = 0;
@@ -277,9 +286,9 @@ impl FileIn {
             let width = self.topology.positions().len();
             let ch = num_ch.min(width);
             self.leftover.resize(frames * width, 0.0);
-            for c in 0..ch {
+            for (c, plane) in planes.iter().take(ch).enumerate() {
                 let dst = self.leftover[c..].iter_mut().step_by(width);
-                for (d, &s) in dst.zip(&buf.chan(c)[..frames]) {
+                for (d, &s) in dst.zip(plane) {
                     *d = s;
                 }
             }
@@ -379,6 +388,39 @@ impl FileIn {
         (filled, None)
     }
 
+    /// Seeks the container to the packet holding `target`, or, when the
+    /// container's seekable range ends before it (a container refuses a seek
+    /// into the padding frames its decoder still returns), to the last
+    /// timestamp it accepts, found by bisection from `first_ts`. Decoding on
+    /// from there reaches `target`.
+    fn seek_reader(&mut self, target: i64, first_ts: i64) -> Result<(), DecodeError> {
+        let track_id = self.track_id;
+        let reader = &mut self.reader;
+        let mut seek = |ts: i64| {
+            reader.seek(
+                SeekMode::Accurate,
+                SeekTo::Timestamp {
+                    ts: Timestamp::new(ts),
+                    track_id,
+                },
+            )
+        };
+        match seek(target) {
+            Err(Error::SeekError(SeekErrorKind::OutOfRange)) if target > first_ts => {}
+            other => return other.map(drop).map_err(convert),
+        }
+        let (mut accepted, mut refused) = (first_ts, target);
+        while refused - accepted > 1 {
+            let mid = accepted + (refused - accepted) / 2;
+            match seek(mid) {
+                Ok(_) => accepted = mid,
+                Err(Error::SeekError(SeekErrorKind::OutOfRange)) => refused = mid,
+                Err(error) => return Err(convert(error)),
+            }
+        }
+        seek(accepted).map(drop).map_err(convert)
+    }
+
     /// Positions the stream so the next read produces frame `start` exactly.
     ///
     /// Seeks the container to the packet holding `start`, then decodes and
@@ -391,44 +433,48 @@ impl FileIn {
     /// decode.
     pub fn seek(&mut self, start: Samples) -> Result<(), DecodeError> {
         let start = start.get() as u64;
+        // File frame 0 is the first frame the stream produces, which the
+        // container timestamps. A stream not read yet learns it from its first
+        // packet.
+        if self.origin_ts.is_none() {
+            self.decode_next_packet()?;
+        }
+        let first_ts = self.first_ts.unwrap_or(0);
+        let origin = self.origin_ts.unwrap_or(first_ts);
+        let start_ts = origin.saturating_add(i64::try_from(start).unwrap_or(i64::MAX));
         // Accurate seek lands on the packet containing `target`; decoding then
-        // discards the preroll up to `start`. Two things make that subtler
-        // than `start - actual_ts`:
+        // discards the preroll up to `start_ts`. Two things make that subtler
+        // than `start_ts - actual_ts`:
         //
         // 1. **The first packet after `reset` may decode to nothing.** A
         //    Vorbis decoder needs one packet to prime its overlap, and
         //    `decode_next_packet` skips it. The frames that come out then start
-        //    at the *next* packet's `ts`, so the preroll is counted from the
-        //    timestamp of the first packet that produced frames — never from
-        //    `actual_ts`; counting from `actual_ts` would land every Ogg seek
-        //    about 1024 frames late, with no error.
-        // 2. **That packet can start after `start`** — or not exist, when the
+        //    at the *next* packet's timestamp, so the preroll is counted from
+        //    the timestamp of the first packet that produced frames — never from
+        //    the one the seek landed on; counting from that would land every Ogg
+        //    seek about 1024 frames late, with no error.
+        // 2. **That packet can start after `start_ts`** — or not exist, when the
         //    primer was the file's last packet. The primer was then the packet
-        //    containing `start`, and the frames at `start` cannot be discarded
+        //    containing `start_ts`, and the frames there cannot be discarded
         //    back into existence. So the seek is retried from one frame before
         //    the primer, which makes the packet before it the primer instead.
-        //    Each retry targets strictly earlier, and target 0 ends it.
+        //    Each retry targets strictly earlier, and the track's first packet
+        //    ends it.
         //
         // For codecs whose first packet decodes (PCM, FLAC, MP3 here) the
         // first attempt succeeds and this is one seek.
-        let mut target = start;
+        let mut target = start_ts;
         loop {
             self.leftover.clear();
             self.leftover_pos = 0;
-            self.reader
-                .seek(
-                    SeekMode::Accurate,
-                    SeekTo::TimeStamp {
-                        ts: target,
-                        track_id: self.track_id,
-                    },
-                )
-                .map_err(convert)?;
+            self.seek_reader(target, first_ts)?;
             self.decoder.reset();
 
             let (decoded, ts) = self.decode_next_packet()?;
-            if (decoded == 0 || ts > start)
-                && let Some(primer) = self.skipped_primer.filter(|&p| target > 0 && p <= target)
+            if (decoded == 0 || ts > start_ts)
+                && let Some(primer) = self
+                    .skipped_primer
+                    .filter(|&p| target > first_ts && p <= target)
             {
                 target = primer.saturating_sub(1);
                 continue;
@@ -438,8 +484,8 @@ impl FileIn {
                 break;
             }
 
-            // The frames in `leftover` start at `ts`; discard up to `start`.
-            let mut discard = start.saturating_sub(ts);
+            // The frames in `leftover` start at `ts`; discard up to `start_ts`.
+            let mut discard = u64::try_from(start_ts.saturating_sub(ts)).unwrap_or(0);
             loop {
                 let avail = self.leftover_len() as u64;
                 let skip = avail.min(discard);

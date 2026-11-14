@@ -174,7 +174,7 @@ impl TempoWalk {
                 out.limit = Some(at);
                 break;
             }
-            let offset = Offset::new(at, Samples(frames)).expect("inside the block");
+            let offset = Offset::new(Samples(at), Samples(frames)).expect("inside the block");
             let _ = out.changes.push(offset, transport(&clock));
         }
         out

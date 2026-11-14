@@ -1613,7 +1613,7 @@ fn a_prepare_carries_a_rate_and_a_block() {
 #[cfg(feature = "serde")]
 #[test]
 fn a_max_block_keeps_the_range_contract() {
-    tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+    let c = tutti_fixtures::RangeContract {
         new: MaxBlock::new,
         get: MaxBlock::samples,
         of: Some(MaxBlock::of),
@@ -1632,7 +1632,9 @@ fn a_max_block_keeps_the_range_contract() {
         ],
         #[cfg(not(target_pointer_width = "64"))]
         invalid: &[Samples(0)],
-    });
+    };
+    tutti_fixtures::check_range_contract(&c);
+    tutti_fixtures::check_range_serde(&c);
 }
 
 /// `BeatsPerBar` keeps the range contract. It is tested here, not in
@@ -1641,13 +1643,15 @@ fn a_max_block_keeps_the_range_contract() {
 #[test]
 fn a_beats_per_bar_keeps_the_range_contract() {
     use crate::BeatsPerBar;
-    tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+    let c = tutti_fixtures::RangeContract {
         new: BeatsPerBar::new,
         get: BeatsPerBar::get,
         of: Some(BeatsPerBar::of),
         valid: &[1, 2, 7, 63, 64],
         invalid: &[0, 65, 999, u32::MAX],
-    });
+    };
+    tutti_fixtures::check_range_contract(&c);
+    tutti_fixtures::check_range_serde(&c);
 }
 
 /// `NoteValue` keeps the range contract: only powers of two from 1 to 64.
@@ -1655,13 +1659,15 @@ fn a_beats_per_bar_keeps_the_range_contract() {
 #[test]
 fn a_note_value_keeps_the_range_contract() {
     use crate::NoteValue;
-    tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+    let c = tutti_fixtures::RangeContract {
         new: NoteValue::new,
         get: NoteValue::get,
         of: Some(NoteValue::of),
         valid: &[1, 2, 4, 8, 16, 32, 64],
         invalid: &[0, 3, 5, 6, 7, 12, 63, 65, 128, 1 << 31, u32::MAX],
-    });
+    };
+    tutti_fixtures::check_range_contract(&c);
+    tutti_fixtures::check_range_serde(&c);
 }
 
 /// **The standing of a refused rate says where the plugin is**: the rate it runs at while

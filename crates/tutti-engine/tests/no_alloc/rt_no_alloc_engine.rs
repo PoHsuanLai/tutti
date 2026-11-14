@@ -20,9 +20,8 @@
 //! no-alloc gate here: the hazard is a race, and a sampling schedule cannot
 //! exhaust one; a test that tried would pass while asserting a property it
 //! structurally could not observe. The race is covered where it can be: the
-//! loom model `arc-lend/tests/loom.rs` (against the shipped code; nine models:
-//! eight exhaustive, one bounded at 4 in CI and 5 under `cargo xtask loom-full`)
-//! and miri over `arc-lend`'s stress test.
+//! loom model in arc-lend's `tests/loom.rs` (against the shipped code) and miri
+//! over arc-lend's stress test, both run by arc-lend's own CI.
 
 use std::sync::Arc;
 use tutti_engine::Engine;

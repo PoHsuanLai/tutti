@@ -76,7 +76,7 @@ fn transport(playing: bool, beat: f64) -> TransportPosition {
 fn changes(list: &[(usize, TransportPosition)]) -> TransportChanges {
     let mut c = TransportChanges::NONE;
     for &(at, t) in list {
-        c.push(Offset::new(at, Samples(MAX)).expect("in a block"), t)
+        c.push(Offset::of(Samples(at), Samples(MAX)), t)
             .expect("fits");
     }
     c

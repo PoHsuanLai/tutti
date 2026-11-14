@@ -1,6 +1,7 @@
 use super::super::read::probe_path;
 use super::*;
 use crate::Wave;
+use symphonia::core::errors::Error;
 use tutti_types::Seconds;
 use tutti_types::Stop;
 
@@ -245,14 +246,11 @@ struct FailAfter {
 }
 
 impl symphonia::core::formats::FormatReader for FailAfter {
-    fn try_new(
-        _: symphonia::core::io::MediaSourceStream,
-        _: &symphonia::core::formats::FormatOptions,
-    ) -> Result<Self, Error> {
-        Err(Error::Unsupported("test double"))
+    fn format_info(&self) -> &symphonia::core::formats::FormatInfo {
+        self.inner.format_info()
     }
-    fn cues(&self) -> &[symphonia::core::formats::Cue] {
-        self.inner.cues()
+    fn media_info(&self) -> &symphonia::core::formats::MediaInfo {
+        self.inner.media_info()
     }
     fn metadata(&mut self) -> symphonia::core::meta::Metadata<'_> {
         self.inner.metadata()
@@ -267,14 +265,17 @@ impl symphonia::core::formats::FormatReader for FailAfter {
     fn tracks(&self) -> &[symphonia::core::formats::Track] {
         self.inner.tracks()
     }
-    fn next_packet(&mut self) -> Result<symphonia::core::formats::Packet, Error> {
+    fn next_packet(&mut self) -> Result<Option<symphonia::core::packet::Packet>, Error> {
         if self.left == 0 {
             return Err(Error::DecodeError("injected"));
         }
         self.left -= 1;
         self.inner.next_packet()
     }
-    fn into_inner(self: Box<Self>) -> symphonia::core::io::MediaSourceStream {
+    fn into_inner<'s>(self: Box<Self>) -> symphonia::core::io::MediaSourceStream<'s>
+    where
+        Self: 's,
+    {
         self.inner.into_inner()
     }
 }

@@ -3,7 +3,7 @@
 //! In the [prose](super::prose) of the repo:
 //!
 //! - a path rooted at a workspace crate (`tutti_graph::Node::process`,
-//!   `arc_lend::Cell`) names, segment by segment, identifiers that occur in
+//!   `tutti_rt::AudioThreadCell`) names, segment by segment, identifiers that occur in
 //!   that crate's code (`src/`, comments and literals blanked), or past the
 //!   first segment in the code of a crate it names (a re-export). A crate's
 //!   `pub use other as alias;` continues a path through `alias` in `other`,

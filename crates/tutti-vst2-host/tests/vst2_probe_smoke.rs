@@ -145,11 +145,11 @@ fn capture_round_trips_what_the_host_sent() {
     // forwards an absolute timestamp.
     let midi = vec![
         (
-            Offset::new(7, Samples(BLOCK)).unwrap(),
+            Offset::of(Samples(7), Samples(BLOCK)),
             midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 100),
         ),
         (
-            Offset::new(64, Samples(BLOCK)).unwrap(),
+            Offset::of(Samples(64), Samples(BLOCK)),
             midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
         ),
     ];

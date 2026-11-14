@@ -147,21 +147,9 @@ impl ChannelLayout {
 
 /// A channel count above `u16::MAX`, refused by `ChannelLayout`'s `TryFrom`.
 /// Carries the refused count.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{} channels do not fit a layout (at most {})", .0, u16::MAX)]
 pub struct ChannelCountOutOfRange(pub u64);
-
-impl core::fmt::Display for ChannelCountOutOfRange {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "{} channels do not fit a layout (at most {})",
-            self.0,
-            u16::MAX
-        )
-    }
-}
-
-impl core::error::Error for ChannelCountOutOfRange {}
 
 /// Build a layout from a width that cannot be too large: `u8` and `u16`.
 impl From<u8> for ChannelLayout {

@@ -3,20 +3,25 @@
 //!
 //! - [`MidiClockDecoder`] — 24-PPQN **MIDI Beat Clock** (0xF8 + Start/Stop/
 //!   Continue) → transport state, beat position, inferred tempo. Feed each
-//!   relevant [`Ump`](tutti_ump::Ump) with its arrival `Instant` via
+//!   relevant [`Ump`](tutti_ump::Ump) with its arrival time (`Seconds` on one clock,
+//!   whose zero the caller picks; only differences are read) via
 //!   [`MidiClockDecoder::feed`], or call the per-message methods directly.
 //! - [`MtcDecoder`] — **MIDI Time Code** quarter-frames → an assembled
-//!   [`SmpteTimecode`]. Feed each [`Ump`](tutti_ump::Ump) via [`MtcDecoder::feed`].
-//! - [`SmpteFrameRate`] — the SMPTE frame-rate enum shared by MTC.
+//!   `tutti_midi_protocol::SmpteTimecode`. Feed each [`Ump`](tutti_ump::Ump) via [`MtcDecoder::feed`].
+//! - [`ClockFollower`] — reads one outside clock (Beat Clock or MTC) and says what a
+//!   transport that follows it does: tempo, play, stop, locate, lock.
 //!
 //! Beat Clock gives musical position/tempo; MTC gives wall-clock SMPTE position —
 //! pick by what your source sends. Neither is wired to hardware for you; route
 //! the matching inbound packets from your MIDI input into the decoder.
 
 mod clock;
+mod follow;
+mod machine_control;
 mod mtc;
-mod smpte;
+mod period;
 
 pub use clock::{ClockTransportState, MidiClockDecoder};
-pub use mtc::{MtcDecoder, SmpteTimecode};
-pub use smpte::{SmpteFrameRate, UnknownFrameRate};
+pub use follow::{ClockEvent, ClockFollower, ClockKind, ClockPosition};
+pub use machine_control::{MachineControlEvent, MachineControlFollower};
+pub use mtc::MtcDecoder;

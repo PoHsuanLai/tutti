@@ -10,10 +10,11 @@ use std::num::{NonZeroU8, NonZeroUsize};
 use std::time::Instant;
 
 use super::chunk::{ChunkNo, ChunkPosition, ChunkTotal, PeChunk, PeRequestId};
-use super::flow::{PE_TIMEOUT, PeMessageKind, PeSignal, PeTerminator, TimeoutWait};
+use super::flow::{PE_TIMEOUT, PeMessageKind, PeSignal, PeTerminator};
 use super::header::{PeHeader, PeHeaderError, PeSubscription};
 use super::limits::NotInRange;
 use crate::Muid;
+use crate::TimeoutWait;
 
 /// The most messages received at once from all peers: 1 to 128, the Request IDs
 /// there are (M2-103 §5.3). A message past it is refused.

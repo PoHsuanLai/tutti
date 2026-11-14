@@ -352,6 +352,7 @@ fn trailing_unsolicited_events_dont_poison_next_reply() {
             | BridgeEvent::Resync(_)
             | BridgeEvent::RateRefusal(_)
             | BridgeEvent::ProcessRequested
+            | BridgeEvent::Transport { .. }
             | BridgeEvent::Crashed { .. } => {}
         })));
     }

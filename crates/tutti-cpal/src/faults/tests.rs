@@ -6,7 +6,7 @@ use super::*;
 fn record_while_last_is_locked_counts_and_returns() {
     let faults = StreamFaults::new();
     let held = faults.last_guard();
-    faults.record(&cpal::StreamError::DeviceNotAvailable);
+    faults.record(&cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
     drop(held);
     assert_eq!(faults.count(), 1);
     assert!(faults.is_disconnected());
@@ -15,7 +15,7 @@ fn record_while_last_is_locked_counts_and_returns() {
         "the message was dropped, not waited for"
     );
 
-    faults.record(&cpal::StreamError::DeviceNotAvailable);
+    faults.record(&cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
     assert_eq!(faults.count(), 2);
     assert_eq!(
         faults.last().map(|f| f.kind),
@@ -23,12 +23,11 @@ fn record_while_last_is_locked_counts_and_returns() {
     );
 }
 
-fn pollerr() -> cpal::StreamError {
-    cpal::StreamError::BackendSpecific {
-        err: cpal::BackendSpecificError {
-            description: "`alsa::poll()` returned POLLERR".into(),
-        },
-    }
+fn pollerr() -> cpal::Error {
+    cpal::Error::with_message(
+        cpal::ErrorKind::BackendError,
+        "`alsa::poll()` returned POLLERR",
+    )
 }
 
 /// **A device lost on ALSA is detected though cpal never says
@@ -97,4 +96,15 @@ fn clear_forgets_a_run_in_progress() {
     faults.record_at(&pollerr(), t0 + Duration::from_millis(900));
     assert!(!faults.is_disconnected(), "a fresh run starts at 900 ms");
     assert_eq!(faults.count(), 1);
+}
+
+/// **A route change and a refused real-time promotion are not faults**: the
+/// stream keeps playing, so neither is counted nor starts a stall run.
+#[test]
+fn a_route_change_and_a_refused_promotion_record_nothing() {
+    let faults = StreamFaults::new();
+    faults.record(&cpal::Error::new(cpal::ErrorKind::DeviceChanged));
+    faults.record(&cpal::Error::new(cpal::ErrorKind::RealtimeDenied));
+    assert!(!faults.is_faulted());
+    assert_eq!(faults.count(), 0);
 }

@@ -41,7 +41,7 @@ const ELEVATION_SNAP_DEG: f64 = 1e-4;
 
 /// Whether a layout pans between pairs of speakers or triplets.
 #[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
-pub enum PanningMode {
+enum PanningMode {
     /// Every speaker is on the horizontal plane: a source lies between two.
     Horizontal,
     /// At least one speaker has height, so the speakers lie on a sphere, not
@@ -52,7 +52,7 @@ pub enum PanningMode {
 /// A pair or triplet of speakers a source can be placed between, with the
 /// inverse of its direction matrix.
 #[derive(Debug, Clone, Copy)]
-pub struct Tuple {
+struct Tuple {
     speakers: [u16; 3],
     inverse: Inverse,
 }
@@ -82,7 +82,6 @@ impl Tuple {
 #[derive(Debug, Clone)]
 pub struct SpeakerLayout {
     count: usize,
-    mode: PanningMode,
     tuples: Box<[Tuple]>,
     has_rear_speakers: bool,
 }
@@ -90,9 +89,9 @@ pub struct SpeakerLayout {
 impl SpeakerLayout {
     /// A layout of speakers at the given bearings and heights.
     ///
-    /// The layout is [`Horizontal`](PanningMode::Horizontal) when every
-    /// speaker is within a millionth of a degree of the horizontal plane. A
-    /// speaker's index in `positions` is its index in every gain slice.
+    /// The layout pans between pairs of speakers when every speaker is within a
+    /// millionth of a degree of the horizontal plane, and between triplets
+    /// otherwise. A speaker's index in `positions` is its index in every gain slice.
     ///
     /// # Errors
     ///
@@ -173,7 +172,6 @@ impl SpeakerLayout {
         let has_rear_speakers = degrees.iter().any(|&(a, _)| wrapped_deg(a).abs() > 90.0);
         Ok(Self {
             count,
-            mode,
             tuples,
             has_rear_speakers,
         })
@@ -237,38 +235,15 @@ impl SpeakerLayout {
 
     /// The number of speakers.
     #[must_use]
-    pub fn speaker_count(&self) -> usize {
+    pub(crate) fn speaker_count(&self) -> usize {
         self.count
-    }
-
-    /// Whether the layout pans between pairs or triplets.
-    #[must_use]
-    pub fn mode(&self) -> PanningMode {
-        self.mode
-    }
-
-    /// The pairs or triplets, in the order the solve tries them.
-    #[must_use]
-    pub fn tuples(&self) -> &[Tuple] {
-        &self.tuples
-    }
-
-    /// Whether a speaker is behind the listener (any bearing past 90 degrees
-    /// either side).
-    ///
-    /// Derived from the positions, not the count: the property that matters
-    /// is "can this array place a rear image", and only the geometry answers
-    /// it. Of the five presets, stereo is the one that cannot.
-    #[must_use]
-    pub fn has_rear_speakers(&self) -> bool {
-        self.has_rear_speakers
     }
 
     /// Write the gains of one source at `azimuth` and `elevation`, with
     /// `spread` applied, into `out`: unit power (the sum of squares is 1) for
     /// every bearing and height, whatever the layout covers.
     ///
-    /// `out` is [`speaker_count`](Self::speaker_count) long, and all of it is
+    /// `out` is the speaker count long, and all of it is
     /// written. A slice of another length is a caller's bug: a debug assertion
     /// fires, and a release build writes the first `min(out.len(),
     /// speaker_count)` gains (spread and unit power then hold over those) and

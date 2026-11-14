@@ -25,7 +25,7 @@ pub struct FileFacts {
 /// What a scan does with one discovered plugin.
 ///
 /// Exhaustive: these three are the whole outcome, and callers match on them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScanDecision {
     /// Blacklisted, and the file has not changed since: skip it.
     Blacklisted,

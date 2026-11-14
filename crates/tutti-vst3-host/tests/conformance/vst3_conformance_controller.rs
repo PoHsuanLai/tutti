@@ -129,9 +129,7 @@ fn midi_learn_forwards_from_the_main_thread() {
 /// This is the persistence path: a project save/reload runs exactly this, against every plugin the suite can load.
 #[test]
 fn plugin_state_round_trips() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
     let mut failures = Vec::new();
     let mut exercised = 0usize;
 

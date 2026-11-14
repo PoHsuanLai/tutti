@@ -69,6 +69,11 @@ pub(super) enum Command {
         /// NOT carry a format-specific bitmask — see [`AutomationMode`](crate::protocol::AutomationMode).
         mode: crate::protocol::AutomationMode,
     },
+    /// What the host says of the plugin's track; boxed to keep the queue's
+    /// slots small.
+    SetTrackInfo {
+        info: Box<tutti_plugin_types::TrackInfo>,
+    },
     SetSampleRate {
         rate: SampleRate,
     },
@@ -220,6 +225,12 @@ pub enum BridgeEvent {
     /// The plugin asked to be processed again (CLAP's `request_process`, after
     /// it slept). Carries no payload: the host wakes the node it parked.
     ProcessRequested,
+    /// The plugin asked the host's transport to do something, in the order it
+    /// asked.
+    Transport {
+        /// What it asked.
+        request: tutti_plugin_types::TransportRequest,
+    },
     /// The plugin refused the rate it was asked to run at (`Some`: the rate in
     /// Hz and the plugin's reason), or took a rate after refusing one (`None`).
     RateRefusal(Option<(SampleRate, String)>),
@@ -246,6 +257,9 @@ pub enum BridgeEvent {
         cause: PluginFailure,
     },
 }
+
+/// How many transport requests [`Unsolicited`] holds between two drains.
+pub(super) const UNSOLICITED_TRANSPORT: usize = 64;
 
 /// How many parameter events [`Unsolicited`] holds between two drains.
 pub(super) const UNSOLICITED_PARAMS: usize = 128;
@@ -306,6 +320,9 @@ pub(super) struct Unsolicited {
     param_titles: bool,
     param_values: bool,
     process_requested: bool,
+    /// Transport requests, oldest first. Every one counts, so none is merged:
+    /// past [`UNSOLICITED_TRANSPORT`] the oldest is dropped.
+    transport: std::collections::VecDeque<tutti_plugin_types::TransportRequest>,
     /// Parameter events dropped since the last [`take_dropped`](Self::take_dropped).
     dropped: u64,
 }
@@ -324,6 +341,7 @@ impl Unsolicited {
             param_titles: false,
             param_values: false,
             process_requested: false,
+            transport: std::collections::VecDeque::with_capacity(UNSOLICITED_TRANSPORT),
             dropped: 0,
         }
     }
@@ -395,6 +413,14 @@ impl Unsolicited {
         self.process_requested = true;
     }
 
+    /// Queue a transport request, dropping the oldest when full.
+    pub(super) fn transport(&mut self, request: tutti_plugin_types::TransportRequest) {
+        if self.transport.len() == UNSOLICITED_TRANSPORT {
+            self.transport.pop_front();
+        }
+        self.transport.push_back(request);
+    }
+
     /// A rate refusal, or its clearing, replacing one already held.
     pub(super) fn rate_refusal(&mut self, refusal: Option<(SampleRate, String)>) {
         self.rate = Some(refusal);
@@ -436,6 +462,10 @@ impl Unsolicited {
             .tail
             .take()
             .map(|tail| BridgeEvent::TailChanged { tail });
+        let transport = self
+            .transport
+            .drain(..)
+            .map(|request| BridgeEvent::Transport { request });
         let rate = self.rate.take().map(BridgeEvent::RateRefusal);
         let process =
             std::mem::take(&mut self.process_requested).then_some(BridgeEvent::ProcessRequested);
@@ -445,6 +475,7 @@ impl Unsolicited {
             .chain(params)
             .chain(latency)
             .chain(tail)
+            .chain(transport)
             .chain(rate)
             .chain(refresh.into_iter().flatten())
             .chain(process)
@@ -469,6 +500,7 @@ mod tests {
                 BridgeEvent::LatencyChanged { samples } => format!("latency {}", samples.get()),
                 BridgeEvent::TailChanged { .. } => "tail".to_owned(),
                 BridgeEvent::ProcessRequested => "process".to_owned(),
+                BridgeEvent::Transport { request } => format!("transport {request:?}"),
                 BridgeEvent::Resync(kind) => format!("{kind:?}"),
                 other => panic!("unexpected {other:?}"),
             })

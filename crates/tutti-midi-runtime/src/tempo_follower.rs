@@ -7,8 +7,7 @@
 //! transport places the change (the session, in `tutti-session`).
 //!
 //! The source is an enum, [`TempoSource`], with [`Flex`](TempoSource::Flex)
-//! first: MIDI Clock and MTC (the decoders beside it) are other sources of the
-//! same follower, later.
+//! first. MIDI Beat Clock and MTC are followed by [`ClockFollower`](crate::ClockFollower).
 //!
 //! **Flex addressing** (M2-104 §7.5, Table 10). Set Tempo (§7.5.3) and Set Time
 //! Signature (§7.5.4) are Group messages: Format Complete, Address 1, and a Group

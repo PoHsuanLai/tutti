@@ -2378,3 +2378,81 @@ fn a_clap_tail_change_reaches_the_event_list() {
         "the change flags were not cleared by the drain"
     );
 }
+
+/// **A transport request the plugin makes reaches the host over the wire, each
+/// one, in the order made.** The lifecycle passes it on as a notice and the
+/// server sends it; a latency would be merged, a request to start and then
+/// stop must not be.
+/// Spec: clap.ext.transport_control.host.request_start, clap.ext.transport_control.host.request_stop
+#[test]
+fn a_transport_request_is_sent_to_the_host_in_the_order_made() {
+    use tutti_clap_test_plugin::{HOSTEXT_CMD_JUMP, HOSTEXT_CMD_START, HOSTEXT_CMD_STOP};
+    use tutti_plugin_types::TransportRequest;
+    use tutti_types::Beat;
+
+    let _lock = crate::test_utils::plugin_load_lock();
+    let path = Path::new(clap_plugin());
+    let mut instance =
+        ClapInstance::load_first(&main_thread(), path, 44100.0, 512, false).expect("load");
+    let probe = crate::test_utils::clap();
+    probe.hostext_reset();
+    instance.events.clear();
+
+    for (cmd, a) in [
+        (HOSTEXT_CMD_START, 0),
+        (HOSTEXT_CMD_JUMP, 1 << 32),
+        (HOSTEXT_CMD_STOP, 0),
+    ] {
+        probe.hostext_command(cmd, a, 0);
+        instance
+            .loaded_mut_unwrapped()
+            .on_main_thread(&main_thread());
+    }
+    instance.service_requests();
+
+    let sent: Vec<TransportRequest> = instance
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            BridgeMessage::TransportRequested { request } => Some(*request),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            TransportRequest::Start,
+            TransportRequest::Jump(Beat::new(2.0)),
+            TransportRequest::Stop,
+        ]
+    );
+}
+
+/// **What the host says of the track reaches the plugin the server hosts**, and
+/// the plugin is told it changed.
+/// Spec: clap.ext.track_info.changed
+#[test]
+fn the_track_the_host_sends_reaches_the_served_plugin() {
+    use tutti_plugin_types::{TrackInfo, TrackKind};
+
+    let _lock = crate::test_utils::plugin_load_lock();
+    let path = Path::new(clap_plugin());
+    let mut instance =
+        ClapInstance::load_first(&main_thread(), path, 44100.0, 512, false).expect("load");
+    let probe = crate::test_utils::clap();
+    probe.hostext_reset();
+
+    ServedPlugin::set_track_info(
+        &mut instance,
+        &main_thread(),
+        &TrackInfo {
+            name: Some("Drums".to_owned()),
+            kind: TrackKind::Bus,
+            ..TrackInfo::default()
+        },
+    );
+
+    let cap = probe.hostext_capture();
+    assert_eq!(cap.track_changed_calls, 1);
+    assert_eq!(cap.track_at_changed.name_str(), "Drums");
+}

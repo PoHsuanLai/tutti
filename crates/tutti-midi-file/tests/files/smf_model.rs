@@ -479,7 +479,7 @@ fn a_tempo_above_the_wire_range_writes_the_fastest_quarter() {
         !Meta::tempo(Bpm::of(174.0))
             .bpm()
             .unwrap()
-            .differs_from(Bpm::of(174.0), 0.001)
+            .differs_from(Bpm::of(174.0), Bpm::of(0.001))
     );
 }
 

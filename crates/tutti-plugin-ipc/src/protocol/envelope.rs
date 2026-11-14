@@ -277,6 +277,14 @@ pub enum HostMessage {
         /// The size the host's window has, in pixels.
         size: EditorSize,
     },
+    /// What the host says of the track the plugin sits on, for the formats
+    /// that tell their plugin (CLAP `track-info`). Fire-and-forget; a format
+    /// without the extension drops it.
+    SetTrackInfo {
+        /// The format-neutral value; the server's format answers the plugin's
+        /// reads from it.
+        info: tutti_plugin_types::TrackInfo,
+    },
 }
 
 /// A reply or notification travelling subprocess → host.
@@ -548,4 +556,11 @@ pub enum BridgeMessage {
     /// from any of its threads), after it slept. The host wakes the node it
     /// parked, so the next block reaches the plugin.
     ProcessRequested,
+    /// The plugin asked the host's transport to do something (CLAP
+    /// `transport-control`). Unlike a latency, each request counts: they
+    /// arrive in the order the plugin made them.
+    TransportRequested {
+        /// What it asked.
+        request: tutti_plugin_types::TransportRequest,
+    },
 }

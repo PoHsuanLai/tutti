@@ -28,7 +28,7 @@
 //! `tutti-nodes/benches/engine_render.rs` sets out: steady-state,
 //! fixed-working-set, allocation-free per block. The envelope is flat so the
 //! measured region is a stationary sustain rather than a decaying attack —
-//! the same reason `examples/render_synth_cases.rs` uses one.
+//! the same reason `render_synth_cases` in `testing/tutti-verify` uses one.
 
 use std::hint::black_box;
 use std::num::NonZeroUsize;

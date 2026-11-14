@@ -2,16 +2,15 @@ use super::*;
 use tutti_fixtures::midi;
 use tutti_ump::{MidiChannel, MidiGroup, U14};
 
-/// Any instant: only the differences between arrivals matter.
-fn base() -> Instant {
-    static BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    *BASE.get_or_init(Instant::now)
+/// Any time: only the differences between arrivals matter.
+fn base() -> Seconds {
+    Seconds::new(1.0)
 }
 
-fn us_per_tick(bpm: f64) -> Duration {
+fn us_per_tick(bpm: f64) -> Seconds {
     // 1 beat = PPQN ticks; 1 beat at bpm = 60/bpm seconds = 60_000_000/bpm us
-    Duration::from_micros(
-        (60_000_000.0 / (bpm * f64::from(System::TIMING_CLOCKS_PER_QUARTER))) as u64,
+    Seconds::new(
+        (60_000_000.0 / (bpm * f64::from(System::TIMING_CLOCKS_PER_QUARTER))).trunc() / 1e6,
     )
 }
 
@@ -131,7 +130,7 @@ fn tempo_is_derived_from_the_tick_interval() {
             .tempo_bpm()
             .expect("48 ticks is enough to derive a tempo");
         assert!(
-            !tempo.differs_from(Bpm::of(bpm), 1.0),
+            !tempo.differs_from(Bpm::of(bpm), Bpm::of(1.0)),
             "expected ~{bpm} BPM, got {tempo:?}"
         );
     }

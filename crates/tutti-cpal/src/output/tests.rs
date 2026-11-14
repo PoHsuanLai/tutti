@@ -20,7 +20,7 @@ use tutti_types::{SampleRate, Samples};
 /// the device width. The playhead is the engine's own clock; there is no
 /// clock node in the graph.
 ///
-/// `tests/rt_no_alloc.rs` mirrors this fixture, because the allocation
+/// `tests/device/rt_no_alloc.rs` mirrors this fixture, because the allocation
 /// gates need a `#[global_allocator]` that only a test binary root can
 /// declare.
 fn build_callback_state(sample_rate: f64) -> (Transport, AudioCallbackState) {

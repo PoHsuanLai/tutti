@@ -473,11 +473,10 @@ impl Env {
     /// change), each piece walked with the host's clock rebuilt from its
     /// transport ([`TransportPosition::clock`]): the beat of a frame, then a roll of
     /// one frame, wrapping on the frame that reaches the loop's end, held
-    /// while stopped. It is the host's own clock continued, to the bit (it
-    /// was also `EnvClock`'s, the node that emitted it on two beat ports
-    /// until every beat reader read its `Env`). It does not go through
-    /// [`transport_at`](Self::transport_at), which walks the same clock `k`
-    /// frames at once and so agrees with it to the bit, loop wraps included.
+    /// while stopped. It is the host's own clock continued, to the bit. It
+    /// does not go through [`transport_at`](Self::transport_at), which walks
+    /// the same clock `k` frames at once and so agrees with it to the bit,
+    /// loop wraps included.
     ///
     /// This is the block's own time. A node that reads the transport at its
     /// compiled arrival ([`Cx::arrival`](crate::Cx::arrival)) other than

@@ -138,7 +138,7 @@ impl SessionNode for tutti_nodes::MultibandCompressorNode {
         Some(controls.params().clone())
     }
 }
-// The delay, modulation and LFO nodes, and the two reverbs (wet only: their
+// The delay, modulation, LFO and oscillator nodes, and the two reverbs (wet only: their
 // blend is the graph's mix). The convolution reverb has no param addressed (its
 // wet gain is a linear trim with no `UnitParam`).
 param_session_node!(
@@ -146,6 +146,7 @@ param_session_node!(
     tutti_nodes::ModDelayNode,
     tutti_nodes::PhaserNode,
     tutti_nodes::LfoNode,
+    tutti_nodes::OscillatorNode,
     tutti_nodes::FreeverbNode,
     tutti_nodes::FdnNode,
 );

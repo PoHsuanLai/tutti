@@ -34,7 +34,7 @@ without accounting for it makes a correct encoder look broken.
 **Undithered output is not "unbiased" in the same sense as dithered output.** A
 constant quantizes to one integer, so its mean sits up to half an LSB off the
 exact target. That is plain quantization, not a biased dither; the zero-mean
-check has to be loosened for `Dither::Off` alone.
+check has to be loosened for the undithered case alone.
 
 ### Reading the output
 

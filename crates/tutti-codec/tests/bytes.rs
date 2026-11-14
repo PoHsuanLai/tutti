@@ -107,7 +107,7 @@ fn aiff_bytes_are_pinned() {
 }
 
 /// The file `format` writes for the input, decoded back: one `Vec` per channel.
-#[cfg(feature = "encode-flac")]
+#[cfg(all(feature = "encode-flac", feature = "encode-wav"))]
 fn decoded(format: Format, channels: u16, frames: usize) -> Vec<Vec<f32>> {
     let layout = ChannelLayout::from(channels);
     let spec = Spec::of_width(format, layout, SampleRate::SR_44K1);

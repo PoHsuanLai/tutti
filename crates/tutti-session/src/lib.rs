@@ -215,7 +215,7 @@ pub use tutti_graph::{
     BusError, BusRef, BusSource, Buses, HasParam, HasParams, MissingSource, ParamUnit, Scalar,
 };
 pub use tutti_graph::{
-    CloseError, EventCapacity, Losses, MixError, ModeError, NodeMode, PassError, Stamp,
+    CloseError, CommitError, EventCapacity, Losses, MixError, ModeError, NodeMode, PassError, Stamp,
 };
 #[cfg(feature = "midi")]
 pub use tutti_ump::{MidiChannel, MidiGroup};

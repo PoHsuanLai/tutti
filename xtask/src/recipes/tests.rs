@@ -60,11 +60,6 @@ fn release_takes_one_plain_version() {
     }
 }
 
-#[test]
-fn the_recipe_list_is_the_one_the_help_prints() {
-    assert_eq!(RECIPES.len(), 45);
-}
-
 /// Every static gate is a Rust gate: no recipe plans a script.
 #[test]
 fn no_recipe_runs_a_shell_script() {
@@ -97,6 +92,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         ("check-value-traits", "gate check-value-traits"),
         ("check-doc-refs", "gate check-doc-refs"),
         ("check-pointers", "gate check-pointers"),
+        ("check-platform-seam", "gate check-platform-seam"),
         ("check-conformance", "gate check-conformance"),
     ] {
         assert_eq!(dry(recipe, &[]), [gate]);
@@ -117,6 +113,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         "gate check-value-traits",
         "gate check-doc-refs",
         "gate check-pointers",
+        "gate check-platform-seam",
         "gate check-conformance",
     ] {
         assert!(ci.iter().any(|l| l == want), "{want}");

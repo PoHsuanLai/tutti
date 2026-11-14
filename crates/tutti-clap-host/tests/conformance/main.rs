@@ -6,6 +6,7 @@ mod support;
 mod clap_conformance;
 mod clap_enumeration_holes;
 mod clap_gui_lifecycle;
+mod clap_host_extensions_conformance;
 mod clap_params_state_conformance;
 mod clap_refusal_conformance;
 mod clap_threading_conformance;

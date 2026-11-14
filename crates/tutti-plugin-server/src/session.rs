@@ -277,6 +277,12 @@ impl Session {
                 }
                 Ok(Reaction::None)
             }
+            M::SetTrackInfo { info } => {
+                if let Some(plugin) = self.plugin.as_mut() {
+                    plugin.plugin_mut().set_track_info(main, &info);
+                }
+                Ok(Reaction::None)
+            }
             M::GetParameter { param_id } => {
                 let value = self
                     .plugin

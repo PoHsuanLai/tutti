@@ -32,7 +32,7 @@ pub struct ScanProgress {
 }
 
 /// Which phase the scanner is currently in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScanPhase {
     /// Finding plugin files on disk.
     Discovery,
@@ -259,16 +259,9 @@ impl Drop for Claim {
 }
 
 /// A scan or a crash recovery is already using this pedal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+#[error("a plugin scan is already running on this pedal")]
 pub struct ScanBusy;
-
-impl std::fmt::Display for ScanBusy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a plugin scan is already running on this pedal")
-    }
-}
-
-impl std::error::Error for ScanBusy {}
 
 /// A scan in flight on its worker thread.
 ///

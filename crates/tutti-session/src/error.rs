@@ -207,6 +207,11 @@ pub enum MidiError {
     #[error("MIDI-CI Profile: {0}")]
     Profile(#[from] tutti_midi_hardware::ProfileError),
 
+    /// A MIDI Message Report request was refused ([`Midi::report`](crate::Midi::report)).
+    #[cfg(feature = "midi-hardware")]
+    #[error("MIDI-CI Process Inquiry: {0}")]
+    Report(#[from] tutti_midi_hardware::ReportError),
+
     /// A MIDI file could not be read, built or written.
     #[error("MIDI file: {0}")]
     File(#[from] tutti_midi_file::Error),
@@ -302,6 +307,14 @@ pub enum MidiError {
     /// `Midi::unfollow_clock` with no clock being followed.
     #[error("the session is not following a MIDI clock")]
     NotFollowingClock,
+
+    /// `Midi::unfollow_machine_control` with no Machine Control being followed.
+    #[error("the session is not following MIDI Machine Control")]
+    NotFollowingMachineControl,
+
+    /// `Midi::stop_sending_machine_control` with no Machine Control being sent.
+    #[error("the session is not sending MIDI Machine Control")]
+    NotSendingMachineControl,
 
     /// A tempo has one source: `Midi::follow_tempo` and a Beat Clock
     /// `Midi::follow_clock` each publish the tempo map, so one is refused while

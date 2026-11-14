@@ -5,6 +5,8 @@
 //! arriving, and the MTC Full Message and the runtime's decoders read it rather
 //! than owning it.
 
+use tutti_types::Seconds;
+
 /// SMPTE frame rate for MTC/LTC.
 ///
 /// The discriminants are not MTC's wire values: they are the encoding the
@@ -87,14 +89,22 @@ impl MtcRate {
     }
 }
 
+impl MtcRate {
+    /// The rate as a [`SmpteFrameRate`].
+    #[must_use]
+    pub const fn frame_rate(self) -> SmpteFrameRate {
+        match self {
+            Self::Fps24 => SmpteFrameRate::Fps24,
+            Self::Fps25 => SmpteFrameRate::Fps25,
+            Self::Fps2997Df => SmpteFrameRate::Fps2997Df,
+            Self::Fps30 => SmpteFrameRate::Fps30,
+        }
+    }
+}
+
 impl From<MtcRate> for SmpteFrameRate {
     fn from(rate: MtcRate) -> Self {
-        match rate {
-            MtcRate::Fps24 => Self::Fps24,
-            MtcRate::Fps25 => Self::Fps25,
-            MtcRate::Fps2997Df => Self::Fps2997Df,
-            MtcRate::Fps30 => Self::Fps30,
-        }
+        rate.frame_rate()
     }
 }
 
@@ -193,6 +203,174 @@ impl SmpteFrameRate {
     #[must_use]
     pub fn is_drop_frame(&self) -> bool {
         matches!(self, Self::Fps2997Df)
+    }
+}
+
+/// An assembled SMPTE position: `HH:MM:SS:FF` plus the rate that gives the frame
+/// count meaning.
+///
+/// The fields are the timecode's own *labels*, not a duration — under
+/// [`SmpteFrameRate::Fps2997Df`] some frame numbers never occur, so arithmetic on
+/// these fields directly is wrong. Convert with [`to_seconds`](Self::to_seconds)
+/// first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SmpteTimecode {
+    hours: u8,
+    minutes: u8,
+    seconds: u8,
+    frames: u8,
+    frame_rate: SmpteFrameRate,
+}
+
+impl SmpteTimecode {
+    /// `00:00:00:00` at `frame_rate`.
+    #[must_use]
+    pub const fn origin(frame_rate: SmpteFrameRate) -> Self {
+        Self {
+            hours: 0,
+            minutes: 0,
+            seconds: 0,
+            frames: 0,
+            frame_rate,
+        }
+    }
+
+    /// The position `hours:minutes:seconds:frames` counted at `frame_rate`, or
+    /// `None` when a field is out of range: hours 0..=23, minutes and seconds
+    /// 0..=59, frames below the rate's label count (24, 25 or 30:
+    /// [`SmpteFrameRate::labels_per_second`]).
+    ///
+    /// The labels a drop-frame minute omits (`;00` and `;01`) are accepted:
+    /// they are in range, and [`frame_count`](Self::frame_count) reads each as
+    /// the next label that occurs.
+    #[must_use]
+    pub const fn new(
+        hours: u8,
+        minutes: u8,
+        seconds: u8,
+        frames: u8,
+        frame_rate: SmpteFrameRate,
+    ) -> Option<Self> {
+        if hours < 24
+            && minutes < 60
+            && seconds < 60
+            && (frames as u64) < frame_rate.labels_per_second()
+        {
+            Some(Self {
+                hours,
+                minutes,
+                seconds,
+                frames,
+                frame_rate,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Hours, 0..=23. MTC carries this in 5 bits split across two nibbles.
+    #[must_use]
+    pub const fn hours(&self) -> u8 {
+        self.hours
+    }
+
+    /// Minutes, 0..=59.
+    #[must_use]
+    pub const fn minutes(&self) -> u8 {
+        self.minutes
+    }
+
+    /// Seconds, 0..=59.
+    #[must_use]
+    pub const fn seconds(&self) -> u8 {
+        self.seconds
+    }
+
+    /// Frames within the second, below [`frame_rate`](Self::frame_rate)'s label
+    /// count.
+    #[must_use]
+    pub const fn frames(&self) -> u8 {
+        self.frames
+    }
+
+    /// The rate this position is counted at. Carried in the same quarter-frame as
+    /// the top hours bit, so it arrives with the position rather than being
+    /// configured out of band.
+    #[must_use]
+    pub const fn frame_rate(&self) -> SmpteFrameRate {
+        self.frame_rate
+    }
+}
+
+impl core::fmt::Display for SmpteTimecode {
+    /// Canonical `HH:MM:SS:FF` SMPTE form (colon-separated, zero-padded).
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{:02}:{:02}:{:02}:{:02}",
+            self.hours, self.minutes, self.seconds, self.frames
+        )
+    }
+}
+
+impl SmpteTimecode {
+    /// Elapsed time from `00:00:00:00`, in seconds.
+    ///
+    /// Counts through [`frame_count`](Self::frame_count), so drop-frame labels
+    /// are mapped to the frames that elapsed. Non-drop 29.97 labels are counted
+    /// at face value, at 30000/1001 frames per second.
+    #[must_use]
+    pub fn to_seconds(&self) -> Seconds {
+        let (num, den) = self.frame_rate.ratio();
+        Seconds::new(self.frame_count() as f64 * den as f64 / num as f64)
+    }
+
+    /// Frames elapsed since `00:00:00:00`.
+    ///
+    /// Under [`SmpteFrameRate::Fps2997Df`] this skips the labels `;00` and
+    /// `;01` that each minute not divisible by ten omits (SMPTE 12M). Labels
+    /// that cannot occur in drop-frame are counted as the next label that does.
+    pub fn frame_count(&self) -> u64 {
+        let per_sec = self.frame_rate.labels_per_second();
+        let minutes = u64::from(self.hours) * 60 + u64::from(self.minutes);
+        let mut frames = u64::from(self.frames);
+        // `;00` and `;01` do not exist in a minute not divisible by ten: they
+        // count as `;02`, the next label that does.
+        let dropped_label =
+            self.frame_rate.is_drop_frame() && self.seconds == 0 && minutes % 10 != 0;
+        if dropped_label {
+            frames = frames.max(2);
+        }
+        let labelled = (minutes * 60 + u64::from(self.seconds)) * per_sec + frames;
+        if self.frame_rate.is_drop_frame() {
+            labelled.saturating_sub(2 * (minutes - minutes / 10))
+        } else {
+            labelled
+        }
+    }
+
+    /// The label of frame number `count` since `00:00:00:00` at `frame_rate`;
+    /// the inverse of [`frame_count`](Self::frame_count). Hours wrap at 24.
+    #[must_use]
+    pub fn from_frame_count(count: u64, frame_rate: SmpteFrameRate) -> Self {
+        let per_sec = frame_rate.labels_per_second();
+        let labelled = if frame_rate.is_drop_frame() {
+            // 17_982 frames per ten minutes: the first minute keeps all 1800
+            // labels, the other nine drop two.
+            let (tens, rem) = (count / 17_982, count % 17_982);
+            let dropped = if rem < 2 { 0 } else { 2 * ((rem - 2) / 1798) };
+            count + 18 * tens + dropped
+        } else {
+            count
+        };
+        let secs = labelled / per_sec;
+        Self {
+            hours: ((secs / 3600) % 24) as u8,
+            minutes: ((secs / 60) % 60) as u8,
+            seconds: (secs % 60) as u8,
+            frames: (labelled % per_sec) as u8,
+            frame_rate,
+        }
     }
 }
 

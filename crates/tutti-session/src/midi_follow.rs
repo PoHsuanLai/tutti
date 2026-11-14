@@ -59,8 +59,10 @@ use std::sync::Arc;
 
 use tutti_engine::Playhead;
 use tutti_graph::EventTapReader;
+use tutti_midi_protocol::{MtcRate, Recipient, SysexDeviceId};
 use tutti_midi_runtime::{
-    ClockEvent, ClockFollower, ClockKind, ClockPosition, Followed, TempoFollower,
+    ClockEvent, ClockFollower, ClockKind, ClockPosition, Followed, MachineControlEvent,
+    MachineControlFollower, TempoFollower,
 };
 use tutti_tempo::{TempoError, TempoMap, Transition};
 use tutti_transport::{ProjectMeter, TransportSettings};
@@ -113,6 +115,42 @@ pub struct FollowClock {
     pub group: MidiGroup,
     /// Which clock it sends.
     pub kind: ClockKind,
+}
+
+/// How many events a Machine Control follower's tap holds between two polls:
+/// commands are a handful of SysEx packets each, and a controller sends them by
+/// hand.
+pub(crate) const MACHINE_TAP_CAPACITY: tutti_graph::EventCapacity =
+    tutti_graph::EventCapacity::of(256);
+
+/// What [`Midi::follow_machine_control`](crate::Midi::follow_machine_control)
+/// follows: MIDI Machine Control commands (RP-013) on one Group of the session's
+/// MIDI input ([`MidiNodes::input`](crate::MidiNodes::input)).
+///
+/// MMC carries no clock and no tempo, so it follows beside a
+/// [`FollowClock`] and never contends with it for the tempo map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FollowMachineControl {
+    /// The Group followed. A Group is a cable of its own (M2-104 §2.1.2,
+    /// Appendix B.1); the Group must be one the input hears
+    /// ([`SessionBuilder::midi_groups`](crate::SessionBuilder::midi_groups)).
+    pub group: MidiGroup,
+    /// This session's MMC device ID. A command to it, to a group it was assigned
+    /// to, or to the all-call (`7F`, always accepted) is followed.
+    pub device: SysexDeviceId,
+}
+
+/// What [`Midi::send_machine_control`](crate::Midi::send_machine_control) sends:
+/// the transport's play, stop and locate as MMC commands (RP-013 pp.20 and 28)
+/// to whatever the hardware out reaches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SendMachineControl {
+    /// The Group the SysEx goes out on.
+    pub group: MidiGroup,
+    /// The device, group or all-call the commands are addressed to.
+    pub to: Recipient,
+    /// The frame rate locate targets are stated in.
+    pub rate: MtcRate,
 }
 
 /// The maps a follower overlays: the project's, and what the follower has
@@ -422,6 +460,77 @@ impl ClockFollow {
         }
         if let Some(overlay) = &mut self.overlay {
             overlay.apply(&tempos, cx, out);
+        }
+        actions
+    }
+}
+
+/// The one Machine Control follower a session has: its core and its tap.
+pub(crate) struct MachineFollow {
+    core: MachineControlFollower,
+    tap: EventTapReader,
+}
+
+impl MachineFollow {
+    /// A follower of `core` reading `tap`.
+    pub(crate) fn new(core: MachineControlFollower, tap: EventTapReader) -> Self {
+        Self { core, tap }
+    }
+
+    /// The tap's rate, to compare with the graph's.
+    pub(crate) fn tap_rate(&self) -> tutti_types::SampleRate {
+        self.tap.rate()
+    }
+
+    /// The tap's id.
+    pub(crate) fn tap_id(&self) -> tutti_graph::EventTapId {
+        self.tap.id()
+    }
+
+    /// Replaces a tap the graph re-rated.
+    pub(crate) fn set_tap(&mut self, tap: EventTapReader) {
+        self.tap = tap;
+    }
+
+    /// Reads the tap and reports the commands it did not act on into `out`;
+    /// what the transport is asked to do, placed on beats through the tempo
+    /// map, in order. A locate followed by a play in one message is one
+    /// [`ClockAction::PlayFrom`].
+    pub(crate) fn heard(
+        &mut self,
+        cx: &FollowCx<'_>,
+        out: &mut Vec<crate::SessionEvent>,
+    ) -> Vec<ClockAction> {
+        let mut events = Vec::new();
+        for event in self.tap.drain() {
+            self.core.step(event.ump, &mut |e| events.push(e));
+        }
+        let lost = self.tap.take_lost();
+        if lost > 0 {
+            tracing::warn!("midi: the Machine Control follower's tap lost {lost} events");
+        }
+        let map = cx.settings.tempo_map();
+        let mut actions = Vec::new();
+        let mut events = events.into_iter().peekable();
+        while let Some(event) = events.next() {
+            match event {
+                MachineControlEvent::Locate(time) => {
+                    let beat = map.beat_at_seconds(time);
+                    if events
+                        .next_if(|e| *e == MachineControlEvent::Play)
+                        .is_some()
+                    {
+                        actions.push(ClockAction::PlayFrom(beat));
+                    } else {
+                        actions.push(ClockAction::Locate(beat));
+                    }
+                }
+                MachineControlEvent::Play => actions.push(ClockAction::Play),
+                MachineControlEvent::Stop => actions.push(ClockAction::Stop),
+                MachineControlEvent::Ignored(command) => {
+                    out.push(MidiEvent::MachineControlIgnored(command).into());
+                }
+            }
         }
         actions
     }

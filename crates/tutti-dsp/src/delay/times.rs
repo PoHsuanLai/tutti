@@ -110,7 +110,7 @@ impl ChannelTimes {
 
     /// Whether every channel follows the time control.
     #[must_use]
-    pub const fn is_linked(&self) -> bool {
+    pub(crate) const fn is_linked(&self) -> bool {
         self.linked
     }
 

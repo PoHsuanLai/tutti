@@ -55,16 +55,15 @@ impl Word {
     }
 }
 
-/// One cache line (two on x86-64 and aarch64, whose adjacent-line prefetcher
-/// pulls lines in pairs; the same choice as `crossbeam-utils`' `CachePadded`).
-/// Each reader's slot and the `current` pointer get one of their own, so a
-/// lend writes a line no other reader reads or writes.
-#[cfg_attr(any(target_arch = "x86_64", target_arch = "aarch64"), repr(align(128)))]
-#[cfg_attr(
-    not(any(target_arch = "x86_64", target_arch = "aarch64")),
-    repr(align(64))
-)]
-pub(crate) struct Padded<T>(pub(crate) T);
+// The cache-line width is the platform's: one module per width, one chosen.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+#[path = "slots/padded_pair.rs"]
+mod padded;
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[path = "slots/padded_line.rs"]
+mod padded;
+
+pub(crate) use padded::Padded;
 
 /// One registered reader's slot.
 pub(crate) struct Slot {

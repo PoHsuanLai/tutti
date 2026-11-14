@@ -110,7 +110,7 @@ impl Control {
 
     /// The row flag `whole`: a moved cell lands whole.
     #[must_use]
-    pub const fn whole(self) -> Self {
+    pub(crate) const fn whole(self) -> Self {
         Self {
             read: ControlRead::Whole,
             ..self
@@ -119,7 +119,7 @@ impl Control {
 
     /// The row flag `fast`: read per frame from a [`Feed`](tutti_dsp::Feed) lane.
     #[must_use]
-    pub const fn fast(self) -> Self {
+    pub(crate) const fn fast(self) -> Self {
         Self {
             read: ControlRead::Fast,
             ..self
@@ -128,7 +128,7 @@ impl Control {
 
     /// The row flag `not_nan`: accepts everything but NaN.
     #[must_use]
-    pub const fn not_nan(self) -> Self {
+    pub(crate) const fn not_nan(self) -> Self {
         Self {
             valid: ControlValid::NotNan,
             ..self
@@ -137,7 +137,7 @@ impl Control {
 
     /// Whether the control takes `v`.
     #[must_use]
-    pub fn accepts(self, v: f32) -> bool {
+    pub(crate) fn accepts(self, v: f32) -> bool {
         match self.valid {
             ControlValid::Finite => v.is_finite(),
             ControlValid::NotNan => !v.is_nan(),
@@ -147,7 +147,7 @@ impl Control {
     /// How many of `controls` are [`ControlRead::Fast`]; `const`, for the macro's check
     /// against [`MAX_LANES`].
     #[must_use]
-    pub const fn fast_count(controls: &[Self]) -> usize {
+    pub(crate) const fn fast_count(controls: &[Self]) -> usize {
         let (mut i, mut n) = (0, 0);
         while i < controls.len() {
             if matches!(controls[i].read, ControlRead::Fast) {

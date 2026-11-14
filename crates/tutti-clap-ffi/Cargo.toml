@@ -29,6 +29,8 @@ tutti-plugin-types = { version = "0.0.1", path = "../tutti-plugin-types" }
 # `GraphPool`: a graph worker pool as the `TaskPool` that serves `clap.thread-pool`.
 tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
+# `Beat` and `BeatDuration`: what a `transport-control` request carries.
+tutti-types = { version = "0.0.1", path = "../tutti-types" }
 log = "0.4"
 
 [target.'cfg(unix)'.dependencies]

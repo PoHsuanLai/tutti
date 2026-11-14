@@ -37,7 +37,7 @@ pub const K_SAMPLE_64_INT: i32 = sdk_enum_i32(SymbolicSampleSizes_::kSample64);
 /// from any other mode needs a fresh `setupProcessing`, while the
 /// realtime/prefetch pair is switchable on a live instance
 /// (the host's prefetch switch).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ProcessMode {
     /// `kRealtime` — live playback under a deadline. The default.
     #[default]
@@ -90,7 +90,7 @@ impl ProcessMode {
 /// This is the whole width-specific surface of the process path; everything
 /// else (events, parameter changes, the `ProcessData` build, the call) is the
 /// same for both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SampleWidth {
     /// 32-bit floats (`kSample32`).
     F32,

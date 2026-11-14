@@ -126,15 +126,17 @@ pub enum BusSide {
 }
 
 /// Why a bus edge cannot be declared or lowered.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum BusError {
     /// A bus edge names a node the graph does not have (no shape for it).
+    #[error("no node {} for a bus edge", .node.0)]
     NoSuchNode {
         /// The node.
         node: NodeKey,
     },
     /// The node declares no bus at that index on that side.
+    #[error("node {} declares no {side:?} bus {}", .bus.node.0, .bus.bus)]
     NoSuchBus {
         /// The bus asked for.
         bus: BusRef,
@@ -144,12 +146,14 @@ pub enum BusError {
     },
     /// The global input is wider than a bus holds
     /// ([`MAX_BUS_CHANNELS`](tutti_types::MAX_BUS_CHANNELS)).
+    #[error("the global input ({width} channels) is wider than a bus")]
     GlobalTooWide {
         /// The global input's width.
         width: usize,
     },
     /// The two topologies cannot be folded: a channel has no place, a width
     /// disagrees, or a side is empty. Never a silent drop.
+    #[error("bus edge {from:?} -> {to:?} cannot be folded: {error}")]
     Fold {
         /// The source bus.
         from: BusSource,
@@ -160,9 +164,11 @@ pub enum BusError {
     },
     /// A bus edge into the root, and the root's topology is not declared
     /// ([`GraphSpec::root`] is `None`).
+    #[error("the root's topology is not declared")]
     RootUndeclared,
     /// A bus edge into the root, and the source cannot be folded to the
     /// root's declared topology.
+    #[error("bus edge {from:?} -> root cannot be folded: {error}")]
     RootFold {
         /// The source bus.
         from: BusSource,
@@ -170,46 +176,19 @@ pub enum BusError {
         error: FoldError,
     },
     /// A lowered lane lands on an edge the spec already has.
+    #[error("a bus edge's lane {id:?} is also a plain edge")]
     Overlaps {
         /// The lane.
         id: EdgeId,
     },
     /// The spec's `gains` holds an entry at a lane's edge: a weight the author
     /// set where the bus edge sets its own.
+    #[error("a gain is set on the lane {id:?} of a bus edge")]
     GainOnLane {
         /// The lane.
         id: EdgeId,
     },
 }
-
-impl std::fmt::Display for BusError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NoSuchNode { node } => write!(f, "no node {} for a bus edge", node.0),
-            Self::NoSuchBus { bus, side } => write!(
-                f,
-                "node {} declares no {side:?} bus {}",
-                bus.node.0, bus.bus
-            ),
-            Self::GlobalTooWide { width } => {
-                write!(f, "the global input ({width} channels) is wider than a bus")
-            }
-            Self::Fold { from, to, error } => {
-                write!(f, "bus edge {from:?} -> {to:?} cannot be folded: {error}")
-            }
-            Self::RootUndeclared => write!(f, "the root's topology is not declared"),
-            Self::RootFold { from, error } => {
-                write!(f, "bus edge {from:?} -> root cannot be folded: {error}")
-            }
-            Self::Overlaps { id } => write!(f, "a bus edge's lane {id:?} is also a plain edge"),
-            Self::GainOnLane { id } => {
-                write!(f, "a gain is set on the lane {id:?} of a bus edge")
-            }
-        }
-    }
-}
-
-impl std::error::Error for BusError {}
 
 /// Why the lanes of one bus edge could not be made: a bus error of its own,
 /// or the fold, which the caller names with its sink.

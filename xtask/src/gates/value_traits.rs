@@ -27,42 +27,6 @@ pub(super) const ALLOW: &[(&str, &str, &str)] = &[
         "Waveform",
         "temporary: the dsp session adds Hash",
     ),
-    // midi (7)
-    (
-        "crates/tutti-alsa-ffi/src/client.rs",
-        "UmpVersion",
-        "temporary: the midi session adds Hash",
-    ),
-    (
-        "crates/tutti-alsa-ffi/src/poll.rs",
-        "Wait",
-        "temporary: the midi session adds Hash",
-    ),
-    (
-        "crates/tutti-midi-device/src/ci/initiator.rs",
-        "RequestError",
-        "temporary: the midi session adds Hash",
-    ),
-    (
-        "crates/tutti-midi-device/src/ci/profile.rs",
-        "ProfileDataError",
-        "temporary: the midi session adds Hash",
-    ),
-    (
-        "crates/tutti-midi-file/src/clip_file.rs",
-        "ClipFileError",
-        "temporary: the midi session adds Hash",
-    ),
-    (
-        "crates/tutti-midi-file/src/file/to_clip.rs",
-        "ToClipError",
-        "temporary: the midi session adds Hash",
-    ),
-    (
-        "crates/tutti-midi-protocol/src/midi1.rs",
-        "NoMidi1Form",
-        "temporary: the midi session adds Hash",
-    ),
     // plugins (39)
     (
         "crates/tutti-au-ffi/src/bundle.rs",
@@ -253,37 +217,6 @@ pub(super) const ALLOW: &[(&str, &str, &str)] = &[
         "crates/tutti-vst3-ffi/src/types/audio.rs",
         "SampleWidth",
         "temporary: the plugins session adds Hash",
-    ),
-    // errors (6)
-    (
-        "crates/tutti-engine/src/hearing.rs",
-        "HeardTapError",
-        "temporary: the errors lane converts this error type and adds Hash",
-    ),
-    (
-        "crates/tutti-graph/src/event_inlet.rs",
-        "Refused",
-        "temporary: the errors lane converts this error type and adds Hash",
-    ),
-    (
-        "crates/tutti-graph/src/node.rs",
-        "TransportChangeRejected",
-        "temporary: the errors lane converts this error type and adds Hash",
-    ),
-    (
-        "crates/tutti-sampler/src/voice/command.rs",
-        "SendError",
-        "temporary: the errors lane converts this error type and adds Hash",
-    ),
-    (
-        "crates/tutti-session/src/error.rs",
-        "HeardTapError",
-        "temporary: the errors lane converts this error type and adds Hash",
-    ),
-    (
-        "crates/tutti-session/src/error.rs",
-        "TempoError",
-        "temporary: the errors lane converts this error type and adds Hash",
     ),
 ];
 

@@ -14,6 +14,7 @@ mod conformance;
 mod decode_boundary;
 mod doc_features;
 mod doc_refs;
+mod errors;
 mod ffi;
 mod guards;
 mod hosting;
@@ -29,6 +30,7 @@ mod submodule_pins;
 mod test_paths;
 mod toml;
 mod value_traits;
+mod vst3_sdk;
 
 pub(crate) use doc_features::doc_runs;
 
@@ -96,6 +98,8 @@ pub(crate) enum Gate {
     Layout,
     /// `unsafe` lives only in the crates that hold it.
     Ffi,
+    /// Every error type derives `thiserror::Error`.
+    Errors,
     /// Every host callback runs under the panic guard.
     Guards,
     /// Every hosting impl is listed in the plugin contract.
@@ -123,6 +127,7 @@ impl Gate {
             Gate::SubmodulePins => "gate check-submodule-pins".to_owned(),
             Gate::Layout => "gate check-layout".to_owned(),
             Gate::Ffi => "gate check-ffi".to_owned(),
+            Gate::Errors => "gate check-errors".to_owned(),
             Gate::Guards => "gate check-guards".to_owned(),
             Gate::Hosting => "gate check-hosting".to_owned(),
             Gate::Session => "gate check-session".to_owned(),
@@ -146,6 +151,7 @@ impl Gate {
             }
             Gate::Layout => layout::check(&tree, &RealCargo(root.to_path_buf())),
             Gate::Ffi => ffi::check(&tree),
+            Gate::Errors => errors::check(&tree, errors::ALLOW),
             Gate::Guards => guards::check(&tree, guards::MIN_SEEN),
             Gate::Hosting => hosting::check(&tree),
             Gate::Session => session::check(&tree, &RealCargo(root.to_path_buf())),
@@ -241,10 +247,32 @@ pub(crate) fn conformance_inventory(root: &Path, format: &str) -> Result<(), Str
     match format {
         "clap" => clap_inventory(root),
         "midi" => midi_inventory(root),
+        "vst3" => vst3_inventory(root),
         _ => Err(format!(
-            "no inventory extractor for `{format}` (`clap` or `midi`)"
+            "no inventory extractor for `{format}` (`clap`, `vst3` or `midi`)"
         )),
     }
+}
+
+fn vst3_inventory(root: &Path) -> Result<(), String> {
+    let repo = RealTree {
+        root: root.to_path_buf(),
+    };
+    let items = vst3_sdk::extract(&repo)?;
+    let path = "testing/conformance/vst3.txt";
+    let (text, added, removed) = conformance::regenerate_vst3(repo.read(path).as_deref(), &items)?;
+    let file = root.join(path);
+    fs::create_dir_all(file.parent().expect("a file path has a parent"))
+        .and_then(|()| fs::write(&file, text))
+        .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+    println!("wrote {path}: {} rows", items.len());
+    for id in &added {
+        println!("added {id} (no paraphrase: the gate refuses it until one is written)");
+    }
+    for id in &removed {
+        println!("removed {id}: its row is gone from the file; check its tests' tags");
+    }
+    Ok(())
 }
 
 fn midi_inventory(root: &Path) -> Result<(), String> {

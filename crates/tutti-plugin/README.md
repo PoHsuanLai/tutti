@@ -4,11 +4,11 @@ Loads VST3, CLAP, Audio Unit and VST2 plugins and turns each one into a node you
 
 VST3, CLAP and Audio Unit plugins can run in a separate helper process, so a plugin that crashes does not take your application down; VST2 plugins run inside the application. This is the crate an application uses to host plugins, and it is also available through the `tutti` crate.
 
-This crate is part of [tutti](https://github.com/PoHsuanLai/tutti), a real-time audio engine for Rust.
+This crate is part of [tutti](https://github.com/tutti-audio/tutti), a real-time audio engine for Rust.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/PoHsuanLai/tutti/blob/main/LICENSE-MIT) at your option.
+Licensed under either of [Apache License, Version 2.0](https://github.com/tutti-audio/tutti/blob/main/LICENSE-APACHE) or [MIT license](https://github.com/tutti-audio/tutti/blob/main/LICENSE-MIT) at your option.
 
 ### Contribution
 

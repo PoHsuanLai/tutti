@@ -3,8 +3,9 @@
 //! renders. A [`Tap`] stands in for a synth: it logs every MIDI event its
 //! event input receives with its absolute frame.
 
+use crate::common::{MF, Seen, blocks, note, offline, play, tap};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use tutti_graph::UmpAt;
 use tutti_session::Stamp;
 use tutti_types::MaxBlock;
@@ -12,18 +13,17 @@ use tutti_types::MaxBlock;
 use std::time::{Duration, Instant};
 use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
-use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeParts, Prepare, Refused, Shape, Status};
+use tutti_graph::Refused;
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_hardware::{EndpointId, PortDirection};
 use tutti_midi_runtime::{CHANNELLESS_PORT, LIVE_INLET_CAPACITY, MIDI_INPUT_PORTS, TimedMidiEvent};
-use tutti_transport::MotionEvent;
-use tutti_types::{Beat, BeatDuration, ChannelLayout, Frame, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Beat, BeatDuration, ChannelLayout, Frame, SampleRate, Samples};
 use tutti_ump::Ump;
 use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber, NoteVelocity};
 
 use tutti_session::{
     EventInPort, EventOutPort, Feeder, MIDI_OUT_DROP_REPORT, MidiError, MidiEvent, MidiRouteRule,
-    NoSuchMidiRoute, PHASES, PhaseCx, RouteDeclarer, Session, SessionEvent, SessionNode, UmpOut,
+    NoSuchMidiRoute, PHASES, PhaseCx, RouteDeclarer, Session, SessionEvent, UmpOut,
 };
 
 /// Every phase at `now`: one update, at a time the test picks.
@@ -36,87 +36,12 @@ fn update_at(s: &mut Session, now: Instant) -> Vec<SessionEvent> {
 }
 
 const RATE: f64 = 48_000.0;
-const MF: u16 = 0x8000;
-
-/// `(absolute frame, event)` of every MIDI event a [`Tap`] received.
-type Seen = Arc<Mutex<Vec<(u64, Ump)>>>;
-
-/// A stand-in synth: one MIDI event input, logged with each event's
-/// absolute frame.
-struct Tap(Seen);
-
-impl Node for Tap {
-    fn shape(&self) -> Shape {
-        Shape::EMPTY.with_events(1, 0)
-    }
-    fn prepare(&mut self, _: &Prepare) {}
-    fn process(&mut self, cx: &Cx<'_>, io: Io<'_>) -> Status {
-        let mut seen = self.0.lock().unwrap();
-        for e in io.events(0) {
-            if let EventKind::Midi(Ump(data)) = e.kind {
-                let at = cx.env.frame.get() + u64::from(e.offset.get());
-                seen.push((at, Ump(data)));
-            }
-        }
-        Status::Modified
-    }
-    fn reset(&mut self) {}
-}
-
-impl IntoNode for Tap {
-    type Controls = ();
-    fn into_parts(self) -> NodeParts<()> {
-        IntoNode::into_parts(tutti_graph::Unforkable(self))
-    }
-}
-
-impl SessionNode for Tap {}
-
-/// An offline session at 48 kHz, stereo: the builder's MIDI nodes in.
-fn offline() -> Session {
-    Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds")
-}
-
-/// A tap in `s`'s graph, and what it hears.
-fn tap(s: &mut Session) -> (NodeKey, Seen) {
-    let seen = Seen::default();
-    let (node, ()) = s.graph().add(Tap(Arc::clone(&seen)));
-    (node.erase(), seen)
-}
-
-/// A note-on/note-off pair as timed events.
-fn note(number: u8, start: Beat, duration: BeatDuration) -> [TimedMidiEvent; 2] {
-    [
-        TimedMidiEvent::new(
-            start,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, number, MF),
-        )
-        .unwrap(),
-        TimedMidiEvent::new(
-            start + duration,
-            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, number, 0),
-        )
-        .unwrap(),
-    ]
-}
 
 /// Plays the transport from beat 0 and renders `frames` frames in 512-frame
 /// blocks.
 fn roll(s: &Session, frames: usize) {
-    s.transport()
-        .motion()
-        .try_send(MotionEvent::Play)
-        .expect("room");
-    let mut buf = vec![0.0f32; 512 * 2];
-    for _ in 0..frames.div_ceil(512) {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
-    }
+    play(s);
+    blocks(s, frames.div_ceil(512));
 }
 
 fn note_ons(seen: &Seen) -> Vec<(u64, u8)> {
@@ -150,7 +75,7 @@ fn a_clip_plays_its_note_on_its_frame() {
         .play_clip(
             synth,
             Beat(0.0),
-            note(60, Beat(1.0 / 3.0), BeatDuration(1.0)),
+            note(60, MF, Beat(1.0 / 3.0), BeatDuration(1.0)),
         )
         .expect("the tap takes MIDI");
     let _ = s.update();
@@ -166,7 +91,7 @@ fn a_clip_edit_updates_in_place() {
     let mut s = offline();
     let (synth, seen) = tap(&mut s);
     s.midi()
-        .play_clip(synth, Beat(0.0), note(60, Beat(0.0), BeatDuration(1.0)))
+        .play_clip(synth, Beat(0.0), note(60, MF, Beat(0.0), BeatDuration(1.0)))
         .unwrap();
     let clip = s.midi().clip(synth).expect("the target's clip");
     let _ = s.update();
@@ -176,7 +101,7 @@ fn a_clip_edit_updates_in_place() {
         .play_clip(
             synth,
             Beat(0.0),
-            note(64, Beat(1.0 / 3.0), BeatDuration(1.0)),
+            note(64, MF, Beat(1.0 / 3.0), BeatDuration(1.0)),
         )
         .unwrap();
     let _ = s.update();
@@ -202,7 +127,7 @@ fn a_clip_starts_at_the_beat_it_is_given() {
         .play_clip(
             synth,
             Beat(1.0),
-            note(60, Beat(1.0 / 3.0), BeatDuration(1.0)),
+            note(60, MF, Beat(1.0 / 3.0), BeatDuration(1.0)),
         )
         .expect("the tap takes MIDI");
     let _ = s.update();
@@ -219,7 +144,7 @@ fn a_clip_start_that_is_not_finite_is_refused() {
     for bad in [nan, Beat(f64::INFINITY)] {
         assert!(matches!(
             s.midi()
-                .play_clip(synth, bad, note(60, Beat(0.0), BeatDuration(1.0))),
+                .play_clip(synth, bad, note(60, MF, Beat(0.0), BeatDuration(1.0))),
             Err(MidiError::BeatNotFinite(_))
         ));
     }
@@ -296,7 +221,11 @@ fn a_clip_and_a_live_input_survive_a_re_bind() {
     let mut s = offline();
     let (old, old_seen) = tap(&mut s);
     s.midi()
-        .play_clip(old, Beat(0.0), note(60, Beat(1.0 / 3.0), BeatDuration(1.0)))
+        .play_clip(
+            old,
+            Beat(0.0),
+            note(60, MF, Beat(1.0 / 3.0), BeatDuration(1.0)),
+        )
         .unwrap();
     let clip = s.midi().clip(old).expect("the target's clip");
     let mut live = s.midi().input(old).unwrap();
@@ -662,7 +591,7 @@ fn the_sessions_midi_nodes_keep_their_reclaimers() {
     let mut s = offline();
     let (synth, _) = tap(&mut s);
     s.midi()
-        .play_clip(synth, Beat(0.0), note(60, Beat(0.0), BeatDuration(1.0)))
+        .play_clip(synth, Beat(0.0), note(60, MF, Beat(0.0), BeatDuration(1.0)))
         .expect("the tap takes MIDI");
     let clip = s.midi().clip(synth).expect("the target's clip");
     assert!(s.graph_ref().testing().keeps_reclaimer(clip), "the clip's");
@@ -1090,6 +1019,7 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
     let (other, _) = tap(&mut s);
     let (hand, _) = s.graph().add(MidiClipNode::new(note(
         62,
+        MF,
         Beat(1.0 / 3.0),
         BeatDuration(1.0),
     )));
@@ -1100,7 +1030,7 @@ fn a_hand_wired_event_edge_survives_the_sequencers_feed() {
         .play_clip(
             synth,
             Beat(0.0),
-            note(60, Beat(1.0 / 3.0), BeatDuration(1.0)),
+            note(60, MF, Beat(1.0 / 3.0), BeatDuration(1.0)),
         )
         .unwrap();
     let clip = s.midi().clip(synth).expect("the target's clip");

@@ -255,6 +255,7 @@ fn refused_activation_is_an_error_not_a_silent_success() {
 /// A host that returns the error but leaves the component activated, or holds
 /// the module open, breaks the *next* load rather than this one — which is
 /// exactly the kind of bug a single-shot test misses.
+/// Spec: vst3.IComponent.setActive
 #[test]
 fn a_refused_activation_leaves_the_plugin_loadable_again() {
     {
@@ -389,6 +390,7 @@ fn an_overreported_bus_count_does_not_run_the_host_off_the_end() {
 /// that is the point. The internal scratch is re-resolved from the read-back
 /// either way, so a test that only drove audio would pass even if the
 /// write-back into `PluginInfo` were missing.
+/// Spec: vst3.IAudioProcessor.setBusArrangements, vst3.IAudioProcessor.getBusArrangement
 #[test]
 fn a_refused_arrangement_is_reported_as_the_plugin_kept_it() {
     let path = probe_path();
@@ -637,6 +639,7 @@ fn a_failing_state_roundtrip_does_not_break_the_plugin() {
 /// processor is not set up, so `activateBus`, `setActive` and `process` do not
 /// follow (`IAudioProcessor::setupProcessing`, the portal's Audio Processor
 /// Call Sequence).
+/// Spec: vst3.IAudioProcessor.setupProcessing
 #[test]
 fn a_refused_setup_fails_the_activation_at_the_setup_stage() {
     let path = probe_path();
@@ -789,6 +792,7 @@ fn a_stateless_plugin_does_not_fail_the_state_roundtrip() {
 /// plugin declining to come up, and a host that proceeds is using a component
 /// that was never initialised. The SDK's own host requires `== kResultOk`
 /// (`plugprovider.cpp:140`).
+/// Spec: vst3.IPluginBase.initialize
 #[test]
 fn a_refused_initialize_is_an_error_not_a_silent_success() {
     let _m = Misbehaviour::set(misbehave::INITIALIZE_FAILS);

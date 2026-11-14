@@ -9,17 +9,17 @@
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
+use crate::common::{beat_of, connect, rolling};
 use tutti_graph::NodeKey;
 use tutti_graph::{
-    Cx, Editor, EventEdge, EventIn, EventKind, EventOut, Executor, ForkMode, ForkTarget, Harmony,
-    Io, LoopRange, Node, Prepare, Shape, Status, TransportPosition,
+    Cx, Editor, EventKind, Executor, ForkMode, ForkTarget, Harmony, Io, LoopRange, Node, Prepare,
+    Shape, Status, TransportPosition,
 };
 use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{HarmonyControls, HarmonyNode, TimedHarmony};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
-const FRAMES_PER_BEAT: f64 = 24_000.0;
 
 /// `(absolute frame, harmony)` of every harmony event the sink received.
 type Seen = Arc<Mutex<Vec<(u64, Harmony)>>>;
@@ -59,16 +59,7 @@ fn rig(node: HarmonyNode, max: usize) -> (Editor, Executor, HarmonyControls, See
         "sink",
         tutti_graph::ForkByClone(Sink(Arc::clone(&seen))),
     );
-    ed.spec_mut().connect_events(
-        EventIn {
-            node: NodeKey(2),
-            port: 0,
-        },
-        EventEdge::Direct(EventOut {
-            node: NodeKey(1),
-            port: 0,
-        }),
-    );
+    connect(&mut ed, 1, 2);
     ed.spec_mut()
         .topology
         .set_outputs(vec![Source::Node(OutPort {
@@ -79,16 +70,8 @@ fn rig(node: HarmonyNode, max: usize) -> (Editor, Executor, HarmonyControls, See
     (ed, exec, controls, seen)
 }
 
-fn beat_of(frame: u64) -> Beat {
-    Beat(frame as f64 / FRAMES_PER_BEAT)
-}
-
 fn at(frame: u64, h: Harmony) -> TimedHarmony {
     TimedHarmony::new(beat_of(frame), h)
-}
-
-fn rolling(frame: u64) -> TransportPosition {
-    TransportPosition::new(true, Bpm::of(120.0), beat_of(frame), None)
 }
 
 /// Render one block of `len` frames with the transport at `frame`.

@@ -147,21 +147,9 @@ pub enum UnitParam {
 ///
 /// The scheme is forward-compatible: an unknown id simply does not map to a
 /// param, so callers treat this as "ignore" rather than a hard error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("unknown UnitParam id: {} (low byte {})", .0, .0 & 0xFF)]
 pub struct UnitParamOutOfRange(pub u16);
-
-impl core::fmt::Display for UnitParamOutOfRange {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "unknown UnitParam id: {} (low byte {})",
-            self.0,
-            self.0 & 0xFF
-        )
-    }
-}
-
-impl std::error::Error for UnitParamOutOfRange {}
 
 impl TryFrom<u16> for UnitParam {
     type Error = UnitParamOutOfRange;

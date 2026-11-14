@@ -4,6 +4,7 @@
 //! The assembler holds no `Vec`: it cannot allocate by construction, and the
 //! two tests that push through `assert_no_alloc` pin it.
 
+use crate::support::payload;
 use assert_no_alloc::assert_no_alloc;
 use tutti_ump::{Message, MidiGroup, Sysex7Packet, SysexAssembler, SysexStatus, SysexStep, Ump};
 
@@ -73,10 +74,6 @@ fn feed(asm: &mut SysexAssembler<Vec<u8>>, events: &[Ump]) -> Vec<Vec<u8>> {
         }
     }
     done
-}
-
-fn payload(len: usize) -> Vec<u8> {
-    (0..len).map(|i| (i % 0x7F) as u8).collect()
 }
 
 /// **A multi-packet message completes as one framed message on its

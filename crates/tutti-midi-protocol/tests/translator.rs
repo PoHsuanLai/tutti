@@ -12,28 +12,14 @@ use tutti_ump::{
     U7, Ump, Voice1, Voice2,
 };
 
-fn at(group: u8, channel: u8) -> Address {
-    Address {
-        group: MidiGroup::of(group),
-        channel: MidiChannel::of(channel),
-    }
-}
-
-const A: (u8, u8) = (0, 0);
+const A: Address = Address::first(MidiChannel::FIRST);
 
 fn cc_on(address: Address, controller: CCNumber, value: u8) -> Ump {
-    Message::Midi1(
-        address,
-        Voice1::ControlChange {
-            controller,
-            value: U7::of(value),
-        },
-    )
-    .into()
+    Message::control_change(address, controller, U7::of(value)).into()
 }
 
 fn cc(controller: CCNumber, value: u8) -> Ump {
-    cc_on(at(A.0, A.1), controller, value)
+    cc_on(A, controller, value)
 }
 
 /// What each input became, one entry per input: a run's controller is sent
@@ -52,7 +38,7 @@ fn run(t: &mut Translator, input: &[Ump]) -> Vec<Vec<Message>> {
 
 fn registered(bank: u8, index: u8, value: u32) -> Message {
     Message::Midi2(
-        at(A.0, A.1),
+        A,
         Voice2::Registered {
             bank: U7::of(bank),
             index: U7::of(index),
@@ -63,7 +49,7 @@ fn registered(bank: u8, index: u8, value: u32) -> Message {
 
 fn assignable(bank: u8, index: u8, value: u32) -> Message {
     Message::Midi2(
-        at(A.0, A.1),
+        A,
         Voice2::Assignable {
             bank: U7::of(bank),
             index: U7::of(index),
@@ -366,7 +352,7 @@ fn other_controllers_are_scaled_min_center_max() {
 #[test]
 fn the_group_and_channel_are_kept() {
     let mut t = Translator::new();
-    let a = at(5, 3);
+    let a = Address::new(MidiGroup::of(5), MidiChannel::of(3));
     let mut out = Vec::new();
     for ump in [
         cc_on(a, CCNumber::RPN_MSB, 0),
@@ -393,7 +379,10 @@ fn the_group_and_channel_are_kept() {
 #[test]
 fn groups_keep_their_own_runs() {
     let mut t = Translator::new();
-    let (g0, g1) = (at(0, 0), at(1, 0));
+    let (g0, g1) = (
+        Address::new(MidiGroup::of(0), MidiChannel::of(0)),
+        Address::new(MidiGroup::of(1), MidiChannel::of(0)),
+    );
     let mut out = Vec::new();
     // Interleaved runs on the same channel of two groups.
     for ump in [
@@ -435,11 +424,10 @@ fn groups_keep_their_own_runs() {
 #[test]
 fn bank_select_rides_on_the_next_program_change_only() {
     let mut t = Translator::new();
-    let pc =
-        |p: u8| -> Ump { Message::Midi1(at(A.0, A.1), Voice1::ProgramChange(U7::of(p))).into() };
+    let pc = |p: u8| -> Ump { Message::Midi1(A, Voice1::ProgramChange(U7::of(p))).into() };
     let program = |p: u8, bank: Option<(u8, u8)>| {
         Message::Midi2(
-            at(A.0, A.1),
+            A,
             Voice2::ProgramChange {
                 program: U7::of(p),
                 bank: bank.map(|(msb, lsb)| Bank {
@@ -480,7 +468,7 @@ fn stateless_messages_are_widened() {
     let mut t = Translator::new();
     let note = NoteNumber::of(60);
     let on0: Ump = Message::Midi1(
-        at(A.0, A.1),
+        A,
         Voice1::NoteOn {
             note,
             velocity: U7::of(0),
@@ -491,7 +479,7 @@ fn stateless_messages_are_widened() {
     assert_eq!(
         run(&mut t, &[on0]),
         vec![vec![Message::Midi2(
-            at(A.0, A.1),
+            A,
             Voice2::NoteOff {
                 note,
                 velocity: NoteVelocity::new(0x8000),
@@ -503,7 +491,7 @@ fn stateless_messages_are_widened() {
     assert_eq!(
         run(&mut t, &[cc(CCNumber::of(96), 127)]),
         vec![vec![Message::Midi2(
-            at(A.0, A.1),
+            A,
             Voice2::ControlChange {
                 controller: CCNumber::of(96),
                 value: ControlValue::new(0xFFFF_FFFF),
@@ -518,7 +506,7 @@ fn midi_2_packets_pass_through_unchanged() {
     let note = NoteNumber::of(60);
     // M2-104 7.4.2: a MIDI 2.0 Note On at velocity 0 is a Note On.
     let on0: Ump = Message::Midi2(
-        at(2, 4),
+        Address::new(MidiGroup::of(2), MidiChannel::of(4)),
         Voice2::NoteOn {
             note,
             velocity: NoteVelocity::MIN,
@@ -556,7 +544,7 @@ fn reset_all_controllers_nulls_the_selection() {
             vec![],
             vec![],
             vec![Message::Midi2(
-                at(A.0, A.1),
+                A,
                 Voice2::ControlChange {
                     controller: CCNumber::RESET_ALL,
                     value: ControlValue::new(0),
@@ -601,7 +589,7 @@ fn reset_all_controllers_nulls_both_halves_of_the_number() {
 fn a_velocity_prefix_is_the_low_seven_bits_of_the_next_note_on() {
     let note_on = |v: u8| -> Ump {
         Message::Midi1(
-            at(A.0, A.1),
+            A,
             Voice1::NoteOn {
                 note: NoteNumber::of(60),
                 velocity: U7::of(v),
@@ -611,7 +599,7 @@ fn a_velocity_prefix_is_the_low_seven_bits_of_the_next_note_on() {
     };
     let on = |velocity: u16| {
         Message::Midi2(
-            at(A.0, A.1),
+            A,
             Voice2::NoteOn {
                 note: NoteNumber::of(60),
                 velocity: NoteVelocity::new(velocity),
@@ -649,7 +637,7 @@ fn a_velocity_prefix_is_the_low_seven_bits_of_the_next_note_on() {
 fn a_velocity_prefix_waits_across_other_messages_on_its_channel_only() {
     let on = |channel: u8, v: u8| -> Ump {
         Message::Midi1(
-            at(0, channel),
+            Address::new(MidiGroup::FIRST, MidiChannel::of(channel)),
             Voice1::NoteOn {
                 note: NoteNumber::of(60),
                 velocity: U7::of(v),
@@ -661,8 +649,16 @@ fn a_velocity_prefix_waits_across_other_messages_on_its_channel_only() {
     let out = run(
         &mut t,
         &[
-            cc_on(at(0, 0), CCNumber::VELOCITY_PREFIX, 0x40),
-            cc_on(at(0, 0), CCNumber::MOD_WHEEL, 5),
+            cc_on(
+                Address::new(MidiGroup::of(0), MidiChannel::of(0)),
+                CCNumber::VELOCITY_PREFIX,
+                0x40,
+            ),
+            cc_on(
+                Address::new(MidiGroup::of(0), MidiChannel::of(0)),
+                CCNumber::MOD_WHEEL,
+                5,
+            ),
             on(1, 1),
             on(0, 1),
         ],
@@ -686,7 +682,7 @@ fn a_velocity_prefix_waits_across_other_messages_on_its_channel_only() {
 fn a_velocity_prefix_has_no_effect_on_a_note_on_at_zero() {
     let note = |v: u8| -> Ump {
         Message::Midi1(
-            at(A.0, A.1),
+            A,
             Voice1::NoteOn {
                 note: NoteNumber::of(60),
                 velocity: U7::of(v),
@@ -702,7 +698,7 @@ fn a_velocity_prefix_has_no_effect_on_a_note_on_at_zero() {
     assert_eq!(
         out[1],
         vec![Message::Midi2(
-            at(A.0, A.1),
+            A,
             Voice2::NoteOff {
                 note: NoteNumber::of(60),
                 velocity: NoteVelocity::new(0x8000),
@@ -713,7 +709,7 @@ fn a_velocity_prefix_has_no_effect_on_a_note_on_at_zero() {
     assert_eq!(
         out[2],
         vec![Message::Midi2(
-            at(A.0, A.1),
+            A,
             Voice2::NoteOn {
                 note: NoteNumber::of(60),
                 velocity: NoteVelocity::new(0x8000),
@@ -741,7 +737,13 @@ fn flush_sends_a_lone_cc_6_once() {
     );
     let mut sent = Vec::new();
     t.flush(|address, ump| sent.push((address, ump.decode().unwrap())));
-    assert_eq!(sent, [(at(0, 0), registered(0, 0, zx(12, 0)))]);
+    assert_eq!(
+        sent,
+        [(
+            Address::new(MidiGroup::of(0), MidiChannel::of(0)),
+            registered(0, 0, zx(12, 0))
+        )]
+    );
     let mut again = 0;
     t.flush(|_, _| again += 1);
     assert_eq!(again, 0);
@@ -752,7 +754,7 @@ fn flush_sends_a_lone_cc_6_once() {
 #[test]
 fn flush_sends_a_lone_cc_38_on_its_own_channel() {
     let mut t = Translator::new();
-    let a = at(3, 5);
+    let a = Address::new(MidiGroup::of(3), MidiChannel::of(5));
     for ump in [
         cc_on(a, CCNumber::NRPN_MSB, 1),
         cc_on(a, CCNumber::NRPN_LSB, 2),
@@ -803,7 +805,10 @@ fn increment_and_decrement_stay_control_changes() {
 #[test]
 fn reset_group_forgets_that_groups_selection_alone() {
     let mut t = Translator::new();
-    let (g1, g2) = (at(0, 0), at(1, 0));
+    let (g1, g2) = (
+        Address::new(MidiGroup::of(0), MidiChannel::of(0)),
+        Address::new(MidiGroup::of(1), MidiChannel::of(0)),
+    );
     for a in [g1, g2] {
         t.translate(cc_on(a, CCNumber::RPN_MSB, 0));
         t.translate(cc_on(a, CCNumber::RPN_LSB, 0));

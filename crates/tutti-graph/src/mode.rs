@@ -177,16 +177,18 @@ impl NodeMode {
 }
 
 /// Why [`Editor::set_mode`](crate::Editor::set_mode) refused.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ModeError {
     /// The spec has no node at the key.
+    #[error("no node {} to set the mode of", .node.0)]
     NoSuchNode {
         /// The key.
         node: NodeKey,
     },
     /// The node has no pass ([`PassError`](crate::PassError)): a bypass
     /// would have to guess where its input goes.
+    #[error("node {} cannot be bypassed: {error}", .node.0)]
     Unplaced {
         /// The key.
         node: NodeKey,
@@ -194,19 +196,6 @@ pub enum ModeError {
         error: crate::PassError,
     },
 }
-
-impl std::fmt::Display for ModeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NoSuchNode { node } => write!(f, "no node {} to set the mode of", node.0),
-            Self::Unplaced { node, error } => {
-                write!(f, "node {} cannot be bypassed: {error}", node.0)
-            }
-        }
-    }
-}
-
-impl std::error::Error for ModeError {}
 
 /// A node's [`Mix`] as the spec holds it (doc 013, "Bypass and mute are graph
 /// state", M4): the blend of the node's output with its aligned input,
@@ -269,19 +258,22 @@ impl std::hash::Hash for NodeMix {
 }
 
 /// Why [`Editor::set_mix`](crate::Editor::set_mix) refused.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum MixError {
     /// The spec has no node at the key.
+    #[error("no node {} to set the mix of", .node.0)]
     NoSuchNode {
         /// The key.
         node: NodeKey,
     },
     /// The mix is not in `0..=1` (or is NaN): a blend position off the ends of
     /// the blend, which is [`Mix::new_clamped`]'s to make, not the graph's.
+    #[error("a mix must be in 0..=1")]
     OutOfRange,
     /// A mix short of [`Mix::WET`] on a node with no pass
     /// ([`PassError`](crate::PassError)): its dry side would be a guess.
+    #[error("node {} cannot be mixed with its input: {error}", .node.0)]
     Unplaced {
         /// The key.
         node: NodeKey,
@@ -289,20 +281,6 @@ pub enum MixError {
         error: crate::PassError,
     },
 }
-
-impl std::fmt::Display for MixError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NoSuchNode { node } => write!(f, "no node {} to set the mix of", node.0),
-            Self::OutOfRange => write!(f, "a mix must be in 0..=1"),
-            Self::Unplaced { node, error } => {
-                write!(f, "node {} cannot be mixed with its input: {error}", node.0)
-            }
-        }
-    }
-}
-
-impl std::error::Error for MixError {}
 
 /// A unit's mode and mix, shared between the editor (the one writer) and the
 /// unit (the executor reads each once per block). An `AtomicU8` and the

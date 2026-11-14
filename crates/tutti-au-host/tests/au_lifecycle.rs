@@ -63,6 +63,7 @@ fn test_parameter_list() {
     assert!(!params.is_empty());
 }
 
+/// Spec: au.select.AudioUnitGetParameter, au.select.AudioUnitSetParameter
 #[test]
 fn test_get_set_parameter() {
     let comp = find_apple_delay().unwrap();
@@ -203,6 +204,7 @@ fn a_preset_less_unit_reports_no_selection_rather_than_a_fabricated_preset() {
     }
 }
 
+/// Spec: au.prop.SetRenderCallback
 #[test]
 fn test_render_callback_installed_once() {
     // AUDelay is an effect (has input), so the render callback IS installed.
@@ -552,6 +554,7 @@ mod halves {
     /// unit initializes, and the unit reports whether it took it: AUSampler
     /// implements the property, and AUDelay does not (it is absent there, so the
     /// write is refused, which is the probe behind `Features::RENDER_MODE`).
+    /// Spec: au.prop.OfflineRender
     #[test]
     fn an_offline_activation_writes_the_render_mode_and_says_who_took_it() {
         let offline = prepare(tutti_types::SampleRate::SR_44K1, 512)

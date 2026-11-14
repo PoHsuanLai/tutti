@@ -291,6 +291,7 @@ fn a_fresh_instance_has_an_empty_mapping_table() {
 /// Bipolar_On` (flags word `60`) with bounds `0.25..=0.75`, on CC 74 channel 3.
 /// A host that stored the flags as a single boolean, or dropped the bounds, could
 /// not produce this value at all.
+/// Spec: au.prop.AddParameterMIDIMapping, au.prop.AllParameterMIDIMappings
 #[test]
 fn every_field_survives_a_round_trip_through_a_real_au() {
     let _g = lock();
@@ -488,6 +489,7 @@ fn a_second_mapping_on_the_same_parameter_replaces_the_first() {
 /// This is the behaviour a host relies on to unbind a parameter without first
 /// reading what it was bound to. If remove compared whole structs, the call
 /// would silently do nothing and the parameter would stay mapped.
+/// Spec: au.prop.RemoveParameterMIDIMapping
 #[test]
 fn remove_matches_on_the_parameter_triple_alone() {
     let _g = lock();
@@ -805,6 +807,7 @@ fn an_unmapped_cc_does_not_move_the_parameter() {
 ///
 /// Measured on macOS 15.6: arming parameter 900 and sending CC 11 produced
 /// `ControlChange { controller: 11 }` and grew the table from 0 to 1.
+/// Spec: au.prop.HotMapParameterMIDIMapping
 #[test]
 fn arming_a_hot_map_and_sending_a_cc_completes_the_mapping() {
     let _g = lock();

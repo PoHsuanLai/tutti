@@ -140,16 +140,9 @@ impl From<Bpm> for f64 {
 
 /// A raw number that is not a tempo: NaN, infinite, zero or negative (see
 /// [`Bpm::new`]).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error("a tempo is finite and above zero, got {0}")]
 pub struct BpmOutOfRange(pub f64);
-
-impl core::fmt::Display for BpmOutOfRange {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "a tempo is finite and above zero, got {}", self.0)
-    }
-}
-
-impl core::error::Error for BpmOutOfRange {}
 
 unit! {
     /// A position on the musical timeline, in beats.
@@ -634,20 +627,9 @@ impl TryFrom<BeatDuration> for BeatsPerCycle {
 }
 
 /// The span [`BeatsPerCycle`] refused: not finite and above zero.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+#[error("a cycle's span is finite and above zero beats, got {0}")]
 pub struct BeatsPerCycleOutOfRange(pub f64);
-
-impl core::fmt::Display for BeatsPerCycleOutOfRange {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "a cycle's span is finite and above zero beats, got {}",
-            self.0
-        )
-    }
-}
-
-impl core::error::Error for BeatsPerCycleOutOfRange {}
 
 #[cfg(test)]
 mod tests;

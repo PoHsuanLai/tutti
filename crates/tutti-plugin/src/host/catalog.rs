@@ -48,7 +48,7 @@ use crate::host::db_probe::{measure_record, probe_plugin, probe_plugin_measured,
 use crate::host::plugin_ref::PluginRef;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use tutti_plugin_db::{
     BlacklistedFile, Delta, FileFacts, PluginDb, PluginEntry, Scan, ScanBusy, ScanPoll, ScanResult,
     Scanner,
@@ -92,6 +92,9 @@ type Unreported = Arc<Mutex<Option<PersistError>>>;
 /// called, or a scan or a crash recovery saves it.
 pub struct Catalog {
     db: PluginDb,
+    /// The blacklisted rows of `db`, republished by every method that changes
+    /// the table: what a [`BlacklistView`] reads.
+    blacklist: Arc<RwLock<PluginDb>>,
     scanner: Scanner,
     config: CatalogConfig,
     audio: AudioConfig,
@@ -147,7 +150,80 @@ fn key(path: &Path) -> PathBuf {
     tutti_plugin_db::canonical_path(path)
 }
 
+/// A database holding only the blacklisted rows of `db`.
+fn blacklisted_rows(db: &PluginDb) -> PluginDb {
+    let mut rows = PluginDb::new();
+    for (path, row) in db
+        .rows()
+        .filter(|(_, row)| row.blacklist_reason().is_some())
+    {
+        rows.apply(Delta::put(path, row.clone()));
+    }
+    rows
+}
+
+/// The refusal of `db`'s blacklist for `plugin`: the one rule behind
+/// [`Catalog::check`] and [`BlacklistView::check`].
+fn refusal(db: &PluginDb, plugin: &PluginRef) -> BridgeResult<()> {
+    let path = plugin.path();
+    let canonical = key(path);
+    if !db.is_blacklisted_and_unchanged(&canonical, &FileFacts::read(&canonical)) {
+        return Ok(());
+    }
+    let reason = db
+        .row(&canonical)
+        .and_then(|row| row.blacklist_reason())
+        .unwrap_or("no reason recorded")
+        .to_string();
+    Err(BridgeError::Blacklisted {
+        path: path.to_path_buf(),
+        reason,
+    })
+}
+
+/// A catalog's blacklist as it is when asked: made by
+/// [`Catalog::blacklist_view`], `Send` and cheap to clone, so a load that runs
+/// on another thread asks it when it opens, after any change the owning thread
+/// made since.
+#[derive(Debug, Clone)]
+pub struct BlacklistView {
+    rows: Arc<RwLock<PluginDb>>,
+}
+
+impl BlacklistView {
+    /// As [`Catalog::check`], against the catalog's blacklist now.
+    ///
+    /// # Errors
+    ///
+    /// [`BridgeError::Blacklisted`] with the recorded reason when the plugin's
+    /// file is blacklisted and unchanged.
+    pub fn check(&self, plugin: &PluginRef) -> BridgeResult<()> {
+        refusal(
+            &self.rows.read().unwrap_or_else(PoisonError::into_inner),
+            plugin,
+        )
+    }
+}
+
 impl Catalog {
+    /// Republishes the blacklisted rows to the views, after a change to the
+    /// table.
+    fn publish_blacklist(&self) {
+        *self
+            .blacklist
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = blacklisted_rows(&self.db);
+    }
+
+    /// The blacklist as a handle that outlives this borrow and is `Send`: what
+    /// a load that runs on another thread asks, so it sees a plugin blacklisted
+    /// after the load was made.
+    pub fn blacklist_view(&self) -> BlacklistView {
+        BlacklistView {
+            rows: Arc::clone(&self.blacklist),
+        }
+    }
+
     /// Creates a catalog over `db`, which `persist` stores.
     ///
     /// `persist` receives the table and stores it wherever the host keeps it. It
@@ -165,8 +241,10 @@ impl Catalog {
         persist: impl Fn(&PluginDb) -> Result<(), PersistError> + Send + Sync + 'static,
     ) -> Self {
         let scanner = Scanner::new(config.pedal_path(), probe_plugin);
+        let blacklist = Arc::new(RwLock::new(blacklisted_rows(&db)));
         Self {
             db,
+            blacklist,
             scanner,
             config,
             audio: AudioConfig::default(),
@@ -199,9 +277,10 @@ impl Catalog {
 
     /// Returns the audio settings a load that names this catalog applies.
     ///
-    /// `PluginLoad::with_catalog` (the session's load) takes them, with the
-    /// blacklist's verdict, so no borrow of the catalog has to outlive the
-    /// launch, which can take from half a second to several seconds.
+    /// `PluginLoad::with_catalog` (the session's load) takes them, and the
+    /// blacklist as a [`BlacklistView`], so no borrow of the catalog has to
+    /// outlive the launch, which can take from half a second to several
+    /// seconds.
     pub fn audio_config(&self) -> &AudioConfig {
         &self.audio
     }
@@ -264,8 +343,11 @@ impl Catalog {
     pub fn spawn_scan(&mut self) -> std::result::Result<Scan, ScanBusy> {
         self.finish_pending_save();
         let save = self.autosave();
-        self.scanner
-            .spawn(&mut self.db, &self.config.scan_dirs, save)
+        let scan = self
+            .scanner
+            .spawn(&mut self.db, &self.config.scan_dirs, save);
+        self.publish_blacklist();
+        scan
     }
 
     /// Applies what a rescan has found so far and reports where it stands.
@@ -279,6 +361,7 @@ impl Catalog {
     /// [`Scan`] once it reports `Done` or `Died`.
     pub fn poll_scan(&mut self, scan: &Scan) -> ScanPoll {
         let poll = scan.poll(&mut self.db);
+        self.publish_blacklist();
         if matches!(poll, ScanPoll::Done(_)) {
             self.save_in_background();
         }
@@ -300,7 +383,9 @@ impl Catalog {
         let save = self.autosave();
         let result = self
             .scanner
-            .scan(&mut self.db, &self.config.scan_dirs, save)?;
+            .scan(&mut self.db, &self.config.scan_dirs, save);
+        self.publish_blacklist();
+        let result = result?;
         // A failure stays for `take_persist_error`; the scan's result is the table.
         let _ = persist_unattended(&self.persist, &self.unreported, &self.db);
         Ok(result)
@@ -424,9 +509,9 @@ impl Catalog {
     ///
     /// The path need not have been scanned. The check is mtime-aware, so a
     /// reinstall or update re-admits a plugin without clearing anything. The
-    /// catalog does not open a plugin; the session's load asks this
-    /// (`PluginLoad::with_catalog`), so a blacklisted plugin is refused when it
-    /// is loaded, before any server starts.
+    /// catalog does not open a plugin; the session's load asks the same rule
+    /// through a [`BlacklistView`] when it runs, so a blacklisted plugin is
+    /// refused when it is loaded, before any server starts.
     ///
     /// # Errors
     ///
@@ -435,20 +520,7 @@ impl Catalog {
     /// (a load that does not name the catalog) or to
     /// [`unblacklist`](Self::unblacklist) it.
     pub fn check(&self, plugin: &PluginRef) -> BridgeResult<()> {
-        let path = plugin.path();
-        if !self.is_blacklisted(path) {
-            return Ok(());
-        }
-        let reason = self
-            .db
-            .row(&key(path))
-            .and_then(|row| row.blacklist_reason())
-            .unwrap_or("no reason recorded")
-            .to_string();
-        Err(BridgeError::Blacklisted {
-            path: path.to_path_buf(),
-            reason,
-        })
+        refusal(&self.db, plugin)
     }
 
     /// Blacklists a plugin by path, hiding it from `iter`, `entries` and `find`
@@ -457,6 +529,7 @@ impl Catalog {
         let path = key(path.as_ref());
         self.db
             .blacklist(&path, reason.into(), &FileFacts::read(&path));
+        self.publish_blacklist();
     }
 
     /// Clears one blacklist entry so the plugin is probed again on the next
@@ -477,7 +550,9 @@ impl Catalog {
     pub fn unblacklist(&mut self, path: impl AsRef<Path>) -> bool {
         let path = key(path.as_ref());
         self.forget_in_pedal(&path);
-        self.db.unblacklist(&path)
+        let found = self.db.unblacklist(&path);
+        self.publish_blacklist();
+        found
     }
 
     fn forget_in_pedal(&self, file: &Path) {
@@ -488,7 +563,9 @@ impl Catalog {
 
     /// Clears every blacklist entry and returns the paths cleared.
     pub fn clear_blacklist(&mut self) -> Vec<PathBuf> {
-        self.db.clear_blacklist()
+        let cleared = self.db.clear_blacklist();
+        self.publish_blacklist();
+        cleared
     }
 
     /// Removes one file, blacklisted or not.
@@ -499,6 +576,7 @@ impl Catalog {
         let path = key(path.as_ref());
         self.forget_in_pedal(&path);
         self.db.apply(Delta::remove(path));
+        self.publish_blacklist();
     }
 
     /// Probes one plugin file and adds it to the catalog, returning its
@@ -559,6 +637,7 @@ impl Catalog {
     /// here. Call [`save`](Self::save) to persist.
     pub fn apply(&mut self, delta: Delta) {
         self.db.apply(delta);
+        self.publish_blacklist();
     }
 
     /// Writes the in-memory catalog through the catalog's persistence.
@@ -604,7 +683,9 @@ impl Catalog {
     pub fn recover_crash(&mut self) -> std::result::Result<Vec<PathBuf>, ScanBusy> {
         self.finish_pending_save();
         let save = self.autosave();
-        self.scanner.recover_crash(&mut self.db, save)
+        let recovered = self.scanner.recover_crash(&mut self.db, save);
+        self.publish_blacklist();
+        recovered
     }
 
     /// Removes rows whose plugin file does not exist and returns their paths.
@@ -620,7 +701,9 @@ impl Catalog {
             .filter(|(path, _)| FileFacts::read(path).exists)
             .map(|(path, _)| path.to_path_buf())
             .collect();
-        self.db.prune_missing(&present)
+        let pruned = self.db.prune_missing(&present);
+        self.publish_blacklist();
+        pruned
     }
 }
 

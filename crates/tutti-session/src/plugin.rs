@@ -112,7 +112,7 @@ use tutti_plugin::MainThread;
 use dpi::Size;
 use tutti_graph::NodeKey;
 use tutti_plugin::catalog::{
-    AudioConfig, Catalog, Hosting, Plugin as HostPlugin, PluginRef, PluginState,
+    AudioConfig, BlacklistView, Catalog, Hosting, Plugin as HostPlugin, PluginRef, PluginState,
 };
 use tutti_plugin::error::StateError;
 use tutti_plugin_host::{Liveness, Verdict};
@@ -191,9 +191,9 @@ pub struct PluginLoad {
     rate: SampleRate,
     config: AudioConfig,
     state: Option<PluginState>,
-    /// A catalog's refusal ([`with_catalog`](Self::with_catalog)), landed by
-    /// [`run`](Self::run) as the load's failure.
-    refusal: Option<Box<BridgeError>>,
+    /// A catalog's blacklist ([`with_catalog`](Self::with_catalog)), asked by
+    /// [`run`](Self::run) as the load opens.
+    blacklist: Option<BlacklistView>,
 }
 
 impl std::fmt::Debug for PluginLoad {
@@ -214,16 +214,17 @@ impl PluginLoad {
     }
 
     /// This load under `catalog`: its audio settings
-    /// ([`Catalog::audio_config`]) and its blacklist ([`Catalog::check`]),
-    /// asked now and answered by [`run`](Self::run) (and so by
-    /// [`add_plugin`](Session::add_plugin)) as the load's failure,
+    /// ([`Catalog::audio_config`]) and its blacklist
+    /// ([`Catalog::blacklist_view`]), asked by [`run`](Self::run) when the load
+    /// opens, so a plugin blacklisted after this call is refused too. The
+    /// refusal is the load's failure ([`add_plugin`](Session::add_plugin)),
     /// [`BridgeError::Blacklisted`] with the recorded reason, before any
     /// server starts or library loads. The catalog is not borrowed past this
     /// call, so the load stays `Send`; a load that does not name a catalog
     /// consults no blacklist (a host offering to load a plugin anyway).
     pub fn with_catalog(mut self, catalog: &Catalog) -> Self {
         self.config = catalog.audio_config().clone();
-        self.refusal = catalog.check(&self.plugin).err().map(Box::new);
+        self.blacklist = Some(catalog.blacklist_view());
         self
     }
 
@@ -267,13 +268,13 @@ impl PluginLoad {
     /// A load the catalog refuses, or whose hosting the format cannot have
     /// ([`BridgeError::NotOutOfProcess`] for VST2 asked to be served), is
     /// refused here, before anything is opened.
-    pub fn run(mut self) -> PluginLoaded {
+    pub fn run(self) -> PluginLoaded {
         let plugin = self.plugin.clone();
         let config = self.config.clone();
         let refused = self
-            .refusal
-            .take()
-            .map(|refusal| *refusal)
+            .blacklist
+            .as_ref()
+            .and_then(|blacklist| blacklist.check(&self.plugin).err())
             .or_else(|| HostPlugin::hosting_of(&self.plugin).err());
         let opened = if let Some(refusal) = refused {
             Opened::Done(Box::new(Open::refused(refusal)))
@@ -1236,7 +1237,7 @@ impl Session {
             rate: self.graph.prepared().sample_rate(),
             config: AudioConfig::default(),
             state: request.state,
-            refusal: None,
+            blacklist: None,
         }
     }
 
@@ -1789,7 +1790,7 @@ impl Session {
             rate,
             config: origin.config,
             state: hosted.snapshot.clone(),
-            refusal: None,
+            blacklist: None,
         };
         let token = Arc::clone(&hosted.reload.token);
         let snapshot_age = hosted

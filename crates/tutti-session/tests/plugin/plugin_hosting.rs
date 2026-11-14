@@ -80,6 +80,38 @@ fn a_blacklisted_plugin_is_refused_at_load() {
         .expect("an unblacklisted plugin loads");
 }
 
+/// **The blacklist is asked when the load runs, not when it is made**: a plugin
+/// the catalog blacklists between `with_catalog` and `run` is refused, and one
+/// it unblacklists in that window is admitted.
+#[test]
+fn a_plugin_blacklisted_after_the_load_is_made_is_refused_when_it_runs() {
+    let path = clap_probe();
+    let plugin = PluginRef::file(&path).expect("a plugin file");
+    let mut catalog = catalog();
+    let mut s = session();
+    let main = main_thread();
+
+    set_server("/nonexistent/plugin-server");
+    let load = s
+        .plugin_load(PluginLoadRequest::new(plugin.clone()))
+        .with_catalog(&catalog);
+    catalog.blacklist(&path, "hung in its load");
+    match s.add_plugin(&main, load.run()) {
+        Err(BridgeError::Blacklisted { reason, .. }) => assert_eq!(reason, "hung in its load"),
+        other => panic!("expected a Blacklisted refusal at run, got {other:?}"),
+    }
+
+    let load = s
+        .plugin_load(PluginLoadRequest::new(plugin))
+        .with_catalog(&catalog);
+    assert!(catalog.unblacklist(&path));
+    let loaded = s.add_plugin(&main, load.run());
+    assert!(
+        !matches!(loaded, Err(BridgeError::Blacklisted { .. })),
+        "an unblacklisted plugin was refused"
+    );
+}
+
 /// **A hosting the format cannot have is refused at load**, whether the load
 /// runs on a worker or the main thread: VST2 asked to be served is
 /// `NotOutOfProcess`, and the request is not changed to in process.

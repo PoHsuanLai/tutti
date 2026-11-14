@@ -1,0 +1,321 @@
+//! Render a matrix of export cases to files, for independent analysis.
+//!
+//! The companion to `verify_export.py`, and the export-side counterpart of
+//! `render_sampler_cases.rs`. Same division of labour: this
+//! half only *produces* audio and encodes the case parameters in the filename;
+//! the Python half re-derives what each file should contain from that name and
+//! first principles, and judges it. Nothing here asserts anything, so this
+//! program cannot make a broken export look correct.
+//!
+//! # Why a second opinion, when `tests/` already round-trips
+//!
+//! The Rust tests read files back with `hound`, which only speaks WAV — so FLAC,
+//! AIFF and Ogg are checked by frame count and header, never by content. Python's
+//! `soundfile` decodes all four uniformly, which is the only practical way to ask
+//! "does the FLAC hold the same samples as the WAV". And the resampler's actual
+//! quality — passband flatness, aliasing rejection — needs a spectral analysis
+//! that a hand-rolled DFT in a test would be reimplementing badly.
+//!
+//! Run: `cargo run --release -p tutti-verify --bin render_export_cases -- <outdir>`
+
+use tutti_codec::{FlacLevel, Format, Pcm, Quality};
+use tutti_dsp::DitherShape;
+use tutti_export::{
+    Control, FileTarget, Job, Normalize, NormalizeSpec, Output, RenderGraph, Resample, Setup,
+    render_one,
+};
+use tutti_graph::GraphBuilder;
+use tutti_nodes::testing::{Const, Osc};
+use tutti_types::Amplitude;
+use tutti_types::ChannelLayout;
+use tutti_types::Hz;
+use tutti_types::{Samples, Seconds};
+
+const SR: f64 = 48_000.0;
+const DUR: f64 = 1.0;
+/// The reference tone. Chosen to sit well inside every rate under test, so a
+/// resampled case cannot alias it into a different bin and look correct.
+const TONE_HZ: f32 = 1_000.0;
+
+/// `g` as an export renders it: built at [`SR`], the rate every case renders
+/// at (a graph prepared at another rate is refused, not re-rated).
+fn built(g: GraphBuilder) -> RenderGraph {
+    let (editor, executor) = g
+        .build(RenderGraph::prepare(tutti_types::SampleRate::of(SR)))
+        .expect("builds");
+    RenderGraph::assemble(editor, executor, Setup::new()).expect("built together")
+}
+
+/// A steady tone at −6 dBFS, in stereo.
+///
+/// The amplitude is deliberately not full scale: a resampler's passband ripple
+/// and an encoder's dither both push samples slightly past their input value, and
+/// clipping at the rail would mask that as a flat top rather than reporting it.
+fn tone_graph() -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add(
+        Osc::sine(Hz(TONE_HZ))
+            .with_amplitude(Amplitude(0.5))
+            .with_layout(ChannelLayout::STEREO),
+    );
+    g.pipe_output(id);
+    built(g)
+}
+
+/// Constant DC — the case whose correct output is knowable exactly.
+fn dc_graph(level: f32) -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add(Const::frame(&[level, level]));
+    g.pipe_output(id);
+    built(g)
+}
+
+/// A mono graph, for the upmix/fold cases.
+fn mono_graph() -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::MONO);
+    let id = g.add(Osc::sine(Hz(TONE_HZ)).with_amplitude(Amplitude(0.5)));
+    g.pipe_output(id);
+    built(g)
+}
+
+/// A tone near Nyquist for the downsampling case.
+///
+/// At 48 k this is a clean 18 kHz. Resampled to 22.05 k its true frequency is
+/// above the new Nyquist, so a correct resampler must *filter it out*, and one
+/// with no anti-alias filter will fold it down to an audible ~4 kHz. That
+/// difference is unmissable in a spectrum and invisible to a frame count.
+fn near_nyquist_graph() -> RenderGraph {
+    let mut g = GraphBuilder::new(ChannelLayout::EMPTY, ChannelLayout::STEREO);
+    let id = g.add(
+        Osc::sine(Hz(18_000.0))
+            .with_amplitude(Amplitude(0.5))
+            .with_layout(ChannelLayout::STEREO),
+    );
+    g.pipe_output(id);
+    built(g)
+}
+
+/// The container `ext` names at `depth`, or `None` where it cannot hold it:
+/// FLAC has no float width.
+fn container(ext: &str, depth: Pcm) -> Option<Format> {
+    match ext {
+        "wav" => Some(Format::Wav(depth)),
+        "aiff" => Some(Format::Aiff(depth)),
+        "flac" => depth.int_depth().map(|depth| Format::Flac {
+            depth,
+            level: FlacLevel::default(),
+        }),
+        _ => None,
+    }
+}
+
+/// One render and one file: what these cases vary.
+#[derive(Clone)]
+struct Case {
+    job: Job,
+    format: Format,
+    channels: ChannelLayout,
+    resample: Option<Resample>,
+    dither: Option<tutti_dsp::DitherShape>,
+}
+
+impl Case {
+    fn job(&self) -> Job {
+        self.job
+    }
+
+    fn file_target(
+        &self,
+        path: impl Into<std::path::PathBuf>,
+        normalize: Option<Normalize>,
+    ) -> FileTarget {
+        FileTarget::new(path, self.format, self.channels)
+            .with_resample(self.resample)
+            .with_dither(self.dither)
+            .with_normalize(normalize.map(NormalizeSpec::own))
+    }
+}
+
+fn base(format: Format, channels: ChannelLayout) -> Case {
+    let rate = tutti_types::SampleRate::of(SR);
+    Case {
+        job: Job::new(rate, Seconds(DUR).to_samples(rate), Samples(0), Samples(0))
+            .expect("a render"),
+        format,
+        channels,
+        resample: None,
+        dither: None,
+    }
+}
+
+fn main() -> tutti_export::Result<()> {
+    let dir = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into_owned());
+    let dir = std::path::Path::new(&dir);
+    std::fs::create_dir_all(dir)?;
+
+    let mut count = 0usize;
+    let mut write =
+        |name: String, mut graph: RenderGraph, cfg: &Case| -> tutti_export::Result<()> {
+            let w = render_one(
+                &mut graph,
+                &cfg.job(),
+                &tutti_transport::FrozenClock,
+                Output::master(cfg.file_target(dir.join(&name), None)),
+                &mut Control::none(),
+            )?
+            .into_finished()
+            .and_then(tutti_export::Produced::into_file)
+            .expect("nothing cancels a control with no token");
+            println!("wrote {name} ({} bytes)", w.bytes);
+            count += 1;
+            Ok(())
+        };
+
+    // ---- the control -----------------------------------------------------
+    //
+    // An unprocessed stereo tone at the render rate, 32-bit float: no
+    // quantization, no dither, no rate conversion. If the judge cannot verify
+    // THIS, the harness is broken rather than the engine — the same role `dry`
+    // plays in the sampler's matrix.
+    write(
+        "dry.wav".into(),
+        tone_graph(),
+        &base(Format::Wav(Pcm::Float32), ChannelLayout::STEREO),
+    )?;
+
+    // ---- format x depth --------------------------------------------------
+    //
+    // The same tone through every container and depth the crate admits. The
+    // judge decodes each and compares to `dry`: a format that silently halved
+    // its samples, wrote the wrong depth, or byte-swapped shows up as a level or
+    // waveform difference, none of which changes the file's length.
+    //
+    // FLAC + Float32 is omitted: `Format::Flac` holds integer widths only, so
+    // there is no such file to ask for.
+    for ext in ["wav", "flac", "aiff"] {
+        for (depth, tag) in [
+            (Pcm::Int16, "i16"),
+            (Pcm::Int24, "i24"),
+            (Pcm::Float32, "f32"),
+        ] {
+            let Some(fmt) = container(ext, depth) else {
+                continue;
+            };
+            write(
+                format!("fmt_{ext}_{tag}.{ext}"),
+                tone_graph(),
+                &base(fmt, ChannelLayout::STEREO),
+            )?;
+        }
+    }
+
+    // Ogg is lossy, so it gets one case and is judged spectrally, never
+    // sample-wise. It ignores bit depth entirely.
+    write(
+        "fmt_ogg.ogg".into(),
+        tone_graph(),
+        &base(
+            Format::Vorbis {
+                quality: Quality::default(),
+            },
+            ChannelLayout::STEREO,
+        ),
+    )?;
+
+    // ---- DC, where the exact expected value is knowable -------------------
+    //
+    // A tone's samples depend on the oscillator's phase; a constant's do not. So
+    // these are the cases the judge can hold to the quantization floor rather
+    // than to a spectral tolerance, and the level is chosen so rounding and
+    // truncation disagree (0.7 x 32767 = 22936.9).
+    for (level, tag) in [(0.7f32, "p70"), (-0.7, "n70")] {
+        for ext in ["wav", "flac", "aiff"] {
+            let fmt = container(ext, Pcm::Int16).expect("every container holds 16 bits");
+            write(
+                format!("dc_{tag}_{ext}_i16.{ext}"),
+                dc_graph(level),
+                &base(fmt, ChannelLayout::STEREO),
+            )?;
+        }
+    }
+
+    // ---- dither ----------------------------------------------------------
+    //
+    // Same DC, same depth, three modes. The judge measures the noise's spread
+    // and mean: the modes must differ from each other, stay inside their
+    // distribution's width, and none may shift the signal.
+    for (mode, tag) in [
+        (None, "off"),
+        (Some(DitherShape::Rectangular), "rect"),
+        (Some(DitherShape::Triangular), "tri"),
+    ] {
+        let mut cfg = base(Format::Wav(Pcm::Int16), ChannelLayout::STEREO);
+        cfg.dither = mode;
+        write(format!("dither_{tag}.wav"), dc_graph(0.25), &cfg)?;
+    }
+
+    // ---- resampling ------------------------------------------------------
+    //
+    // The real gap: the crate's own tests check that a resampled file has the
+    // right *number* of frames, which a resampler writing zeros would also
+    // satisfy. The judge measures the tone's frequency and level after
+    // conversion, plus the noise floor around it.
+    for (target, tag) in [
+        (44_100.0f64, "44k1"),
+        (96_000.0, "96k"),
+        (22_050.0, "22k05"),
+    ] {
+        let mut cfg = base(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
+        cfg.resample = Some(Resample::to(tutti_types::SampleRate::of(target)));
+        write(format!("resample_{tag}.wav"), tone_graph(), &cfg)?;
+    }
+
+    // The anti-alias case. 18 kHz downsampled to 22.05 k is above the new
+    // Nyquist and must be attenuated, not folded down to ~4 kHz.
+    {
+        let mut cfg = base(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
+        cfg.resample = Some(Resample::to(tutti_types::SampleRate::SR_22K05));
+        write(
+            "resample_alias_22k05.wav".into(),
+            near_nyquist_graph(),
+            &cfg,
+        )?;
+    }
+
+    // Every chunk-size preset at one ratio, so a preset that degrades the
+    // conversion is visible rather than assumed equivalent.
+    for (i, chunk) in tutti_export::ChunkSize::PRESETS.iter().enumerate() {
+        let mut cfg = base(Format::Wav(Pcm::Float32), ChannelLayout::STEREO);
+        cfg.resample = Some(Resample {
+            target_rate: tutti_types::SampleRate::SR_44K1,
+            chunk: *chunk,
+        });
+        write(format!("chunk_{i}.wav"), tone_graph(), &cfg)?;
+    }
+
+    // ---- channels --------------------------------------------------------
+    //
+    // Mono up to quad (the source on L and R, the surrounds silent) and stereo up to 5.1.
+    // The judge checks the per-channel energy against the ITU matrix it computes
+    // itself, rather than against the engine's own coefficients.
+    write(
+        "chan_mono.wav".into(),
+        mono_graph(),
+        &base(Format::Wav(Pcm::Float32), ChannelLayout::MONO),
+    )?;
+    write(
+        "chan_mono_to_quad.wav".into(),
+        mono_graph(),
+        &base(Format::Wav(Pcm::Float32), ChannelLayout::QUAD),
+    )?;
+    write(
+        "chan_stereo_to_51.wav".into(),
+        tone_graph(),
+        &base(Format::Wav(Pcm::Float32), ChannelLayout::from(6u16)),
+    )?;
+
+    println!("\n{count} cases written to {}", dir.display());
+    Ok(())
+}

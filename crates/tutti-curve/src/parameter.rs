@@ -4,22 +4,13 @@
 //! `f32` in `Law::PowerIn(-2.0)` used to render a linear ramp, with nothing to
 //! say the `-2.0` was never read.
 
-use std::fmt;
-
 /// The raw a checked parameter refused.
 macro_rules! refusal {
     ($(#[$meta:meta])* $name:ident, $what:literal) => {
         $(#[$meta])*
-        #[derive(Clone, Copy, Debug, PartialEq)]
+        #[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+        #[error("{} is not {}", .0, $what)]
         pub struct $name(pub f32);
-
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "{} is not {}", self.0, $what)
-            }
-        }
-
-        impl std::error::Error for $name {}
     };
 }
 

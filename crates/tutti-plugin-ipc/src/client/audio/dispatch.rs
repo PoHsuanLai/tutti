@@ -551,6 +551,9 @@ pub(super) fn handle(
         Command::SetAutomationState { mode } => {
             ipc::send(stream, &HostMessage::SetAutomationState { mode })?;
         }
+        Command::SetTrackInfo { info } => {
+            ipc::send(stream, &HostMessage::SetTrackInfo { info: *info })?;
+        }
         Command::SetSampleRate { rate } => {
             ipc::send(stream, &HostMessage::SetSampleRate { rate })?;
             // Wait for the answer: the plugin's re-activation is the slowest
@@ -1001,6 +1004,7 @@ fn absorb(inbox: &mut Unsolicited, msg: BridgeMessage) -> Option<BridgeMessage> 
         BridgeMessage::PluginIoChanged => inbox.resync(ResyncKind::Io),
         BridgeMessage::PluginReloaded => inbox.resync(ResyncKind::Reloaded),
         BridgeMessage::ProcessRequested => inbox.process_requested(),
+        BridgeMessage::TransportRequested { request } => inbox.transport(request),
         // The server's editor is the remote editor's to hear of: no event of
         // the plugin's, so the lifecycle holds them.
         BridgeMessage::EditorWantsSize { size } => inbox.editor_wants_size(size),

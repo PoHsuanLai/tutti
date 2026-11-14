@@ -48,7 +48,7 @@ const INSTALLS: usize = 4;
 type Install = Option<Box<TapWriter>>;
 
 /// Why [`HeardTaps::open`] or [`HeardTaps::close`] refused.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum HeardTapError {
     /// A reader of the engine's tap is alive. Close it first (or drop it:

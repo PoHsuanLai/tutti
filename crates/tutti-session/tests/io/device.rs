@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tutti_cpal::cpal::StreamError;
+use tutti_cpal::cpal::{Error as StreamError, ErrorKind};
 use tutti_cpal::{
     DeviceId, DeviceSelector, Direction, ManualStreamDriver, OutputSpec, Snapshot, SnapshotSource,
 };
@@ -349,7 +349,7 @@ fn an_explicit_device_is_not_replaced_by_the_default() {
     fake.show(&["A", "B"], Some("B"));
     assert!(wants(&poll(&mut session, base, 0)).is_empty());
     fake.show(&["B"], Some("B"));
-    stream.fail(StreamError::DeviceNotAvailable);
+    stream.fail(StreamError::new(ErrorKind::DeviceNotAvailable));
     assert!(
         wants(&poll(&mut session, base, 5_000)).is_empty(),
         "A gone, B is not a substitute"
@@ -379,7 +379,7 @@ fn a_disconnect_fault_asks_for_a_restart_once() {
     let base = Instant::now();
     fake.show(&["A", "B"], Some("A"));
     poll(&mut session, base, 0);
-    stream.fail(StreamError::DeviceNotAvailable);
+    stream.fail(StreamError::new(ErrorKind::DeviceNotAvailable));
     let events = poll(&mut session, base, 10);
     assert!(
         events
@@ -414,7 +414,7 @@ fn a_flapping_device_is_not_restarted_on_every_change() {
     let mut asked = 0;
     for k in 0..100u64 {
         if k % 2 == 0 {
-            stream.fail(StreamError::DeviceNotAvailable);
+            stream.fail(StreamError::new(ErrorKind::DeviceNotAvailable));
             fake.show(&[], None);
         } else {
             fake.show(&["A"], Some("A"));
@@ -583,7 +583,7 @@ fn a_fault_after_a_restart_is_reported_again() {
     session
         .restart_on(&mut device, spec_at(48_000.0), driver, None)
         .unwrap();
-    second.fail(StreamError::DeviceNotAvailable);
+    second.fail(StreamError::new(ErrorKind::DeviceNotAvailable));
     let events = poll(&mut session, base, 0);
     assert!(
         events
@@ -594,7 +594,7 @@ fn a_fault_after_a_restart_is_reported_again() {
     session
         .restart_on(&mut device, spec_at(48_000.0), driver, None)
         .unwrap();
-    third.fail(StreamError::DeviceNotAvailable);
+    third.fail(StreamError::new(ErrorKind::DeviceNotAvailable));
     let events = poll(&mut session, base, 20);
     assert!(
         events
@@ -654,11 +654,7 @@ fn a_stalled_backend_run_becomes_a_lost_stream() {
     fake.show(&["A", "B"], Some("A"));
     poll(&mut session, base, 0);
 
-    let backend = || StreamError::BackendSpecific {
-        err: tutti_cpal::cpal::BackendSpecificError {
-            description: "POLLERR".into(),
-        },
-    };
+    let backend = || StreamError::with_message(ErrorKind::BackendError, "POLLERR");
     stream.fail(backend());
     let events = poll(&mut session, base, 10);
     assert!(events.iter().any(|e| matches!(e, SessionEvent::Device(DeviceEvent::Fault(f)) if f.kind == tutti_cpal::StreamFaultKind::Backend)));

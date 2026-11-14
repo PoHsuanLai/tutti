@@ -84,6 +84,7 @@ mod tests {
     use super::*;
 
     /// 7.2: 0 to 127 and 128 are banks; nothing else is, and nothing is clamped.
+    /// Spec: sf2.pdta.phdr.bank-program.range, sf2.pdta.phdr.bank.percussion
     #[test]
     fn a_bank_is_0_to_127_or_the_percussion_128() {
         for raw in [0, 1, 127, 128] {

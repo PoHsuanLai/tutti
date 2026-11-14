@@ -4,6 +4,8 @@
 use tutti_fixtures::{RangeContract, check_range_contract};
 use tutti_sf2::Bank;
 
+/// A bank is 0 to 127 or 128, and nothing else.
+/// Spec: sf2.pdta.phdr.bank-program.range
 #[test]
 fn a_bank_keeps_the_range_contract() {
     check_range_contract(&RangeContract {

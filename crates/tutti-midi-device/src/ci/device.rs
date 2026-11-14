@@ -61,6 +61,15 @@
 //!   Specific Data is the Initiator's to read ([`ProfileInitiator`](super::ProfileInitiator))
 //!   and is ignored here; Profile Specific Data to a device with no Profiles is not answered,
 //!   as nothing requires it and a NAK of data would invite one back.
+//! - Process Inquiry as Responder (§9): a device that declares
+//!   [`CiCategories::PROCESS_INQUIRY`] answers an Inquiry: Process Inquiry Capabilities with
+//!   MIDI Message Report supported (§9.3, Table 42), and an Inquiry: MIDI Message Report with
+//!   the form of a device with no MIDI state to report: a Reply whose three bitmaps are empty,
+//!   which §9.6 has a Responder do for each kind it cannot provide, and the End, on the Device ID
+//!   of the Inquiry (§9.6, §9.8). Asked of a Channel, it answers with a NAK, Status `0x03`
+//!   (§9.5: the Channel is not in use on the device, as none is). A device that does not declare
+//!   the category NAKs both inquiries with Status `0x01`, message not supported. A Reply or an
+//!   End is the Initiator's to read ([`ProcessInitiator`](super::ProcessInitiator)) and is ignored here.
 //! - Endpoint Inquiry as Initiator (§5.7): once, for each found peer that declared
 //!   a Function Block, status `0x00`. The reply sets the peer's Product Instance Id
 //!   ([`CiAction::Updated`]); a NAK from it leaves it `None`. No retry and no timeout:
@@ -82,8 +91,8 @@ use tutti_ump::{DeviceIdentity, U7};
 
 use super::{
     CI_VERSION, CiCategories, CiDeviceId, CiHeader, CiInstanceId, CiMessage, Decoded, Destination,
-    DiscoveryData, EndpointInfo, EndpointStatus, MaxSysexSize, Muid, Nak, ProfileLists,
-    SUB_ID2_ENDPOINT_INQUIRY,
+    DiscoveryData, EndpointInfo, EndpointStatus, MaxSysexSize, Muid, Nak, ProcessFeatures,
+    ProfileLists, ReportScope, SUB_ID2_ENDPOINT_INQUIRY,
 };
 use tutti_ump::FunctionBlockId;
 
@@ -373,8 +382,17 @@ impl<R: FnMut() -> u32> CiDevice<R> {
                     }));
                 }
             }
+            CiMessage::ProcessCapabilitiesInquiry { header, to }
+            | CiMessage::MessageReportInquiry { header, to, .. } => {
+                if *to == self.muid {
+                    self.answer_process(message, header, actions);
+                }
+            }
             // The Initiator's to read, not the Management core's.
-            CiMessage::ProfileReply { .. }
+            CiMessage::ProcessCapabilitiesReply { .. }
+            | CiMessage::MessageReportReply { .. }
+            | CiMessage::MessageReportEnd { .. }
+            | CiMessage::ProfileReply { .. }
             | CiMessage::ProfileEnabled { .. }
             | CiMessage::ProfileDisabled { .. }
             | CiMessage::ProfileAdded { .. }
@@ -383,6 +401,46 @@ impl<R: FnMut() -> u32> CiDevice<R> {
             | CiMessage::ProfileSpecificData { .. } => {}
             // Never answered: a pair of devices would trade NAKs for ever.
             CiMessage::Ack { .. } => {}
+        }
+    }
+
+    /// An Inquiry: Process Inquiry Capabilities or Inquiry: MIDI Message Report
+    /// addressed to this device (§9).
+    fn answer_process(&self, message: &CiMessage, asked: &CiHeader, actions: &mut Vec<CiAction>) {
+        let nak_on = |address, status| {
+            CiAction::Send(CiMessage::Nak {
+                header: self.header_on(address),
+                to: asked.source,
+                nak: Nak::new(U7::new(message.sub_id2()).unwrap_or_default(), status),
+            })
+        };
+        if !self.own.categories.contains(CiCategories::PROCESS_INQUIRY) {
+            actions.push(nak_on(asked.device_id, Nak::STATUS_MESSAGE_NOT_SUPPORTED));
+            return;
+        }
+        match message {
+            CiMessage::MessageReportInquiry { scope, .. } => match scope.address() {
+                // Tutti has no Channel in use (§9.5).
+                address @ CiDeviceId::Channel(_) => {
+                    actions.push(nak_on(address, Nak::STATUS_NOT_IN_USE));
+                }
+                address => {
+                    actions.push(CiAction::Send(CiMessage::MessageReportReply {
+                        header: self.header_on(address),
+                        to: asked.source,
+                        scope: ReportScope::none(address),
+                    }));
+                    actions.push(CiAction::Send(CiMessage::MessageReportEnd {
+                        header: self.header_on(address),
+                        to: asked.source,
+                    }));
+                }
+            },
+            _ => actions.push(CiAction::Send(CiMessage::ProcessCapabilitiesReply {
+                header: self.header_on(CiDeviceId::FunctionBlock),
+                to: asked.source,
+                features: ProcessFeatures::MIDI_MESSAGE_REPORT,
+            })),
         }
     }
 
@@ -470,6 +528,14 @@ impl<R: FnMut() -> u32> CiDevice<R> {
             device_id: CiDeviceId::FunctionBlock,
             ci_version: CI_VERSION,
             source: self.muid,
+        }
+    }
+
+    /// The preamble of a message from this device on `address`.
+    fn header_on(&self, address: CiDeviceId) -> CiHeader {
+        CiHeader {
+            device_id: address,
+            ..self.header()
         }
     }
 

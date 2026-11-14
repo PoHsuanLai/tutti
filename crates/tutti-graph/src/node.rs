@@ -1094,29 +1094,20 @@ pub struct TransportChange {
 }
 
 /// Why [`TransportChanges::push`] refused a change.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum TransportChangeRejected {
     /// At [`Offset::ZERO`]. A change at the block's first frame is the
     /// block's transport, not a change inside it.
+    #[error("a change at the first frame is the block's transport")]
     AtBlockStart,
     /// Before the last change pushed. Changes are pushed in time order.
+    #[error("transport changes must be pushed in time order")]
     OutOfOrder,
     /// [`MAX_TRANSPORT_CHANGES`] are already held.
+    #[error("too many transport changes in one block")]
     Full,
 }
-
-impl std::fmt::Display for TransportChangeRejected {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::AtBlockStart => "a change at the first frame is the block's transport",
-            Self::OutOfOrder => "transport changes must be pushed in time order",
-            Self::Full => "too many transport changes in one block",
-        })
-    }
-}
-
-impl std::error::Error for TransportChangeRejected {}
 
 /// The transport changes inside one block: in time order, at distinct
 /// offsets, none at the first frame. A fixed-capacity list, so an [`Env`]

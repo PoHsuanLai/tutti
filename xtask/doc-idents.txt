@@ -17,7 +17,7 @@
 2 crates/tutti-au-host/src/macos/ranges.rs
 2 crates/tutti-au-host/src/macos/topology.rs
 6 crates/tutti-au-host/src/macos/types.rs
-2 crates/tutti-au-host/tests/au_api_surface.rs
+1 crates/tutti-au-host/tests/au_api_surface.rs
 2 crates/tutti-au-host/tests/au_async_instantiation.rs
 3 crates/tutti-au-host/tests/au_aupreset.rs
 1 crates/tutti-au-host/tests/au_automation.rs
@@ -45,7 +45,6 @@
 3 crates/tutti-codec/src/decode/extensions.rs
 1 crates/tutti-codec/tests/decode_golden.rs
 1 crates/tutti-coremidi-ffi/src/destination.rs
-1 crates/tutti-cpal/src/faults.rs
 1 crates/tutti-dsp/src/convolver.rs
 3 crates/tutti-dsp/src/fft/real.rs
 1 crates/tutti-dsp/src/lib.rs
@@ -53,7 +52,6 @@
 1 crates/tutti-engine/tests/render/engine_graph.rs
 1 crates/tutti-engine/tests/render/env_beat.rs
 1 crates/tutti-engine/tests/rt_no_alloc_engine.rs
-1 crates/tutti-export/examples/README.md
 1 crates/tutti-export/src/control.rs
 1 crates/tutti-export/src/graph.rs
 1 crates/tutti-export/tests/formats/oracle_decode.rs
@@ -104,7 +102,6 @@
 1 crates/tutti-polysynth/src/bank.rs
 1 crates/tutti-polysynth/src/polysynth.rs
 1 crates/tutti-polysynth/src/polysynth/tests.rs
-1 crates/tutti-sampler/examples/README.md
 1 crates/tutti-sampler/src/lib.rs
 1 crates/tutti-sampler/src/streamer/record.rs
 2 crates/tutti-sampler/src/stretch/mod.rs

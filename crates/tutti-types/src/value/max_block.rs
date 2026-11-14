@@ -95,21 +95,9 @@ impl From<MaxBlock> for Samples {
 }
 
 /// A block of no frames or more than [`u32::MAX`] (see [`MaxBlock::new`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("a block holds from one frame to {} frames, got {}", u32::MAX, .0)]
 pub struct InvalidMaxBlock(pub Samples);
-
-impl core::fmt::Display for InvalidMaxBlock {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "a block holds from one frame to {} frames, got {}",
-            u32::MAX,
-            self.0
-        )
-    }
-}
-
-impl core::error::Error for InvalidMaxBlock {}
 
 #[cfg(test)]
 mod tests {
@@ -128,9 +116,8 @@ mod tests {
         assert!(std::panic::catch_unwind(|| MaxBlock::of(Samples(0))).is_err());
         assert_eq!(MaxBlock::MAX.get_u32(), u32::MAX);
         assert_eq!(MaxBlock::of(Samples(64)).get_u32(), 64);
-        #[cfg(target_pointer_width = "64")]
-        {
-            let over = Samples(u32::MAX as usize + 1);
+        // `usize` holds `u32::MAX + 1` only where it is wider than 32 bits.
+        if let Some(over) = (u32::MAX as usize).checked_add(1).map(Samples) {
             assert_eq!(MaxBlock::new(over), None);
             assert_eq!(MaxBlock::try_from(over), Err(InvalidMaxBlock(over)));
             assert!(std::panic::catch_unwind(|| MaxBlock::of(over)).is_err());

@@ -38,6 +38,7 @@ fn opening_a_missing_path_is_an_io_not_found() {
 }
 
 /// A truncated file is an I/O error too, not a panic.
+/// Spec: sf2.riff.damage.rejected
 #[test]
 fn a_truncated_file_is_an_io_error() {
     let error = SoundFont::from_reader(&mut Cursor::new(b"RIFF".to_vec())).unwrap_err();
@@ -47,6 +48,7 @@ fn a_truncated_file_is_an_io_error() {
 /// A chunk code in a message is the four ASCII bytes the file has, a byte
 /// that is not printable shown as `?`, and the four-character code is not a
 /// public type: the variants carry the bytes.
+/// Spec: sf2.riff.form.sfbk
 #[test]
 fn a_wrong_form_type_names_what_it_found() {
     // The RIFF size is honoured, so it is true: the form type and 16 more bytes.
@@ -66,6 +68,7 @@ fn a_wrong_form_type_names_what_it_found() {
 }
 
 /// A file that is not RIFF at all.
+/// Spec: sf2.riff.signature
 #[test]
 fn a_file_that_is_not_riff_is_refused() {
     let error = SoundFont::from_reader(&mut Cursor::new(b"OggS\0\0\0\0".to_vec())).unwrap_err();

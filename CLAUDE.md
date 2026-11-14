@@ -8,7 +8,10 @@ crate docs of what you touch. The reasoning behind a rule is in
 ## Commands
 
 `cargo xtask <recipe>` wraps everything (`cargo xtask help`; `--dry-run` prints the
-commands). `cargo xtask ci` runs what CI runs.
+commands). `cargo xtask ci` runs what CI runs. `cargo xtask gates` (rustfmt, xtask's
+tests and the source gates, seconds and no build) is what CI fails fastest on: run it
+before a push, or once per clone `git config core.hooksPath .githooks` to have
+`.githooks/pre-push` run it.
 
 ```bash
 cargo build
@@ -141,7 +144,7 @@ std only. A rule the compiler already enforces is not a gate.
   tests before adding one, and ship a replacement with any omission.
 - A number becomes a unit with `new` and leaves with `get`; there is no `From` between a
   unit and its raw. Convert between units with the named converters.
-- Measurements are not controls: `Confidence`, `Correlation` and `Pan` are readings.
+- Measurements are not controls: `Confidence`, `Correlation` and `StereoBalance` are readings.
 - Types stop at C ABI, IPC and wire boundaries; say why in a comment there.
 - Add a unit only for a distinct range or a distinct algebra.
 ### Range-checked values
@@ -190,6 +193,9 @@ std only. A rule the compiler already enforces is not a gate.
 - A pure algorithm over slices goes in `tutti-dsp` (a measurement in `tutti-measure`); a
   node file holds only the `Node` adapter.
 - A new trait states its boundary in one sentence without "and".
+- An error type derives `thiserror::Error` with its text in `#[error(..)]`; a hand
+  `impl Error for` is a row of the gate's allow-list with its reason (`cargo xtask
+  check-errors`), and a `pub` type named `...Error` implements `Error`.
 - Naming: an algorithm uses the theory name, a spec keeps its own, a *frame* is one value
   per channel, a *sample* is one value. A user-facing node API keeps the control word.
 - A comment states what the code does and the invariant it holds, in the present tense;

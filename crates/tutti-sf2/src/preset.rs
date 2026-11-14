@@ -15,9 +15,6 @@ pub struct Preset {
     pub(crate) name: String,
     pub(crate) patch_number: u16,
     pub(crate) bank_number: u16,
-    pub(crate) library: u32,
-    pub(crate) genre: u32,
-    pub(crate) morphology: u32,
     pub(crate) regions: Vec<PresetRegion>,
 }
 
@@ -45,9 +42,6 @@ impl Preset {
             name,
             patch_number: info.patch_number,
             bank_number: info.bank_number,
-            library: info.library,
-            genre: info.genre,
-            morphology: info.morphology,
             regions,
         }))
     }
@@ -94,21 +88,6 @@ impl Preset {
     #[must_use]
     pub fn bank(&self) -> Option<Bank> {
         Bank::new(self.bank_number)
-    }
-
-    /// The library info.
-    pub fn library(&self) -> u32 {
-        self.library
-    }
-
-    /// The genre info.
-    pub fn genre(&self) -> u32 {
-        self.genre
-    }
-
-    /// The morphology info.
-    pub fn morphology(&self) -> u32 {
-        self.morphology
     }
 
     /// The regions of the preset.

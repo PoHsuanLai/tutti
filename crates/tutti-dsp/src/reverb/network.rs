@@ -217,7 +217,7 @@ impl AllPass {
     /// at `g = 0`, a plain delay), the [`Freeverb`](AllPassForm::Freeverb) form
     /// always has `-1`.
     #[must_use]
-    pub fn has_direct_term(&self) -> bool {
+    fn has_direct_term(&self) -> bool {
         match self.form {
             AllPassForm::Lattice => self.gain != 0.0,
             AllPassForm::Freeverb => true,
@@ -230,7 +230,7 @@ impl AllPass {
     /// [`Freeverb`](AllPassForm::Freeverb) form, which is not unit magnitude
     /// and whose DC gain `g / (1 - g)` the loop analysis does not model.
     #[must_use]
-    pub fn low_frequency_delay(&self) -> f32 {
+    fn low_frequency_delay(&self) -> f32 {
         if self.form == AllPassForm::Lattice && self.gain.abs() < 1.0 {
             self.delay * (1.0 + self.gain) / (1.0 - self.gain)
         } else {
@@ -306,7 +306,7 @@ impl Line {
     /// The length the decay formulas use: the centre length plus the nested
     /// all-pass's group delay at DC.
     #[must_use]
-    pub fn effective_length(&self) -> f32 {
+    fn effective_length(&self) -> f32 {
         self.length + self.diffuser.map_or(0.0, |d| d.low_frequency_delay())
     }
 }
@@ -414,7 +414,7 @@ impl Absorption {
     /// `rt60 = [low, mid, high]` (the design from band decay times:
     /// [`loop_gain`] per band).
     #[must_use]
-    pub fn from_rt60(
+    pub(crate) fn from_rt60(
         rt60: [Seconds; 3],
         crossover: [Hz; 2],
         length: f32,

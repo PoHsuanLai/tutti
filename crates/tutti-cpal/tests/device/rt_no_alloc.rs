@@ -1,0 +1,196 @@
+//! The allocation gate `lib.rs` and `output.rs` promise for [`process_audio`].
+//!
+//! Both crate docs state that the RT callback "must not allocate, lock, or
+//! block", that its buffers are sized once at stream build to `MAX_FRAMES`,
+//! and that `tests/device/rt_no_alloc.rs` gates that. This is that file.
+//!
+//! # Why it is here and not in `src/`
+//!
+//! `assert_no_alloc` observes nothing unless `#[global_allocator] =
+//! AllocDisabler` is installed, and that can only be declared at the root of a
+//! *binary*. The crate's unit-test binary declares none, so an
+//! `assert_no_alloc` gate written in `src/` passes whether or not the callback
+//! allocated. This file is therefore the only allocation gate on
+//! `process_audio`. **Add new allocation gates here, never in `src/`.**
+//!
+//! # The fixture has to render
+//!
+//! A graph with nothing wired renders silence without running a node — an
+//! allocation gate around that proves nothing. The graph below is a sine
+//! through a filter into both device channels, so the render
+//! path runs real nodes, hands buffers between them, and folds to the device
+//! width. `renders_something_to_gate` asserts that, so the gates cannot pass
+//! by rendering nothing.
+
+use tutti_cpal::{AudioCallbackState, MAX_FRAMES, OutputBlock, process_audio};
+use tutti_engine::Engine;
+use tutti_graph::{Edge, InPort, OutPort, Source};
+use tutti_graph::{Editor, MeterReader, Prepare, TapReader};
+use tutti_graph::{MeterId, MeterSpec, NodeKey, TapAlign, TapId};
+use tutti_nodes::testing::Osc;
+use tutti_nodes::{SvfFilterNode, SvfType};
+use tutti_transport::{MotionEvent, Transport};
+use tutti_types::MaxBlock;
+use tutti_types::{Bpm, Hz, Q, SampleRate, Samples};
+use tutti_types::{ChannelLayout, InterleavedMut};
+const SAMPLE_RATE: f64 = 48_000.0;
+
+/// Build an engine + transport pair whose graph actually renders, rolling.
+///
+/// Mirrors `output.rs`'s own `build_callback_state` fixture; it is duplicated
+/// rather than shared because that one is `#[cfg(test)]`-private to the unit
+/// binary, and every type it needs is public.
+fn rolling_state() -> (Transport, AudioCallbackState) {
+    let (transport, state, _, _) = rolling_state_with(false);
+    (transport, state)
+}
+
+/// [`rolling_state`], with a graph tap on both outputs when `tap` (the reader
+/// is returned, and must be held), and the master meter declared on the
+/// outputs (off until enabled).
+fn rolling_state_with(
+    tap: bool,
+) -> (
+    Transport,
+    AudioCallbackState,
+    MeterReader,
+    Option<TapReader>,
+) {
+    let transport = Transport::new(SampleRate::of(SAMPLE_RATE));
+
+    let (mut ed, exec) = Editor::new(Prepare::new(
+        SampleRate::of(SAMPLE_RATE),
+        MaxBlock::of(Samples(512)),
+    ));
+    let (source, filter) = (NodeKey(1), NodeKey(2));
+    ed.insert(source, "sine", Osc::sine(Hz(220.0)));
+    ed.insert(
+        filter,
+        "filter",
+        SvfFilterNode::<f64>::new(SvfType::LowPass, Hz(2_000.0), Q(0.7)),
+    );
+    ed.spec_mut().topology.edges.insert(
+        InPort {
+            node: filter,
+            port: 0,
+        },
+        vec![Edge::Direct(Source::Node(OutPort {
+            node: source,
+            port: 0,
+        }))],
+    );
+    ed.spec_mut().topology.set_outputs(vec![
+        Source::Node(OutPort {
+            node: filter,
+            port: 0,
+        });
+        2
+    ]);
+    let reader = tap.then(|| {
+        let sources: Vec<_> = ed
+            .spec()
+            .topology
+            .outputs
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
+        ed.open_tap(TapId(0), sources, TapAlign::ToOutput, Samples(MAX_FRAMES))
+            .expect("the sources exist")
+    });
+    let meter = ed
+        .open_meter(MeterId(0), MeterSpec::Outputs)
+        .expect("the sources exist");
+    ed.commit().expect("commits");
+    let engine = Engine::new(&transport, &mut ed, exec).expect("within the limits");
+    // Every commit is sent; the editor only has to outlive the engine's
+    // setup. Leaked like the fixtures in `support`, for the same reason.
+    Box::leak(Box::new(ed));
+    let state = AudioCallbackState::new(engine);
+
+    transport.settings().set_tempo(Bpm::of(120.0));
+    let _ = transport.motion().try_send(MotionEvent::Play);
+
+    (transport, state, meter, reader)
+}
+
+/// Render `frames` once, outside any gate, to prime whatever the first call
+/// sizes.
+fn warm_up(state: &AudioCallbackState, buf: &mut [f32]) {
+    process_audio(state, &mut InterleavedMut::new(buf, ChannelLayout::STEREO));
+}
+
+/// The fixture renders audible output.
+///
+/// Without this every gate below could pass by folding silence over an unwired
+/// graph — the vacuous version of all of them.
+#[test]
+fn renders_something_to_gate() {
+    let (_transport, state) = rolling_state();
+    let mut out = vec![0.0f32; 512 * 2];
+
+    // The filter needs a few blocks before its output is clearly non-zero.
+    for _ in 0..4 {
+        warm_up(&state, &mut out);
+    }
+
+    assert!(
+        out.iter().any(|s| s.abs() > 1e-6),
+        "the fixture graph rendered silence — the gates below would prove nothing"
+    );
+}
+
+/// Rendering stays allocation-free across changing block sizes.
+///
+/// A device may change its buffer size mid-session, and the graph's per-vertex
+/// buffers are sized from the block. Warming at the *largest* size first is
+/// deliberate: warming small and then growing would attribute the growth
+/// allocation to the gate, which reads as a failure of the render path rather
+/// than of the warm-up — the trap `rt_no_alloc_hardware_poll.rs` documents.
+#[test]
+fn process_audio_across_block_sizes_is_allocation_free() {
+    const SIZES: [usize; 5] = [1024, 512, 256, 128, 64];
+
+    let (_transport, state) = rolling_state();
+    let mut out = vec![0.0f32; SIZES[0] * 2];
+
+    // Warm every size, largest first, outside the gate.
+    for frames in SIZES {
+        warm_up(&state, &mut out[..frames * 2]);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..64 {
+            for frames in SIZES {
+                process_audio(
+                    &state,
+                    &mut InterleavedMut::new(&mut out[..frames * 2], ChannelLayout::STEREO),
+                );
+            }
+        }
+    });
+}
+
+/// The whole output callback, with the meter enabled and a graph tap open
+/// (never drained, so the ring fills and the op counts its drops), must not
+/// allocate at the `MAX_FRAMES` ceiling, and the meter must have read the
+/// block (so the gate ran the metering pass) and the tap must hold frames.
+#[test]
+fn a_metered_and_tapped_callback_is_allocation_free() {
+    let (_transport, state, mut meter, tap) = rolling_state_with(true);
+    let tap = tap.expect("opened");
+    meter.enable();
+    let mut block = OutputBlock::new(std::sync::Arc::new(state), ChannelLayout::STEREO);
+    let mut out = vec![0.0f32; MAX_FRAMES * 2];
+    for _ in 0..4 {
+        block.render(&mut out);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..16 {
+            block.render(&mut out);
+        }
+    });
+    assert!(meter.read()[0].peak.get() > 0.0, "the meter read nothing");
+    assert!(tap.available().get() > 0, "the tap read nothing");
+}

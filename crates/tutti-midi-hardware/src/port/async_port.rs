@@ -23,8 +23,104 @@ use std::time::Instant;
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use tutti_graph::Losses;
+use tutti_midi_device::JrReceiver;
 use tutti_midi_runtime::{DeviceInput, DeviceSlot, InletCounts};
-use tutti_ump::Ump;
+use tutti_ump::{Message, Ump, Utility};
+
+/// Where the time of an input's events comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum TimeSource {
+    /// The OS's arrival stamp of each event.
+    Arrival,
+    /// The device's JR Timestamps, read against its JR Clock messages, for an
+    /// event that has one in front of it (M2-104 §7.2.2).
+    JrTimestamps,
+}
+
+/// A [`TimeSource`] both ends of a port read: the control side sets it as the
+/// device's configuration settles, and the driver thread follows it.
+#[derive(Debug, Default)]
+struct SharedSource(AtomicBool);
+
+impl SharedSource {
+    fn get(&self) -> TimeSource {
+        if self.0.load(Ordering::Acquire) {
+            TimeSource::JrTimestamps
+        } else {
+            TimeSource::Arrival
+        }
+    }
+
+    fn set(&self, source: TimeSource) {
+        self.0
+            .store(source == TimeSource::JrTimestamps, Ordering::Release);
+    }
+}
+
+/// What the handle holds of a device that sends JR Timestamps: the sender's
+/// clock on the host's, and the timestamp the next events are under.
+#[derive(Debug)]
+struct JrInput {
+    following: TimeSource,
+    clock: JrReceiver,
+    /// The last JR Timestamp: it applies to every event until the next one
+    /// (M2-104 §7.2.2.2).
+    stamp: Option<u16>,
+    /// The time the last event was placed at: events are rendered in the order
+    /// they arrive (M2-104 §7.2.2.2), so none is placed before it.
+    placed: Option<Instant>,
+}
+
+impl JrInput {
+    fn new() -> Self {
+        Self {
+            following: TimeSource::Arrival,
+            clock: JrReceiver::new(),
+            stamp: None,
+            placed: None,
+        }
+    }
+
+    /// Follows `source`: a change starts the sender's clock over, since what
+    /// was heard before it was not meant for this.
+    fn follow(&mut self, source: TimeSource) {
+        if source != self.following {
+            *self = Self::new();
+            self.following = source;
+        }
+    }
+
+    /// Takes a JR message. Whatever else it is, the caller keeps it from the
+    /// graph.
+    fn take(&mut self, utility: Utility, arrival: Instant) {
+        if self.following != TimeSource::JrTimestamps {
+            return;
+        }
+        match utility {
+            Utility::JrClock(ticks) => {
+                let _ = self.clock.clock(ticks, arrival);
+            }
+            Utility::JrTimestamp(ticks) => self.stamp = Some(ticks),
+            _ => {}
+        }
+    }
+
+    /// Where an event that arrived at `arrival` is placed: the time its JR
+    /// Timestamp gives, rendered after the connection's jitter, or its arrival
+    /// where it has no timestamp or the clock cannot map it.
+    fn place(&mut self, arrival: Instant) -> Instant {
+        if self.following != TimeSource::JrTimestamps {
+            return arrival;
+        }
+        let at = match self.stamp {
+            Some(ticks) => self.clock.resolve(ticks, arrival).render_at(arrival),
+            None => arrival,
+        };
+        let at = self.placed.map_or(at, |placed| at.max(placed));
+        self.placed = Some(at);
+        at
+    }
+}
 
 /// The producer end of one port: the driver thread's. Owns the inlet's only
 /// writer. It is `Send`, so it moves to the thread the OS delivers on, and
@@ -53,6 +149,9 @@ pub struct InputProducerHandle {
     /// Whether the control side wants a copy of the SysEx7 packets the device
     /// sends (it is waiting for an Identity Reply): shared with the port's entry.
     hear_sysex: Arc<AtomicBool>,
+    /// Where event times come from: shared with the port's entry.
+    source: Arc<SharedSource>,
+    jr: JrInput,
 }
 
 /// How many UMP Stream messages a port holds between two looks of the control
@@ -96,14 +195,16 @@ impl InputProducerHandle {
     /// only once it is whole, and a patch dump that arrives meanwhile must still
     /// reach the graph.
     ///
-    /// A **JR Clock or JR Timestamp** (type `0x0`, M2-104 §7.2.2) is dropped
-    /// here too, and is `Diverted`. The session asks for JR Timestamps off, and
-    /// a device that sends them anyway has them ignored: the placement of an
-    /// event is its OS arrival stamp, and §7.2.2.1 leaves what a Receiver does
-    /// with JR to it (it may smooth or average the JR Clock messages). Reading them would need a `JrReceiver` per device, its delay
-    /// applied to the arrival stamp, and a clock to reconstruct, to refine a
-    /// time the OS has already stamped; and nothing downstream reads a
-    /// timestamp utility message, so one that reached the graph would be noise.
+    /// A **JR Clock or JR Timestamp** (type `0x0`, M2-104 §7.2.2) never reaches
+    /// the graph either, and is `Diverted`. While the port is timed by the
+    /// device's JR Timestamps (its configuration says it sends them, and the
+    /// input was opened with [`InputTiming::JitterReduction`](crate::InputTiming)), a JR Clock feeds the sender's clock
+    /// ([`JrReceiver`]) and a JR Timestamp is the time of the events after it,
+    /// until the next: an event is then placed at the time the clock maps its
+    /// timestamp to, plus the connection's jitter, instead of at `timestamp`.
+    /// An event the clock cannot map (none heard yet, or lost) is placed at
+    /// `timestamp`. Otherwise the JR messages are ignored and every event is
+    /// placed at `timestamp`.
     ///
     /// Returns what became of it: [`Pushed::Sent`] into the graph's inlet,
     /// [`Pushed::Diverted`] (not music, or the port is paused, so nothing was
@@ -125,7 +226,11 @@ impl InputProducerHandle {
             }
             return Pushed::Diverted;
         }
+        self.jr.follow(self.source.get());
         if event.is_jr() {
+            if let Ok(Message::Utility(utility)) = event.decode() {
+                self.jr.take(utility, timestamp);
+            }
             return Pushed::Diverted;
         }
         if event.message_type() == SYSEX7
@@ -134,7 +239,7 @@ impl InputProducerHandle {
         {
             self.stream_lost.fetch_add(1, Ordering::Relaxed);
         }
-        if self.input.push(event, timestamp) {
+        if self.input.push(event, self.jr.place(timestamp)) {
             Pushed::Sent
         } else {
             Pushed::Full
@@ -198,6 +303,7 @@ pub(crate) struct HardwareMidiInput {
     stream: Mutex<HeapCons<Ump>>,
     stream_lost: Arc<AtomicU64>,
     hear_sysex: Arc<AtomicBool>,
+    source: Arc<SharedSource>,
 }
 
 impl HardwareMidiInput {
@@ -206,6 +312,7 @@ impl HardwareMidiInput {
         let active = Arc::new(AtomicBool::new(true));
         let stream_lost = Arc::new(AtomicU64::new(0));
         let hear_sysex = Arc::new(AtomicBool::new(false));
+        let source = Arc::new(SharedSource::default());
         let (stream_in, stream_out) = HeapRb::<Ump>::new(STREAM_CAPACITY).split();
         (
             Self {
@@ -215,6 +322,7 @@ impl HardwareMidiInput {
                 stream: Mutex::new(stream_out),
                 stream_lost: Arc::clone(&stream_lost),
                 hear_sysex: Arc::clone(&hear_sysex),
+                source: Arc::clone(&source),
             },
             InputProducerHandle {
                 input,
@@ -222,6 +330,8 @@ impl HardwareMidiInput {
                 stream: stream_in,
                 stream_lost,
                 hear_sysex,
+                source,
+                jr: JrInput::new(),
             },
         )
     }
@@ -239,6 +349,11 @@ impl HardwareMidiInput {
     /// Whether the stream ring also takes a copy of the SysEx7 packets.
     pub(crate) fn set_hear_sysex(&self, hear: bool) {
         self.hear_sysex.store(hear, Ordering::Relaxed);
+    }
+
+    /// Where the port's event times come from from now on.
+    pub(crate) fn set_time_source(&self, source: TimeSource) {
+        self.source.set(source);
     }
 
     /// The oldest Stream message held, if any.

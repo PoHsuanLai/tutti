@@ -927,6 +927,7 @@ fn an_output_connected_after_the_settle_starts_in_the_settled_protocol() {
 }
 
 mod ci;
+mod jr;
 
 /// A device's SysEx identity is not its OS listing, which `learned` leaves out.
 fn model_identity(model: u8) -> tutti_ump::DeviceIdentity {

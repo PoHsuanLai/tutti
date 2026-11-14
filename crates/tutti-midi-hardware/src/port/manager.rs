@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use tutti_graph::Losses;
 use tutti_midi_runtime::{DeviceInlets, DeviceSlot, NoFreeSlot};
 
-use super::async_port::{HardwareMidiInput, InputProducerHandle, StreamDrain};
+use super::async_port::{HardwareMidiInput, InputProducerHandle, StreamDrain, TimeSource};
 
 /// A snapshot view of one port, computed on demand from the underlying
 /// `HardwareMidiInput`. The port is the single source of truth for `name` and
@@ -209,6 +209,18 @@ impl HardwareMidiInputs {
         match self.port(id) {
             Some(port) => {
                 port.set_active(active);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Sets where the event times of the port `id` names come from, as its
+    /// device's configuration says. `false` for a stale id.
+    pub(crate) fn time_source(&self, id: DeviceSlot, source: TimeSource) -> bool {
+        match self.port(id) {
+            Some(port) => {
+                port.set_time_source(source);
                 true
             }
             None => false,

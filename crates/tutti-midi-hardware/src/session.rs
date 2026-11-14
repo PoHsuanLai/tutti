@@ -40,7 +40,7 @@ use crate::endpoints::MidiEndpoints;
 use crate::error::{Error, Result};
 use crate::process::{ProcessChange, ReportAsk, ReportError, ReportPeer};
 use crate::profiles::{PeerProfiles, ProfileError, ProfileSwitch, ProfilesChange};
-use crate::stream::{DeviceStream, Negotiation};
+use crate::stream::{DeviceStream, InputTiming, Negotiation};
 use tutti_midi_device::{DeviceId, DeviceInfo, Learned, SavedDevice};
 use tutti_midi_runtime::{DeviceInlets, DeviceSlot};
 use tutti_ump::DeviceIdentity;
@@ -84,6 +84,8 @@ pub struct MidiSession {
 /// it reads its answers from goes after.
 struct Held {
     stream: Negotiation,
+    /// Where the input's event times come from.
+    timing: InputTiming,
     /// Whether the port's input edge is copying SysEx7 packets to the stream
     /// ring, for the Identity Request or MIDI-CI.
     hearing: bool,
@@ -275,12 +277,31 @@ impl MidiSession {
     /// when it is not an input. Otherwise whatever the backend raises while
     /// opening the port.
     pub fn connect_input(&mut self, device: impl Into<DeviceQuery>) -> Result<()> {
+        self.connect_input_timed(device, InputTiming::Arrival)
+    }
+
+    /// [`connect_input`](Self::connect_input) with the source of the input's
+    /// event times chosen: [`InputTiming::JitterReduction`] asks the device for
+    /// JR Timestamps and places its events by them once it agrees, while
+    /// [`InputTiming::Arrival`] is the OS's arrival stamp.
+    ///
+    /// An input already open with another timing is closed and opened again,
+    /// since the timing is asked of the device at the open.
+    ///
+    /// # Errors
+    ///
+    /// As [`connect_input`](Self::connect_input).
+    pub fn connect_input_timed(
+        &mut self,
+        device: impl Into<DeviceQuery>,
+        timing: InputTiming,
+    ) -> Result<()> {
         let id = device.into().pick(self.inputs())?;
         // An input whose reader died is replaced, not kept: it is silent.
         if self
             .inputs
             .get(&id)
-            .is_some_and(|held| held.input.is_alive())
+            .is_some_and(|held| held.timing == timing && held.input.is_alive())
         {
             return Ok(());
         }
@@ -296,16 +317,16 @@ impl MidiSession {
         let os = self.devices.capability(&id).unwrap_or_default();
         // A MIDI 1.0 port with an output is asked for its identity instead.
         let out = self.devices.open_output(&id).ok();
-        let stream = Negotiation::new(id.clone(), os, out);
-        self.inputs.insert(
-            id,
-            Held {
-                stream,
-                hearing: false,
-                lost_seen: 0,
-                input,
-            },
-        );
+        let stream = Negotiation::new(id.clone(), os, out, timing);
+        let held = Held {
+            stream,
+            timing,
+            hearing: false,
+            lost_seen: 0,
+            input,
+        };
+        follow_timing(&self.ports, &held);
+        self.inputs.insert(id, held);
         Ok(())
     }
 
@@ -454,6 +475,7 @@ impl MidiSession {
             // Off the moment nothing listens, so no packet is kept for no one.
             sync_hearing(ports, held, ci.is_some());
             if let Some(stream) = stepped.stream {
+                follow_timing(ports, held);
                 polled.push(Polled::Stream(id.clone(), Box::new(stream)));
             }
             polled.extend(
@@ -653,6 +675,14 @@ impl MidiSession {
 }
 
 /// Makes the port's copy of SysEx7 packets what the negotiation wants.
+/// Points the port's event times at what the device's configuration says: its
+/// JR Timestamps where it sends them and the input was opened to use them.
+fn follow_timing(ports: &HardwareMidiInputs, held: &Held) {
+    if let Some(stream) = held.stream.settled() {
+        ports.time_source(held.input.slot(), held.timing.source(stream.config()));
+    }
+}
+
 fn sync_hearing(ports: &HardwareMidiInputs, held: &mut Held, ci: bool) {
     let slot = held.input.slot();
     let want = held.stream.hears_sysex(ci);

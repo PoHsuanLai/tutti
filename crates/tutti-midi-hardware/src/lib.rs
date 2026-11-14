@@ -260,7 +260,7 @@ pub use profiles::{
     ProfilesChange, Whole, WholeProfile,
 };
 pub use session::{DeviceQuery, MidiSession, Polled};
-pub use stream::{Basis, DeviceStream};
+pub use stream::{Basis, DeviceStream, InputTiming};
 pub use tutti_midi_device::{
     BindPolicy, Capabilities, DeviceEvent, DeviceId, DeviceInfo, Endpoint, EndpointId,
     FunctionBlock, Identity, Learned, Match, OsChange, OsDevice, PortDirection, Resolved,

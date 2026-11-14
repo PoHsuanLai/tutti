@@ -20,7 +20,10 @@ use tutti_midi_hardware::{
     DeviceInlets, HardwareMidiInputs, VirtualDestination, VirtualProtocol, VirtualSource,
     VirtualSpec,
 };
-use tutti_ump::{Direction, FirstGroup, FunctionBlockId, GroupSpan, MidiChannel, U7, UiHint, Ump};
+use tutti_ump::{
+    Direction, FirstGroup, FunctionBlockId, GroupSpan, Message, MidiChannel, U7, UiHint, Ump,
+    Utility,
+};
 
 const PATIENCE: Duration = Duration::from_secs(5);
 
@@ -116,6 +119,34 @@ fn a_virtual_destination_delivers_what_a_client_sends_to_the_graph_in_order() {
     let heard = listener.listen(Duration::from_millis(300));
     assert_eq!(heard, sent);
     assert!(destination.is_alive());
+}
+
+/// JR Clock and JR Timestamp messages (M2-104 §7.2.2) a client sends through the
+/// kernel's UMP sequencer are not heard by a port timed by arrival, which hears
+/// the note beside them.
+#[test]
+fn jr_messages_a_client_sends_are_not_heard_by_an_arrival_port() {
+    let spec = spec("jr");
+    let inlets = DeviceInlets::new(NonZeroUsize::MIN, EventCapacity::of(64), Duration::ZERO);
+    let mut listener = Listener::over(&inlets);
+    let ports = HardwareMidiInputs::new(std::sync::Arc::clone(&inlets));
+    let producer = ports.open_input_port("virtual").expect("a slot");
+    listener.apply();
+    let _destination = VirtualDestination::open(&spec, producer).expect("a virtual destination");
+    let (peer, port) = peer(CAP_READ);
+    let found = find(&peer, &spec).expect("the destination is listed");
+    peer.connect_to(port, found.client, found.port)
+        .expect("subscribes");
+
+    let clock = Ump::from(Message::Utility(Utility::JrClock(0x1234)));
+    let stamp = Ump::from(Message::Utility(Utility::JrTimestamp(0x1300)));
+    let note = note_on(MidiChannel::of(2), 60, 0x8000);
+    for ump in [clock, stamp, note] {
+        peer.send_to_subscribers(u8::try_from(port).unwrap(), ump.words())
+            .expect("sends");
+    }
+    assert_eq!(listener.listen(Duration::from_millis(300)), [note]);
+    assert_eq!(ports.losses().dropped(), 0);
 }
 
 /// A block of Groups 4 to 5, named, bidirectional, a receiver's hint.

@@ -101,6 +101,7 @@ mod tests {
     /// coarse), `keynum`, `velocity`, `sampleModes`, `exclusiveClass`,
     /// `overridingRootKey` and `sampleID` are instrument-only, and no other
     /// generator is: 38 of the 52 convert, each back to itself.
+    /// Spec: sf2.pdta.pgen.inst-only.ignored, sf2.pdta.pgen.sampleid.illegal, sf2.genrule.keynum-velocity.instrument-only, sf2.genrule.exclusive-class.instrument-only, sf2.genrule.sample-modes.instrument-only
     #[test]
     fn an_instrument_only_generator_cannot_be_a_preset_generator() {
         let instrument_only = [

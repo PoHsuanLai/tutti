@@ -30,6 +30,8 @@ mod pointers;
 mod prose;
 mod range_types;
 mod session;
+mod sf2_spec;
+mod spec_text;
 mod submodule_pins;
 mod test_paths;
 mod toml;
@@ -181,6 +183,7 @@ impl Gate {
                     &tree,
                     sys.as_ref().map(|t| t as &dyn Tree).map_err(Clone::clone),
                     &midi_spec_text,
+                    &sf2_spec_text,
                     require,
                 )
             }
@@ -218,15 +221,27 @@ fn clap_sys_tree(repo: &RealTree) -> Result<RealTree, String> {
 /// `pdftotext -layout` makes of the PDF there. The error names what is
 /// missing.
 fn midi_spec_text(doc: &midi_spec::Doc) -> Result<String, String> {
-    let dir = std::env::var_os("TUTTI_MIDI_SPECS")
+    spec_text("TUTTI_MIDI_SPECS", doc.source)
+}
+
+/// The text of the SoundFont 2.04 spec, from the `TUTTI_SF2_SPEC` directory
+/// the same way.
+fn sf2_spec_text() -> Result<String, String> {
+    spec_text(sf2_spec::ENV, sf2_spec::SOURCE)
+}
+
+/// The `.txt` whose name starts with `source` under the directory the
+/// variable `var` names, or else what `pdftotext -layout` makes of the `.pdf`.
+fn spec_text(var: &str, source: &str) -> Result<String, String> {
+    let dir = std::env::var_os(var)
         .map(PathBuf::from)
-        .ok_or("TUTTI_MIDI_SPECS is not set")?;
+        .ok_or_else(|| format!("{var} is not set"))?;
     let all = RealTree { root: dir.clone() }.files(".", &|_| false);
     let find = |ext: &str| {
         all.iter()
             .find(|p| {
                 let name = p.rsplit('/').next().unwrap_or(p);
-                name.starts_with(doc.source) && name.ends_with(ext)
+                name.starts_with(source) && name.ends_with(ext)
             })
             .cloned()
     };
@@ -234,13 +249,8 @@ fn midi_spec_text(doc: &midi_spec::Doc) -> Result<String, String> {
         let bytes = fs::read(dir.join(&txt)).map_err(|e| format!("cannot read {txt}: {e}"))?;
         return Ok(String::from_utf8_lossy(&bytes).into_owned());
     }
-    let pdf = find(".pdf").ok_or_else(|| {
-        format!(
-            "no {}* .txt or .pdf under {} (TUTTI_MIDI_SPECS)",
-            doc.source,
-            dir.display()
-        )
-    })?;
+    let pdf = find(".pdf")
+        .ok_or_else(|| format!("no {source}* .txt or .pdf under {} ({var})", dir.display()))?;
     let out = process::Command::new("pdftotext")
         .args(["-layout"])
         .arg(dir.join(&pdf))
@@ -321,9 +331,10 @@ pub(crate) fn conformance_inventory(root: &Path, format: &str) -> Result<(), Str
     match format {
         "clap" => clap_inventory(root),
         "midi" => midi_inventory(root),
+        "sf2" => sf2_inventory(root),
         "vst3" => vst3_inventory(root),
         _ => Err(format!(
-            "no inventory extractor for `{format}` (`clap`, `vst3` or `midi`)"
+            "no inventory extractor for `{format}` (`clap`, `vst3`, `midi` or `sf2`)"
         )),
     }
 }
@@ -342,6 +353,36 @@ fn vst3_inventory(root: &Path) -> Result<(), String> {
     println!("wrote {path}: {} rows", items.len());
     for id in &added {
         println!("added {id} (no paraphrase: the gate refuses it until one is written)");
+    }
+    for id in &removed {
+        println!("removed {id}: its row is gone from the file; check its tests' tags");
+    }
+    Ok(())
+}
+
+fn sf2_inventory(root: &Path) -> Result<(), String> {
+    let repo = RealTree {
+        root: root.to_path_buf(),
+    };
+    let spec = sf2_spec::extract(&sf2_spec_text()?)?;
+    let path = "testing/conformance/sf2.txt";
+    let (text, added, removed) =
+        conformance::regenerate_sf2(&repo.read(path).unwrap_or_default(), &spec.items)?;
+    let file = root.join(path);
+    fs::create_dir_all(file.parent().expect("a file path has a parent"))
+        .and_then(|()| fs::write(&file, text))
+        .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+    println!("wrote {path}: {} extracted rows", spec.items.len());
+    let text_of: std::collections::BTreeMap<&str, &str> = spec
+        .items
+        .iter()
+        .map(|i| (i.id.as_str(), i.text.as_str()))
+        .collect();
+    for id in &added {
+        println!(
+            "added {id} (side todo, no paraphrase): {}",
+            text_of[id.as_str()]
+        );
     }
     for id in &removed {
         println!("removed {id}: its row is gone from the file; check its tests' tags");

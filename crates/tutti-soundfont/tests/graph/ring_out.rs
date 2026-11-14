@@ -170,6 +170,7 @@ fn a_note_rings_out_within_the_declared_tail() {
 /// part of it (the voice is dropped when its envelope is 60 dB down, at 0.6 of
 /// the release time), and never past the declared tail. Without the clamp the
 /// sum would be 1024 s and the note would outlast the render's cap.
+/// Spec: sf2.error.out-of-range.nearest, sf2.gen.releaseVolEnv
 #[test]
 fn the_longest_release_a_font_can_have_rings_out_within_the_tail() {
     let font = font(

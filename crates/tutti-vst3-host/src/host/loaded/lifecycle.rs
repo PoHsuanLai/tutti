@@ -239,7 +239,7 @@ impl Vst3Loaded {
     ///
     /// Queued edits, progress and unit news stay queued for
     /// [`poll_plugin_notifications`](Self::poll_plugin_notifications).
-    pub fn take_restart(&self) -> RestartOutcome {
+    pub(crate) fn take_restart(&self) -> RestartOutcome {
         RestartOutcome::from_flags(RestartFlags::from_bits(
             self.plugin.handler().take_restart_bits(),
         ))
@@ -398,7 +398,7 @@ impl Vst3Loaded {
     /// and publishes it, so the Processor routes against it from its next
     /// block. Call it when the plugin raised
     /// [`Request::MidiCcAssignmentChanged`](tutti_plugin_types::Request::MidiCcAssignmentChanged). Allocates.
-    pub fn rebuild_midi_cc_mapping(&mut self, main: &MainThread) {
+    pub(crate) fn rebuild_midi_cc_mapping(&mut self, main: &MainThread) {
         self.midi_cc
             .publish(MidiCcCell(MidiCcMapping::query(main, &self.plugin)));
         self.midi_cc.reclaim();

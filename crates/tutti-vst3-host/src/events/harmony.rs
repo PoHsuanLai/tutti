@@ -21,7 +21,7 @@ pub struct Utf16Chord {
 
 impl Utf16Chord {
     /// The event, its name interned into the block's arena.
-    pub fn to_event(&self, staging: &mut Staging<'_>) -> Event {
+    pub(crate) fn to_event(&self, staging: &mut Staging<'_>) -> Event {
         Event::at(
             self.sample_offset,
             Payload::Chord(Chord {
@@ -49,7 +49,7 @@ pub struct Utf16Scale {
 
 impl Utf16Scale {
     /// The event, its name interned into the block's arena.
-    pub fn to_event(&self, staging: &mut Staging<'_>) -> Event {
+    pub(crate) fn to_event(&self, staging: &mut Staging<'_>) -> Event {
         Event::at(
             self.sample_offset,
             Payload::Scale(Scale {
@@ -76,7 +76,7 @@ pub struct Utf16Text {
 
 impl Utf16Text {
     /// The event, its text interned into the block's arena.
-    pub fn to_event(&self, staging: &mut Staging<'_>) -> Event {
+    pub(crate) fn to_event(&self, staging: &mut Staging<'_>) -> Event {
         Event::at(
             self.sample_offset,
             Payload::ExpressionText(ExpressionText {

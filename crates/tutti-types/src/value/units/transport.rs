@@ -95,15 +95,30 @@ impl Bpm {
         Bpm(self.0.clamp(lo.0, hi.0))
     }
 
-    /// Whether this tempo differs from `other` by more than `epsilon` BPM.
+    /// The tempo of a beat that lasts `period`: 60 over its seconds. `None`
+    /// when `period` is zero, negative or not finite (no tempo has such a beat).
+    ///
+    /// ```
+    /// use tutti_types::{Bpm, Seconds};
+    /// assert_eq!(Bpm::from_beat_period(Seconds::new(0.5)), Some(Bpm::of(120.0)));
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn from_beat_period(period: Seconds) -> Option<Bpm> {
+        Bpm::new(60.0 / period.get())
+    }
+
+    /// Whether this tempo differs from `other` by more than `epsilon`, a
+    /// tolerance in beats per minute (the unit is the tolerance's, not a tempo
+    /// that is played).
     ///
     /// The transport clock re-derives its per-sample beat increment only when
     /// the tempo actually moved; comparing floats for equality would re-derive
     /// on every buffer from ULP noise.
     #[inline]
     #[must_use]
-    pub fn differs_from(self, other: Bpm, epsilon: f64) -> bool {
-        (self.0 - other.0).abs() > epsilon
+    pub fn differs_from(self, other: Bpm, epsilon: Bpm) -> bool {
+        (self.0 - other.0).abs() > epsilon.0
     }
 }
 

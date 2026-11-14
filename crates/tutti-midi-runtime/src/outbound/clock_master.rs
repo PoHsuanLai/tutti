@@ -620,19 +620,24 @@ impl ClockMaster {
         }
         let mut cycle = self.mtc.cycle;
 
-        // Quarter-frames due inside [0, len), each on the frame it falls in
-        // (the floor of its position, as the MTC grid always was).
+        // Quarter-frames due inside [0, len), each on the first frame at or
+        // after its time (`first_frame_at_or_after`, the rule the clock ticks
+        // use): one due on a block boundary goes out once, on the next
+        // block's first frame, and one already due goes out on frame 0.
         loop {
-            let qf_sample = (self.mtc_due(next, rate, fps) - at as f64).max(0.0);
-            if qf_sample >= len as f64 {
+            let due = first_frame_at_or_after(self.mtc_due(next, rate, fps) - at as f64).max(0);
+            let Some(qf_sample) = usize::try_from(due).ok().filter(|&k| k < len) else {
                 break;
-            }
-            let sample_offset = pass.start.get() + (qf_sample as usize).min(len - 1);
+            };
+            let sample_offset = pass.start.get() + qf_sample;
             let piece = (next & 0x07) as u8;
             // A cycle's timecode is that of the sample piece 0 goes out on;
             // the receiver adds the two frames the cycle takes.
             if piece == 0 {
-                let tc = timecode_at(Seconds::new((block_pos + qf_sample) / rate.get()), fps);
+                let tc = timecode_at(
+                    Seconds::new((block_pos + qf_sample as f64) / rate.get()),
+                    fps,
+                );
                 cycle = mtc_cycle_nibbles(&tc, fps);
             }
             let nibble = (piece << 4) | ((cycle >> (4 * u32::from(piece))) & 0x0F) as u8;

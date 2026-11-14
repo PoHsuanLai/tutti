@@ -144,7 +144,7 @@ std only. A rule the compiler already enforces is not a gate.
   tests before adding one, and ship a replacement with any omission.
 - A number becomes a unit with `new` and leaves with `get`; there is no `From` between a
   unit and its raw. Convert between units with the named converters.
-- Measurements are not controls: `Confidence`, `Correlation` and `Pan` are readings.
+- Measurements are not controls: `Confidence`, `Correlation` and `StereoBalance` are readings.
 - Types stop at C ABI, IPC and wire boundaries; say why in a comment there.
 - Add a unit only for a distinct range or a distinct algebra.
 ### Range-checked values

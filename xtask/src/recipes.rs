@@ -252,8 +252,8 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     ),
     (
         "conformance-inventory",
-        "[clap|vst3|midi]",
-        "regenerate an inventory's generated columns from the spec source (vst3: the vendored SDK; midi: TUTTI_MIDI_SPECS)",
+        "[clap|vst3|midi|sf2]",
+        "regenerate an inventory's generated columns from the spec source (vst3: the vendored SDK; midi: TUTTI_MIDI_SPECS; sf2: TUTTI_SF2_SPEC)",
     ),
     (
         "check-range-types",
@@ -280,6 +280,12 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "",
         "rustdoc over every member's features together, and per feature for tutti-session and tutti",
     ),
+    (
+        "gates",
+        "",
+        "rustfmt, xtask's own tests and every source gate: no workspace build (the pre-push hook)",
+    ),
+    ("fmt", "", "cargo fmt --check"),
     ("lint", "", "cargo fmt --check and workspace clippy"),
     (
         "check-windows",
@@ -554,10 +560,11 @@ impl Planner<'_> {
             "check-doc-features" => self.out.push(Step::DocFeatures),
             "check-hosting" => self.out.push(Step::Gate(Gate::Hosting)),
             "check-paths" => self.out.push(Step::Gate(Gate::CanonicalPaths(args.to_vec()))),
-            "lint" => self.lines(&[
-                "cargo fmt --all --check",
-                "cargo clippy --locked --workspace --all-targets -- -D warnings",
-            ]),
+            "fmt" => self.lines(&["cargo fmt --all --check"]),
+            "lint" => {
+                self.dep("fmt")?;
+                self.lines(&["cargo clippy --locked --workspace --all-targets -- -D warnings"]);
+            }
             "check-windows" => self.check_windows(),
             "doc" => {
                 self.lines(&[
@@ -603,13 +610,21 @@ impl Planner<'_> {
                 self.out.push(Step::RequireCargoDeny);
                 self.lines(&["cargo deny --locked check advisories"]);
             }
+            "gates" => {
+                self.dep("fmt")?;
+                self.lines(&["cargo test --locked -p xtask"]);
+                for d in [
+                    "check-paths", "check-session", "check-guards", "check-ffi", "check-errors",
+                    "check-layout", "check-range-types", "check-hosting", "check-lints",
+                    "check-value-traits", "check-submodule-pins", "check-doc-refs",
+                    "check-pointers", "check-comments", "check-platform-seam",
+                ] {
+                    self.dep(d)?;
+                }
+            }
             "ci" => {
                 for d in [
-                    "lint", "deny", "check-paths", "check-session", "check-guards",
-                    "check-ffi", "check-errors", "check-layout", "check-range-types", "check-hosting",
-                    "check-lints", "check-value-traits",
-                    "check-submodule-pins", "check-doc-refs", "check-pointers",
-                    "check-comments", "check-platform-seam", "check-conformance",
+                    "gates", "lint", "deny", "check-conformance",
                     "check-features", "package",
                     "check-loom", "test", "test-features", "test-doc",
                     "test-release", "doc",

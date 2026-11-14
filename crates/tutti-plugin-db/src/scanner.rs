@@ -138,14 +138,15 @@ impl Scanner {
     /// Spawns a thread and hands back channels, in the shape of
     /// [`std::process::Command::spawn`]: this is not an `async fn` and returns
     /// no future. See [`scan`](Self::scan) for the blocking form. Dropping the
-    /// [`Scan`] stops the worker after the file it is probing.
+    /// [`Scan`] stops the worker after the file it is probing and waits for it,
+    /// so the next scan can start as soon as the drop returns.
     ///
     /// # Errors
     ///
     /// [`ScanBusy`] while another scan or a recovery is using the same pedal,
     /// whether from this scanner, a clone of it, or any scanner built on that
-    /// pedal path. The claim ends when the worker thread exits, not when its
-    /// [`Scan`] is dropped, so a second scan cannot delete the armed sentinel of
+    /// pedal path. The claim ends when the worker thread exits, which a dropped
+    /// [`Scan`] waits for, so a second scan cannot delete the armed sentinel of
     /// a probe still in flight.
     ///
     /// # Panics
@@ -162,7 +163,7 @@ impl Scanner {
         let (progress_tx, progress_rx) = crossbeam_channel::unbounded();
         let (tx, rx) = crossbeam_channel::unbounded();
 
-        std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name("plugin-scanner".into())
             .spawn(move || {
                 let result = job.run(Some(&progress_tx), |delta| {
@@ -179,6 +180,7 @@ impl Scanner {
             progress_rx,
             rx,
             stop,
+            worker: Some(worker),
         })
     }
 
@@ -275,12 +277,20 @@ pub struct Scan {
     pub progress_rx: Receiver<ScanProgress>,
     rx: Receiver<Message>,
     stop: Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for Scan {
-    /// Stops the worker after the file it is probing.
+    /// Stops the worker after the file it is probing and waits for it to exit,
+    /// so the pedal is released when the drop returns. The wait is at most the
+    /// probe in flight.
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            // A worker that panicked is reported by `poll` as `Died`; its
+            // claim is released by unwinding.
+            let _ = worker.join();
+        }
     }
 }
 
@@ -1405,8 +1415,10 @@ mod tests {
         parked.recv_timeout(Duration::from_secs(30)).unwrap();
         let progress = scan.progress_rx.clone();
 
-        drop(scan);
+        // The drop waits for the parked probe: release it from another thread.
+        let dropping = std::thread::spawn(move || drop(scan));
         release.send(()).unwrap();
+        dropping.join().unwrap();
         worker_exited(&progress);
 
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -1415,6 +1427,32 @@ mod tests {
             "the pedal is disarmed"
         );
         assert!(db.is_empty());
+    }
+
+    /// **A dropped scan has released the pedal when the drop returns**: the
+    /// probe in flight outlives the drop request for 200 ms, and the next scan
+    /// still starts at once instead of being refused as busy.
+    #[test]
+    fn a_new_scan_starts_right_after_a_scan_is_dropped() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = plugins_dir(&dir);
+        create_fake_plugin(&plugins_dir, "a.clap");
+        let (probing_tx, probing_rx) = crossbeam_channel::bounded::<()>(1);
+        let scanner = Scanner::new(dir.path().join(".scanning"), move |path, _| {
+            let _ = probing_tx.try_send(());
+            std::thread::sleep(Duration::from_millis(200));
+            named(path)
+        });
+        let mut db = PluginDb::new();
+        let scan = scanner.spawn(&mut db, [&plugins_dir], no_save).unwrap();
+        probing_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+
+        drop(scan);
+
+        assert!(
+            scanner.spawn(&mut db, [&plugins_dir], no_save).is_ok(),
+            "the dropped scan's worker had not released the pedal"
+        );
     }
 
     /// A worker that dies is reported by `poll` as `Died`, not as running

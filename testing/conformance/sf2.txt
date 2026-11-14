@@ -1,0 +1,475 @@
+# SoundFont 2.04 spec inventory. The spec text is not in the repo (its license
+# allows internal use only) and nothing of it is quoted here: ids, section
+# numbers, enumerator values, defaults, ranges and sizes are facts; every
+# paraphrase is in our own words.
+#
+# How the rows are checked (`cargo xtask check-conformance`):
+#  - Extracted rows are the ids of these families: sf2.gen.<name> (generators),
+#    sf2.mod.default.<n> (default modulators), sf2.mod.src.<name>,
+#    sf2.mod.srctype.<name>, sf2.mod.transform.<name>, sf2.chunk.info.<ck>,
+#    sf2.chunk.pdta.<ck> and sf2.sampletype.<name>. Their kind, section and facts
+#    columns come from the spec text, and with `TUTTI_SF2_SPEC=<dir>` (a
+#    directory holding the `pdftotext -layout` text, sfspec24.txt, or the PDF)
+#    the gate holds them to it in both directions. `TUTTI_SF2_SPEC=<dir> cargo
+#    xtask conformance-inventory sf2` regenerates those three columns in place,
+#    keeps the hand columns of each row and appends a new id as a `todo` row
+#    with no paraphrase (the gate refuses it until one is written). Without the
+#    text the comparison is skipped and said so; `TUTTI_CONFORMANCE=require-all`
+#    makes the absence a finding.
+#  - Every other row is written by hand and checked by review. Its kind is the
+#    conformance word of the sentence it paraphrases (must is required, should
+#    recommended, may permitted; empty when the sentence has none). With the text
+#    present the gate holds its section column to a section number the text has.
+#
+# Columns: id | side | maturity | kind | section | paraphrase | facts | na-kind | cite
+#
+# Sides: reader (what a file reader must do: tutti-sf2), player (what a
+# synthesizer must do: tutti-soundfont) and rom-loader (the loader of a Silicon
+# SoundFont ROM image, which neither crate is).
+#
+# Facts of the extracted rows (a name is a fact only when the text gives an
+# integer): gen: num, min, max, def (from the summary table of section 8.1.3),
+# inst_only=1 (the table's instrument-only mark), nonrt=1 (its non-real-time
+# mark); mod.default: src and amtsrc (hex), type, p, d, cc, index, amount,
+# transform; mod.src: index; mod.srctype and mod.transform and sampletype:
+# value; chunk.pdta: recsize (bytes per record), minrecs; chunk.info: size (a
+# fixed size) or maxlen (the string's byte limit).
+#
+# Ids of the hand-written rows, by area:
+#   sf2.riff.*      RIFF structure and chunk order (sections 3, 4, 10.2)
+#   sf2.info.*      the INFO list (5)
+#   sf2.sdta.*      sample data and looping margins (6)
+#   sf2.pdta.*      the pdta sub-chunks and their record rules (7)
+#   sf2.genrule.*   generator kinds, placement and precedence (8.1, 8.5, 9.4)
+#   sf2.mod.*       modulator sources, curves, the model and defaults (8.2 to 8.4, 9.5)
+#   sf2.synth.*     the synthesis model (9.1 and the behaviour 8.1.2 describes)
+#   sf2.midi.*      the MIDI functions a synthesizer answers (9.2)
+#   sf2.units.*     parameter units (9.3)
+#   sf2.nrpn.*      the SoundFont NRPN scheme (9.6)
+#   sf2.error.*     error handling (10)
+#   sf2.silicon.*   Silicon SoundFonts (11), N/A to both sides
+# Writer-side rules (what a tool that writes a bank must produce) are not
+# inventoried: no crate here writes SoundFont files.
+#
+# ---- RIFF structure and chunk order (sections 3 and 4)
+sf2.riff.signature | reader |  |  | SF2 §3.1 | the file starts with a RIFF chunk header; a file that is not RIFF at all is refused |  |  |
+sf2.riff.form.sfbk | reader |  |  | SF2 §4.1 | the RIFF form type is sfbk; any other form type is refused |  |  |
+sf2.riff.lists.order | reader |  | required | SF2 §3.2 | the three lists come as INFO, then sdta, then pdta, and that order is fixed |  |  |
+sf2.riff.pdta.order | reader |  | required | SF2 §3.2 | the nine pdta sub-chunks come in the fixed order phdr, pbag, pmod, pgen, inst, ibag, imod, igen, shdr |  |  |
+sf2.riff.info.order.free | reader |  |  | SF2 §3.2 | the INFO sub-chunks may come in any order |  |  |
+sf2.riff.info.unknown.ignored | reader |  | required | SF2 §3.2 | an INFO sub-chunk the reader does not know is skipped whatever its size |  |  |
+sf2.riff.unknown.outside-info.structural | reader |  | recommended | SF2 §10.2 | an unknown sub-chunk outside the INFO list is illegal and is treated as a structural error |  |  |
+sf2.riff.chunk.pad | reader |  |  | SF2 §3.1 | a chunk size excludes the pad byte; a chunk of odd size is padded to an even length and the next chunk starts after the pad |  |  |
+sf2.riff.size.bounds | reader |  |  | SF2 §3.3 | the RIFF size bounds the file: bytes after it are not read and a list reaching past it is a short read |  |  |
+sf2.riff.damage.rejected | reader |  | recommended | SF2 §3.3 | a file whose redundant lengths show lost data is structurally unsound and is rejected, never over-read |  |  |
+#
+# ---- INFO list (section 5)
+sf2.chunk.info.ifil | reader |  | required | SF2 §5.1 | mandatory four-byte version of the format | size=4 |  |
+sf2.chunk.info.isng | reader |  | required | SF2 §5.2 | mandatory name of the target sound engine, a zero-terminated string | maxlen=256 |  |
+sf2.chunk.info.inam | reader |  | required | SF2 §5.3 | mandatory name of the bank, a zero-terminated string | maxlen=256 |  |
+sf2.chunk.info.irom | reader |  | permitted | SF2 §5.4 | optional name of the sound ROM that ROM samples refer to | maxlen=256 |  |
+sf2.chunk.info.iver | reader |  | permitted | SF2 §5.5 | optional four-byte version of that ROM | size=4 |  |
+sf2.chunk.info.icrd | reader |  | permitted | SF2 §5.6 | optional creation date string | maxlen=256 |  |
+sf2.chunk.info.ieng | reader |  | permitted | SF2 §5.7 | optional string naming the sound designers | maxlen=256 |  |
+sf2.chunk.info.iprd | reader |  | permitted | SF2 §5.8 | optional string naming the product the bank was made for | maxlen=256 |  |
+sf2.chunk.info.icop | reader |  | permitted | SF2 §5.9 | optional copyright string | maxlen=256 |  |
+sf2.chunk.info.icmt | reader |  | permitted | SF2 §5.10 | optional comments string, the longest INFO string | maxlen=65536 |  |
+sf2.chunk.info.isft | reader |  | permitted | SF2 §5.11 | optional string naming the tools that made and last changed the bank | maxlen=256 |  |
+sf2.info.ifil.invalid.rejected | reader |  | recommended | SF2 §5.1 | a missing ifil, or one whose size is not four bytes, makes the file structurally unsound and it is rejected |  |  |
+sf2.info.ifil.version | reader |  |  | SF2 §5.1 | ifil carries the format version as a major word and a minor word, which the reader makes available |  |  |
+sf2.info.enumerators.forward-compatible | reader |  |  | SF2 §5.1 | within one major version new generator, source and transform enumerators and new INFO sub-chunks are ignored when unknown |  |  |
+sf2.info.isng.default | reader |  | recommended | SF2 §5.2 | an isng that is missing, unterminated or names an unknown engine is ignored and EMU8000 is assumed |  |  |
+sf2.info.inam.invalid | reader |  | recommended | SF2 §5.3 | a missing or unterminated INAM is ignored and does not make the file unreadable |  |  |
+sf2.info.irom.invalid | reader |  | recommended | SF2 §5.4 | an irom that is missing, unterminated or unknown is ignored and the file is taken to use no ROM samples |  |  |
+sf2.info.iver.invalid | reader |  | recommended | SF2 §5.5 | an iver that is missing, not four bytes or unknown is ignored and the file is taken to use no ROM samples |  |  |
+sf2.info.optional-strings.invalid | reader |  | recommended | SF2 §5.6 | an optional INFO string that is missing or not zero-terminated is ignored |  |  |
+sf2.info.rom-samples.silent | player |  | recommended | SF2 §5.4 | a note whose sample lives in ROM that the file does not validly name ends and does not sound |  |  |
+#
+# ---- sample data (section 6)
+sf2.sdta.smpl.optional | reader |  |  | SF2 §6 | the sdta list may have no smpl sub-chunk and the file still loads, with no sample data |  |  |
+sf2.sdta.smpl.pcm16 | reader |  |  | SF2 §6.1 | smpl holds signed 16-bit little-endian sample points |  |  |
+sf2.sdta.sm24.low-byte | reader |  |  | SF2 §6.2 | sm24 holds one extra low byte per smpl point and the two together make a pool of up to 24 bits |  |  |
+sf2.sdta.sm24.ignored.no-smpl | reader |  | recommended | SF2 §6.2 | sm24 is ignored when smpl is absent |  |  |
+sf2.sdta.sm24.ignored.old-version | reader |  | recommended | SF2 §6.2 | sm24 is ignored when ifil gives a version older than 2.04 |  |  |
+sf2.sdta.sm24.ignored.wrong-size | reader |  | recommended | SF2 §6.2 | sm24 is ignored unless its size is half of smpl, plus one byte when that half is odd |  |  |
+sf2.sdta.sm24.ignored.render-smpl-only | player |  | recommended | SF2 §6.2 | when sm24 is ignored only the smpl points are rendered |  |  |
+sf2.sdta.loop.end-point-not-played | player |  |  | SF2 §6.3 | a loop splices its end point onto its start point: the end point itself is never played and the start point follows the point before it |  |  |
+sf2.sdta.loop.margin-points | player |  |  | SF2 §6.3 | interpolation near a loop edge reads the data on both sides of both loop points, so those points are surrounded by valid data |  |  |
+#
+# ---- pdta list (section 7)
+sf2.chunk.pdta.phdr | reader |  |  | SF2 §7.2 | preset headers, 38-byte records, at least two with the terminal one | recsize=38 minrecs=2 |  |
+sf2.chunk.pdta.pbag | reader |  |  | SF2 §7.3 | preset zone bags, 4-byte records with a terminal one | recsize=4 |  |
+sf2.chunk.pdta.pmod | reader |  |  | SF2 §7.4 | preset modulators, 10-byte records with a terminal one | recsize=10 |  |
+sf2.chunk.pdta.pgen | reader |  |  | SF2 §7.5 | preset generators, 4-byte records with a terminal one | recsize=4 |  |
+sf2.chunk.pdta.inst | reader |  |  | SF2 §7.6 | instrument headers, 22-byte records, at least two with the terminal one | recsize=22 minrecs=2 |  |
+sf2.chunk.pdta.ibag | reader |  |  | SF2 §7.7 | instrument zone bags, 4-byte records with a terminal one | recsize=4 |  |
+sf2.chunk.pdta.imod | reader |  |  | SF2 §7.8 | instrument modulators, 10-byte records with a terminal one | recsize=10 |  |
+sf2.chunk.pdta.igen | reader |  |  | SF2 §7.9 | instrument generators, 4-byte records with a terminal one | recsize=4 |  |
+sf2.chunk.pdta.shdr | reader |  |  | SF2 §7.10 | sample headers, 46-byte records with a terminal one | recsize=46 |  |
+sf2.pdta.hydra.mandatory | reader |  |  | SF2 §7.1 | the nine pdta sub-chunks, known as the hydra, are all mandatory |  |  |
+sf2.pdta.phdr.invalid.rejected | reader |  | recommended | SF2 §7.2 | a missing phdr sub-chunk, or one whose size is not a whole number of records, makes the file structurally unsound and it is rejected and a file with fewer than two records is rejected too |  |  |
+sf2.pdta.pbag.invalid.rejected | reader |  | recommended | SF2 §7.3 | a missing pbag sub-chunk, or one whose size is not a whole number of records, makes the file structurally unsound and it is rejected |  |  |
+sf2.pdta.pmod.invalid.rejected | reader |  | recommended | SF2 §7.4 | a missing pmod sub-chunk, or one whose size is not a whole number of records, makes the file structurally unsound and it is rejected |  |  |
+sf2.pdta.pgen.invalid.rejected | reader |  | recommended | SF2 §7.5 | a missing pgen sub-chunk, or one whose size is not a whole number of records, makes the file structurally unsound and it is rejected |  |  |
+sf2.pdta.inst.invalid.rejected | reader |  | recommended | SF2 §7.6 | a missing inst sub-chunk, or one whose size is not a whole number of records, makes the file structurally unsound and it is rejected and a file with fewer than two records is rejected too |  |  |
+sf2.pdta.ibag.invalid.rejected | reader |  | recommended | SF2 §7.7 | a missing ibag sub-chunk, or one whose size is not a whole number of records, makes the file structurally unsound and it is rejected |  |  |
+sf2.pdta.imod.invalid.rejected | reader |  | recommended | SF2 §7.8 | a missing imod sub-chunk, or one whose size is not a whole number of records, makes the file structurally unsound and it is rejected |  |  |
+sf2.pdta.igen.invalid.rejected | reader |  | recommended | SF2 §7.9 | a missing igen sub-chunk, or one whose size is not a whole number of records, makes the file structurally unsound and it is rejected |  |  |
+sf2.pdta.shdr.invalid.rejected | reader |  | recommended | SF2 §7.10 | a missing shdr sub-chunk, or one whose size is not a whole number of records, makes the file structurally unsound and it is rejected |  |  |
+sf2.pdta.phdr.name.zero-padded | reader |  |  | SF2 §7.2 | a preset name is a 20-byte field, unused trailing bytes zero, read up to the first zero |  |  |
+sf2.pdta.phdr.name.duplicates-kept | reader |  | recommended | SF2 §7.2 | presets with identical names are not discarded when read |  |  |
+sf2.pdta.phdr.bank-program.duplicate | reader |  |  | SF2 §7.2 | when two presets share a bank and program the first in the list is the active one and the others are kept |  |  |
+sf2.pdta.phdr.bank-program.range | reader |  |  | SF2 §7.2 | a preset's bank is 0 to 127 or 128 for percussion and its program is 0 to 127; a preset with another value is kept but cannot be played |  |  |
+sf2.pdta.phdr.bank-program.unplayable | player |  |  | SF2 §7.2 | a preset whose bank or program is outside MIDI's values is never selected for playing |  |  |
+sf2.pdta.phdr.bank.percussion | player |  |  | SF2 §7.2 | bank 128 is the percussion bank |  |  |
+sf2.pdta.phdr.bag-index.monotonic | reader |  | recommended | SF2 §7.2 | preset bag indices never decrease along the preset list; a file where they do is structurally defective and is rejected |  |  |
+sf2.pdta.phdr.bag-index.terminal | reader |  | recommended | SF2 §7.2 | the terminal preset's bag index equals the number of preset zones; a file where it does not is rejected |  |  |
+sf2.pdta.phdr.zoneless.ignored | reader |  |  | SF2 §7.2 | a preset that has no zone is ignored and the presets after it keep their own zones |  |  |
+sf2.pdta.phdr.library-genre-morphology | reader |  | recommended | SF2 §7.2 | the library, genre and morphology words of a preset are kept as read |  |  |
+sf2.pdta.phdr.terminal.not-accessed | reader |  |  | SF2 §7.2 | the terminal preset header exists only for its bag index and is never read as a preset |  |  |
+sf2.pdta.pbag.index.monotonic | reader |  | recommended | SF2 §7.3 | the generator and modulator indices of the preset zones never decrease; a file where they do is rejected |  |  |
+sf2.pdta.pbag.index.terminal | reader |  | recommended | SF2 §7.3 | the terminal zone's generator and modulator indices match the sizes of pgen and pmod; a file where they do not is rejected |  |  |
+sf2.pdta.pbag.zone-count | reader |  |  | SF2 §7.3 | a preset's zones run from its bag index to the next preset's bag index |  |  |
+sf2.pdta.pbag.global-zone | reader |  |  | SF2 §7.3 | the first zone of a preset with several zones may be a global one: its generators stop short of an instrument |  |  |
+sf2.pdta.pbag.zone.no-instrument.ignored | reader |  |  | SF2 §7.3 | a zone other than the first whose generators do not end in an instrument generator is ignored |  |  |
+sf2.pdta.pbag.global-zone.empty.ignored | reader |  |  | SF2 §7.3 | a global zone with neither generators nor modulators is ignored |  |  |
+sf2.pdta.pbag.generators.required | reader |  |  | SF2 §7.3 | every generator list has at least one generator, except a global zone that has only modulators |  |  |
+sf2.pdta.pmod.terminal.ignored | reader |  |  | SF2 §7.4 | the terminal preset modulator record is always ignored |  |  |
+sf2.pdta.pmod.count | reader |  |  | SF2 §7.4 | a preset zone's modulators run from its modulator index to the next zone's, and equal indices mean none |  |  |
+sf2.pdta.pmod.unknown-enumerator.ignored | reader |  |  | SF2 §7.4 | a preset modulator whose source, destination, amount source or transform value is unknown or undefined is ignored |  |  |
+sf2.pdta.pmod.link.no-source.ignored | reader |  |  | SF2 §7.4 | a preset modulator whose source is the link value but which nothing links to is ignored |  |  |
+sf2.pdta.pmod.link.amount-source.ignored | reader |  |  | SF2 §7.4 | a preset modulator whose amount source is the link value is ignored |  |  |
+sf2.pdta.pmod.link.out-of-zone.ignored | reader |  |  | SF2 §7.4 | a preset modulator that links to an index beyond the zone's modulators is ignored |  |  |
+sf2.pdta.pmod.link.circular.ignored | reader |  |  | SF2 §7.4 | preset modulators in a circular link are all ignored |  |  |
+sf2.pdta.pmod.duplicate.first-ignored | reader |  |  | SF2 §7.4 | within a preset zone a later modulator with the same source, destination and amount source replaces the earlier one |  |  |
+sf2.pdta.pmod.amount-signed | reader |  |  | SF2 §7.4 | a preset modulator's amount is a signed 16-bit value in the destination's units |  |  |
+sf2.pdta.imod.terminal.ignored | reader |  |  | SF2 §7.8 | the terminal instrument modulator record is always ignored |  |  |
+sf2.pdta.imod.count | reader |  |  | SF2 §7.8 | a instrument zone's modulators run from its modulator index to the next zone's, and equal indices mean none |  |  |
+sf2.pdta.imod.unknown-enumerator.ignored | reader |  |  | SF2 §7.8 | a instrument modulator whose source, destination, amount source or transform value is unknown or undefined is ignored |  |  |
+sf2.pdta.imod.link.no-source.ignored | reader |  |  | SF2 §7.8 | a instrument modulator whose source is the link value but which nothing links to is ignored |  |  |
+sf2.pdta.imod.link.amount-source.ignored | reader |  |  | SF2 §7.8 | a instrument modulator whose amount source is the link value is ignored |  |  |
+sf2.pdta.imod.link.out-of-zone.ignored | reader |  |  | SF2 §7.8 | a instrument modulator that links to an index beyond the zone's modulators is ignored |  |  |
+sf2.pdta.imod.link.circular.ignored | reader |  |  | SF2 §7.8 | instrument modulators in a circular link are all ignored |  |  |
+sf2.pdta.imod.duplicate.first-ignored | reader |  |  | SF2 §7.8 | within a instrument zone a later modulator with the same source, destination and amount source replaces the earlier one |  |  |
+sf2.pdta.imod.amount-signed | reader |  |  | SF2 §7.8 | a instrument modulator's amount is a signed 16-bit value in the destination's units |  |  |
+sf2.pdta.pmod.link.destination-bit | reader |  |  | SF2 §7.4 | a modulator destination with its top bit set links to another modulator of the same zone by the low 15 bits as an index |  |  |
+sf2.pdta.pmod.relative | player |  |  | SF2 §7.4 | preset modulators add to instrument modulators: a preset modulator raises or lowers the amount of an instrument one |  |  |
+sf2.pdta.imod.absolute | player |  |  | SF2 §7.8 | instrument modulators are absolute: one replaces the default modulator that is identical to it, and its output adds to the generator |  |  |
+sf2.pdta.pgen.unknown-generator.ignored | reader |  |  | SF2 §7.5 | a preset generator with an unknown or undefined operator number is ignored |  |  |
+sf2.pdta.pgen.amount-formats | reader |  |  | SF2 §7.5 | a generator amount is a range of two bytes, a signed 16-bit value or an unsigned 16-bit value, by the generator |  |  |
+sf2.pdta.pgen.key-range.first | reader |  | recommended | SF2 §7.5 | a key range generator in a preset zone must be the first generator; one anywhere else is ignored |  |  |
+sf2.pdta.pgen.vel-range.after-key-range | reader |  | recommended | SF2 §7.5 | a velocity range generator in a preset zone may follow only a key range generator; one after any other generator is ignored |  |  |
+sf2.pdta.pgen.after-instrument.ignored | reader |  |  | SF2 §7.5 | generators that follow the instrument generator in a preset zone are ignored |  |  |
+sf2.pdta.pgen.duplicate.first-ignored | reader |  |  | SF2 §7.5 | within a preset zone a later generator with the same operator replaces the earlier one |  |  |
+sf2.pdta.pgen.no-terminal-index.ignored | reader |  | recommended | SF2 §7.5 | a preset zone that is not global and does not end with its instrument generator is ignored |  |  |
+sf2.pdta.pgen.index.past-list.rejected | reader |  | recommended | SF2 §7.5 | an instrument value equal to or above the terminal record's makes the file structurally unsound and it is rejected |  |  |
+sf2.pdta.igen.unknown-generator.ignored | reader |  |  | SF2 §7.9 | a instrument generator with an unknown or undefined operator number is ignored |  |  |
+sf2.pdta.igen.amount-formats | reader |  |  | SF2 §7.9 | a generator amount is a range of two bytes, a signed 16-bit value or an unsigned 16-bit value, by the generator |  |  |
+sf2.pdta.igen.key-range.first | reader |  | recommended | SF2 §7.9 | a key range generator in a instrument zone must be the first generator; one anywhere else is ignored |  |  |
+sf2.pdta.igen.vel-range.after-key-range | reader |  | recommended | SF2 §7.9 | a velocity range generator in a instrument zone may follow only a key range generator; one after any other generator is ignored |  |  |
+sf2.pdta.igen.after-sampleid.ignored | reader |  |  | SF2 §7.9 | generators that follow the sampleID generator in a instrument zone are ignored |  |  |
+sf2.pdta.igen.duplicate.first-ignored | reader |  |  | SF2 §7.9 | within a instrument zone a later generator with the same operator replaces the earlier one |  |  |
+sf2.pdta.igen.no-terminal-index.ignored | reader |  | recommended | SF2 §7.9 | a instrument zone that is not global and does not end with its sampleID generator is ignored |  |  |
+sf2.pdta.igen.index.past-list.rejected | reader |  | recommended | SF2 §7.9 | an sampleID value equal to or above the terminal record's makes the file structurally unsound and it is rejected |  |  |
+sf2.pdta.pgen.instrument.last | reader |  | required | SF2 §8.1.2 | in a preset zone the instrument generator must be the last generator; a global preset zone has none |  |  |
+sf2.pdta.igen.sampleid.last | reader |  | required | SF2 §8.1.2 | in an instrument zone the sampleID generator must be the last generator; a global instrument zone has none |  |  |
+sf2.pdta.igen.instrument.illegal | reader |  |  | SF2 §10.7 | an instrument generator inside an instrument zone is an illegal enumerator and is ignored |  |  |
+sf2.pdta.pgen.sampleid.illegal | reader |  |  | SF2 §10.7 | a sampleID generator inside a preset zone is an illegal enumerator and is ignored |  |  |
+sf2.pdta.pgen.relative | player |  |  | SF2 §7.5 | preset generators are relative: they raise or lower the instrument generators |  |  |
+sf2.pdta.igen.absolute | player |  |  | SF2 §7.9 | instrument generators are absolute: one replaces the default value of its generator |  |  |
+sf2.pdta.pgen.inst-only.ignored | player |  |  | SF2 §8.5 | the generators marked instrument-only are ignored when found in a preset zone and are never summed |  |  |
+sf2.pdta.inst.name.zero-padded | reader |  |  | SF2 §7.6 | an instrument name is a 20-byte field, unused trailing bytes zero, read up to the first zero |  |  |
+sf2.pdta.inst.name.duplicates-kept | reader |  | recommended | SF2 §7.6 | instruments with identical names are not discarded when read |  |  |
+sf2.pdta.inst.bag-index.monotonic | reader |  | recommended | SF2 §7.6 | instrument bag indices never decrease along the instrument list; a file where they do is rejected |  |  |
+sf2.pdta.inst.bag-index.terminal | reader |  | recommended | SF2 §7.6 | the terminal instrument's bag index matches the size of ibag; a file where it does not is rejected |  |  |
+sf2.pdta.inst.zoneless | reader |  |  | SF2 §7.6 | an instrument with no zone stays in the list, so the indices presets use keep their meaning, and plays nothing |  |  |
+sf2.pdta.inst.orphan.accepted | reader |  |  | SF2 §7.6 | an instrument that no preset zone names does not make the file unacceptable |  |  |
+sf2.pdta.ibag.index.monotonic | reader |  | recommended | SF2 §7.7 | the generator and modulator indices of the instrument zones never decrease; a file where they do is rejected |  |  |
+sf2.pdta.ibag.index.terminal | reader |  | recommended | SF2 §7.7 | the terminal instrument zone's indices match the sizes of igen and imod; a file where they do not is rejected |  |  |
+sf2.pdta.ibag.zone-count | reader |  |  | SF2 §7.7 | an instrument's zones run from its bag index to the next instrument's bag index |  |  |
+sf2.pdta.ibag.global-zone | reader |  |  | SF2 §7.7 | the first zone of an instrument with several zones may be a global one: its generators stop short of a sampleID |  |  |
+sf2.pdta.ibag.zone.no-sample.ignored | reader |  |  | SF2 §7.7 | a zone other than the first whose generators do not end in a sampleID generator is ignored |  |  |
+sf2.pdta.ibag.global-zone.empty.ignored | reader |  |  | SF2 §7.7 | a global instrument zone with neither generators nor modulators is ignored |  |  |
+sf2.pdta.ibag.generators.required | reader |  |  | SF2 §7.7 | every instrument generator list has at least one generator, except a global zone that has only modulators |  |  |
+sf2.sampletype.monoSample | reader |  |  | SF2 §4.5 | sample type value: a mono sample held in the bank | value=1 |  |
+sf2.sampletype.rightSample | reader |  |  | SF2 §4.5 | sample type value: the right half of a stereo pair | value=2 |  |
+sf2.sampletype.leftSample | reader |  |  | SF2 §4.5 | sample type value: the left half of a stereo pair | value=4 |  |
+sf2.sampletype.linkedSample | reader |  |  | SF2 §4.5 | sample type value: a sample in a linked list | value=8 |  |
+sf2.sampletype.RomMonoSample | reader |  |  | SF2 §4.5 | sample type value: a mono sample in ROM, the ROM flag being bit 15 | value=32769 |  |
+sf2.sampletype.RomRightSample | reader |  |  | SF2 §4.5 | sample type value: a right sample in ROM | value=32770 |  |
+sf2.sampletype.RomLeftSample | reader |  |  | SF2 §4.5 | sample type value: a left sample in ROM | value=32772 |  |
+sf2.sampletype.RomLinkedSample | reader |  |  | SF2 §4.5 | sample type value: a linked sample in ROM | value=32776 |  |
+sf2.pdta.shdr.name.zero-padded | reader |  |  | SF2 §7.10 | a sample name is a 20-byte field, unused trailing bytes zero, read up to the first zero |  |  |
+sf2.pdta.shdr.name.duplicates-kept | reader |  | recommended | SF2 §7.10 | samples with identical names are not discarded when read |  |  |
+sf2.pdta.shdr.dwords.unsigned | reader |  |  | SF2 §7.10 | the start, end, loop and rate fields are unsigned 32-bit values; an address that big is refused cleanly as past the data |  |  |
+sf2.pdta.shdr.addresses.in-range | reader |  | required | SF2 §7.10 | the start, end and loop addresses must lie within the sample data of the bank |  |  |
+sf2.pdta.shdr.start | player |  |  | SF2 §7.10 | dwStart is the index of the first point of the sample in the sample data |  |  |
+sf2.pdta.shdr.end | player |  |  | SF2 §7.10 | dwEnd is the index of the first of the zero points that follow the sample |  |  |
+sf2.pdta.shdr.loop | player |  |  | SF2 §7.10 | the loop runs from dwStartloop to dwEndloop, the latter being the point equivalent to the loop start |  |  |
+sf2.pdta.shdr.min-lengths | player |  |  | SF2 §7.10 | a sample under 48 points, a loop under 32 points or fewer than 8 valid points around the loop may optionally not be played |  |  |
+sf2.pdta.shdr.rate.zero | player |  | recommended | SF2 §7.10 | a sample rate of zero is illegal and the nearest practical rate is used in its place |  |  |
+sf2.pdta.shdr.rate.impractical | player |  | recommended | SF2 §7.10 | a rate above 50000 or below 400 Hz may not be reproducible and an impractical value is replaced by the nearest practical one |  |  |
+sf2.pdta.shdr.original-pitch | player |  |  | SF2 §7.10 | byOriginalPitch is the MIDI key of the recorded pitch and is the sample's default root key |  |  |
+sf2.pdta.shdr.original-pitch.illegal | player |  | recommended | SF2 §7.10 | an original pitch of 255 (unpitched) or in 128 to 254 is replaced by key 60 |  |  |
+sf2.pdta.shdr.pitch-correction | player |  |  | SF2 §7.10 | chPitchCorrection is a signed number of cents applied to the sample on playback; a sound 4 cents sharp holds -4 |  |  |
+sf2.pdta.shdr.rom.no-irom.rejected | reader |  | recommended | SF2 §7.10 | a sample flagged as ROM in a file with no valid irom makes the file structurally defective and it is rejected |  |  |
+sf2.pdta.shdr.sample-link.mono | reader |  |  | SF2 §7.10 | for a mono sample the link word is undefined and is ignored whatever it holds |  |  |
+sf2.pdta.shdr.stereo.pair | player |  |  | SF2 §7.10 | a left and a right sample linked to each other play together in step, their pitch following the right sample's generators and each going to its own side by pan |  |  |
+sf2.pdta.shdr.stereo.same-instrument | player |  |  | SF2 §7.10 | a stereo pair belongs in one instrument and no instrument may let two instances of one pair sound at once |  |  |
+sf2.pdta.shdr.linked-sample.undefined | player |  |  | SF2 §7.10 | the linked sample type, a circular list of samples, is not fully defined |  |  |
+sf2.pdta.shdr.terminal.not-referenced | reader |  |  | SF2 §7.10 | nothing refers to the closing sample header |  |  |
+sf2.pdta.shdr.orphan.accepted | reader |  |  | SF2 §7.10 | a sample that no instrument names does not make the file unacceptable |  |  |
+#
+# ---- generators (section 8.1, 8.5, 9.4)
+sf2.gen.startAddrsOffset | player |  |  | SF2 §8.1.2 | moves the first played sample point from the header's start by this many points | num=0 min=0 def=0 inst_only=1 |  |
+sf2.gen.endAddrsOffset | player |  |  | SF2 §8.1.2 | moves the last played sample point from the header's end by this many points, negative to stop earlier | num=1 max=0 def=0 inst_only=1 |  |
+sf2.gen.startloopAddrsOffset | player |  |  | SF2 §8.1.2 | moves the first looped point from the header's loop start by this many points | num=2 def=0 inst_only=1 |  |
+sf2.gen.endloopAddrsOffset | player |  |  | SF2 §8.1.2 | moves the loop's end-equivalent point from the header's loop end by this many points | num=3 def=0 inst_only=1 |  |
+sf2.gen.startAddrsCoarseOffset | player |  |  | SF2 §8.1.2 | start offset in steps of 32768 points, added to the fine start offset | num=4 min=0 def=0 inst_only=1 |  |
+sf2.gen.modLfoToPitch | player |  |  | SF2 §8.1.2 | pitch swing of the modulation LFO at full scale, in cents; positive raises pitch on a positive excursion | num=5 min=-12000 max=12000 def=0 |  |
+sf2.gen.vibLfoToPitch | player |  |  | SF2 §8.1.2 | pitch swing of the vibrato LFO at full scale, in cents | num=6 min=-12000 max=12000 def=0 |  |
+sf2.gen.modEnvToPitch | player |  |  | SF2 §8.1.2 | pitch change of the modulation envelope at its peak, in cents | num=7 min=-12000 max=12000 def=0 |  |
+sf2.gen.initialFilterFc | player |  |  | SF2 §8.1.2 | low-pass cutoff in absolute cents, default 13500 which is open; modelled as a resonant pole pair | num=8 min=1500 max=13500 def=13500 |  |
+sf2.gen.initialFilterQ | player |  | permitted | SF2 §8.1.2 | resonance peak height in centibels above the DC gain, which falls by half that amount; zero or less is not resonant | num=9 min=0 max=960 def=0 |  |
+sf2.gen.modLfoToFilterFc | player |  |  | SF2 §8.1.2 | cutoff swing of the modulation LFO at full scale, in cents | num=10 min=-12000 max=12000 def=0 |  |
+sf2.gen.modEnvToFilterFc | player |  |  | SF2 §8.1.2 | cutoff change of the modulation envelope at its peak, in cents | num=11 min=-12000 max=12000 def=0 |  |
+sf2.gen.endAddrsCoarseOffset | player |  |  | SF2 §8.1.2 | end offset in steps of 32768 points, added to the fine end offset | num=12 max=0 def=0 inst_only=1 |  |
+sf2.gen.modLfoToVolume | player |  |  | SF2 §8.1.2 | loudness swing of the modulation LFO at full scale, in centibels | num=13 min=-960 max=960 def=0 |  |
+sf2.gen.unused1 | reader |  | recommended | SF2 §8.1.2 | unused number 14, ignored when met | num=14 |  |
+sf2.gen.chorusEffectsSend | player |  |  | SF2 §8.1.2 | share of the note sent to the chorus unit in 0.1% units, 0% or less sends nothing and 100% or more sends full level | num=15 min=0 max=1000 def=0 |  |
+sf2.gen.reverbEffectsSend | player |  |  | SF2 §8.1.2 | share of the note sent to the reverb unit in 0.1% units, with the same limits as the chorus send | num=16 min=0 max=1000 def=0 |  |
+sf2.gen.pan | player |  |  | SF2 §8.1.2 | position of the dry output in 0.1% units, -50% hard left to +50% hard right, 0 centred | num=17 min=-500 max=500 def=0 |  |
+sf2.gen.unused2 | reader |  | recommended | SF2 §8.1.2 | unused number 18, ignored when met | num=18 |  |
+sf2.gen.unused3 | reader |  | recommended | SF2 §8.1.2 | unused number 19, ignored when met | num=19 |  |
+sf2.gen.unused4 | reader |  | recommended | SF2 §8.1.2 | unused number 20, ignored when met | num=20 |  |
+sf2.gen.delayModLFO | player |  |  | SF2 §8.1.2 | key-on delay before the modulation LFO starts, in absolute timecents, 0 being one second | num=21 min=-12000 max=5000 def=-12000 |  |
+sf2.gen.freqModLFO | player |  |  | SF2 §8.1.2 | modulation LFO frequency in absolute cents, 0 being 8.176 Hz | num=22 min=-16000 max=4500 def=0 |  |
+sf2.gen.delayVibLFO | player |  |  | SF2 §8.1.2 | key-on delay before the vibrato LFO starts, in absolute timecents | num=23 min=-12000 max=5000 def=-12000 |  |
+sf2.gen.freqVibLFO | player |  |  | SF2 §8.1.2 | vibrato LFO frequency in absolute cents, 0 being 8.176 Hz | num=24 min=-16000 max=4500 def=0 |  |
+sf2.gen.delayModEnv | player |  |  | SF2 §8.1.2 | time from key-on until the modulation envelope's attack begins, in absolute timecents | num=25 min=-12000 max=5000 def=-12000 |  |
+sf2.gen.attackModEnv | player |  |  | SF2 §8.1.2 | modulation envelope attack time in absolute timecents, a convex rise | num=26 min=-12000 max=8000 def=-12000 |  |
+sf2.gen.holdModEnv | player |  |  | SF2 §8.1.2 | modulation envelope hold time at the peak, in absolute timecents | num=27 min=-12000 max=5000 def=-12000 |  |
+sf2.gen.decayModEnv | player |  |  | SF2 §8.1.2 | modulation envelope decay time for a full-scale fall, in absolute timecents, linear toward the sustain level | num=28 min=-12000 max=8000 def=-12000 |  |
+sf2.gen.sustainModEnv | player |  |  | SF2 §8.1.2 | modulation envelope sustain as a decrease from full in 0.1% units, clamped to 0 to 1000 | num=29 min=0 max=1000 def=0 |  |
+sf2.gen.releaseModEnv | player |  |  | SF2 §8.1.2 | modulation envelope release time for a full-scale fall, in absolute timecents, linear to zero | num=30 min=-12000 max=8000 def=-12000 |  |
+sf2.gen.keynumToModEnvHold | player |  |  | SF2 §8.1.2 | how much the modulation envelope hold shortens per key above 60, in timecents per key; 100 tracks the keyboard | num=31 min=-1200 max=1200 def=0 |  |
+sf2.gen.keynumToModEnvDecay | player |  |  | SF2 §8.1.2 | how much the modulation envelope decay shortens per key above 60, in timecents per key | num=32 min=-1200 max=1200 def=0 |  |
+sf2.gen.delayVolEnv | player |  |  | SF2 §8.1.2 | time from key-on until the volume envelope's attack begins, in absolute timecents | num=33 min=-12000 max=5000 def=-12000 |  |
+sf2.gen.attackVolEnv | player |  |  | SF2 §8.1.2 | volume envelope attack time in absolute timecents, a convex rise that is linear in amplitude | num=34 min=-12000 max=8000 def=-12000 |  |
+sf2.gen.holdVolEnv | player |  |  | SF2 §8.1.2 | volume envelope hold time at the peak, in absolute timecents | num=35 min=-12000 max=5000 def=-12000 |  |
+sf2.gen.decayVolEnv | player |  |  | SF2 §8.1.2 | volume envelope decay time for a full-scale fall, in absolute timecents, constant dB per unit time | num=36 min=-12000 max=8000 def=-12000 |  |
+sf2.gen.sustainVolEnv | player |  |  | SF2 §8.1.2 | volume envelope sustain as centibels of attenuation reached after the decay, below 0 read as 0 | num=37 min=0 max=1440 def=0 |  |
+sf2.gen.releaseVolEnv | player |  |  | SF2 §8.1.2 | volume envelope release time, in absolute timecents, falling 100 dB from full level in that time | num=38 min=-12000 max=8000 def=-12000 |  |
+sf2.gen.keynumToVolEnvHold | player |  |  | SF2 §8.1.2 | how much the volume envelope hold shortens per key above 60, in timecents per key | num=39 min=-1200 max=1200 def=0 |  |
+sf2.gen.keynumToVolEnvDecay | player |  |  | SF2 §8.1.2 | how much the volume envelope decay shortens per key above 60, in timecents per key | num=40 min=-1200 max=1200 def=0 |  |
+sf2.gen.instrument | reader |  | required | SF2 §8.1.2 | terminal generator of a preset zone, an index into the instrument list; only valid in preset zones | num=41 |  |
+sf2.gen.reserved1 | reader |  | recommended | SF2 §8.1.2 | reserved number 42, ignored when met | num=42 |  |
+sf2.gen.keyRange | player |  | required | SF2 §8.1.2 | lowest and highest key the zone answers, a range generator that comes first in the zone | num=43 min=0 max=127 nonrt=1 |  |
+sf2.gen.velRange | player |  | required | SF2 §8.1.2 | lowest and highest velocity the zone answers, a range generator that follows only a key range | num=44 min=0 max=127 nonrt=1 |  |
+sf2.gen.startloopAddrsCoarseOffset | player |  |  | SF2 §8.1.2 | loop start offset in steps of 32768 points, added to the fine loop start offset | num=45 def=0 inst_only=1 |  |
+sf2.gen.keynum | player |  |  | SF2 §8.1.2 | forces the key number the zone is played as; instrument level only, 0 to 127 | num=46 min=0 max=127 def=-1 inst_only=1 nonrt=1 |  |
+sf2.gen.velocity | player |  |  | SF2 §8.1.2 | forces the velocity the zone is played as; instrument level only, 0 to 127 | num=47 min=1 max=127 def=-1 inst_only=1 nonrt=1 |  |
+sf2.gen.initialAttenuation | player |  |  | SF2 §8.1.2 | attenuation below full scale in centibels, 0 plays at full scale | num=48 min=0 max=1440 def=0 |  |
+sf2.gen.reserved2 | reader |  | recommended | SF2 §8.1.2 | reserved number 49, ignored when met | num=49 |  |
+sf2.gen.endloopAddrsCoarseOffset | player |  |  | SF2 §8.1.2 | loop end offset in steps of 32768 points, added to the fine loop end offset | num=50 def=0 inst_only=1 |  |
+sf2.gen.coarseTune | player |  | recommended | SF2 §8.1.2 | pitch offset in semitones, positive raises pitch | num=51 min=-120 max=120 def=0 |  |
+sf2.gen.fineTune | player |  | recommended | SF2 §8.1.2 | pitch offset in cents, added to the coarse tuning | num=52 min=-99 max=99 def=0 |  |
+sf2.gen.sampleID | reader |  | required | SF2 §8.1.2 | terminal generator of an instrument zone, an index into the sample header list; only valid in instrument zones | num=53 |  |
+sf2.gen.sampleModes | player |  | recommended | SF2 §8.1.2 | loop flags: the two low bits choose no loop, continuous loop, no loop again or loop while the key is down | num=54 def=0 inst_only=1 nonrt=1 |  |
+sf2.gen.reserved3 | reader |  | recommended | SF2 §8.1.2 | reserved number 55, ignored when met | num=55 |  |
+sf2.gen.scaleTuning | player |  |  | SF2 §8.1.2 | how far key number moves pitch in cents per key; 100 is the tempered scale and 0 removes key tracking | num=56 min=0 max=1200 def=100 nonrt=1 |  |
+sf2.gen.exclusiveClass | player |  | recommended | SF2 §8.1.2 | nonzero value makes a new note quickly end other sounding notes of the same class within the preset | num=57 min=1 max=127 def=0 inst_only=1 nonrt=1 |  |
+sf2.gen.overridingRootKey | player |  |  | SF2 §8.1.2 | key at which the sample plays at its own rate, replacing the header's original key when 0 to 127 | num=58 min=0 max=127 def=-1 inst_only=1 nonrt=1 |  |
+sf2.gen.unused5 | reader |  | recommended | SF2 §8.1.2 | unused number 59, ignored when met | num=59 |  |
+sf2.gen.endOper | reader |  | recommended | SF2 §8.1.2 | end-of-list marker number 60, ignored when met | num=60 |  |
+sf2.genrule.kinds | reader |  |  | SF2 §8.1.1 | generators are of five kinds: index, range, substitution, sample and value; modulator destinations are only the value generators |  |  |
+sf2.genrule.number-table | reader |  |  | SF2 §8.1.2 | the generator operator numbers 0 to 60 read as the generators of the table, in that order, and an operator past 60 is unknown |  |  |
+sf2.genrule.unused.ignored | reader |  | recommended | SF2 §8.1.2 | the generator numbers that are unused or reserved, and endOper, are ignored when found at either level |  |  |
+sf2.genrule.range.key-first | player |  | required | SF2 §8.1.2 | a key range, when present, is the first generator of its zone |  |  |
+sf2.genrule.range.vel-after-key | player |  | required | SF2 §8.1.2 | a velocity range, when present, is preceded only by a key range |  |  |
+sf2.genrule.range.preset-intersects | player |  |  | SF2 §9.4 | a range generator at the preset level does not add to the instrument's: it filters the instrument's ranges as an intersection |  |  |
+sf2.genrule.substitution-sample.preset-illegal | player |  |  | SF2 §9.4 | substitution and sample generators have no place in a preset zone, and instrument is the one index generator a preset zone may hold |  |  |
+sf2.genrule.preset-adds-to-instrument | player |  |  | SF2 §9.4 | a preset-level value generator is added to the same generator in the instrument |  |  |
+sf2.genrule.preset-global-adds | player |  |  | SF2 §9.4 | a value generator of a global preset zone is added to the default or instrument value of that generator, or to the parameter when neither exists |  |  |
+sf2.genrule.preset-local-replaces-global | player |  |  | SF2 §9.4 | a local preset zone's generator replaces the identical one of the global preset zone and its effect then adds into every zone of the instrument |  |  |
+sf2.genrule.instrument-global-replaces-default | player |  |  | SF2 §9.4 | a global instrument zone's generator takes the place of the default for the same operator |  |  |
+sf2.genrule.instrument-local-replaces-global | player |  |  | SF2 §9.4 | a local instrument zone's generator takes the place of the global zone's or the default for the same operator |  |  |
+sf2.genrule.identical | player |  |  | SF2 §9.4 | two generators are identical when they have the same operator |  |  |
+sf2.genrule.instrument-absolute-preset-relative | player |  |  | SF2 §8.5 | instrument level generators give actual values used instead of the default, and preset level generators are added to what the instrument zones hold |  |  |
+sf2.genrule.sample-address.coarse-adds | player |  |  | SF2 §8.1.2 | each coarse address offset, in steps of 32768 points, adds to its fine offset |  |  |
+sf2.genrule.time.most-negative | player |  |  | SF2 §8.1.2 | the most negative timecent value, -32768, means no delay, no hold or instant attack |  |  |
+sf2.genrule.keynum-velocity.instrument-only | player |  |  | SF2 §8.1.2 | keynum and velocity may appear only at the instrument level and take values 0 to 127 |  |  |
+sf2.genrule.exclusive-class.scope | player |  |  | SF2 §8.1.2 | an exclusive class reaches every instrument zone of the same preset |  |  |
+sf2.genrule.exclusive-class.instrument-only | player |  |  | SF2 §8.1.2 | exclusiveClass may appear only at the instrument level |  |  |
+sf2.genrule.sample-modes.instrument-only | player |  |  | SF2 §8.1.2 | sampleModes may appear only in instrument zones and not in a global one |  |  |
+sf2.genrule.sample-modes.unused-value | player |  |  | SF2 §8.1.2 | a loop-type value of 2 in sampleModes is unused and reads as no loop |  |  |
+sf2.genrule.root-key.default | player |  |  | SF2 §8.1.2 | overridingRootKey absent or -1 uses the sample header's original key |  |  |
+sf2.genrule.summary.useful-range | player |  |  | SF2 §8.1.3 | each generator has a useful range given in the summary table |  |  |
+sf2.genrule.summary.non-realtime | player |  |  | SF2 §8.1.3 | the generators the table marks as non-real-time are fixed for the note and not driven by real-time controllers |  |  |
+#
+# ---- modulators (sections 8.2 to 8.4, 9.5)
+sf2.mod.src.noController | player |  | recommended | SF2 §8.2.1 | general-palette source: no controller: reads as the constant 1 | index=0 |  |
+sf2.mod.src.noteOnVelocity | player |  |  | SF2 §8.2.1 | general-palette source: the velocity of the note-on | index=2 |  |
+sf2.mod.src.noteOnKeyNumber | player |  |  | SF2 §8.2.1 | general-palette source: the key number of the note-on | index=3 |  |
+sf2.mod.src.polyPressure | player |  |  | SF2 §8.2.1 | general-palette source: polyphonic key pressure | index=10 |  |
+sf2.mod.src.channelPressure | player |  |  | SF2 §8.2.1 | general-palette source: channel pressure | index=13 |  |
+sf2.mod.src.pitchWheel | player |  |  | SF2 §8.2.1 | general-palette source: the pitch wheel | index=14 |  |
+sf2.mod.src.pitchWheelSensitivity | player |  |  | SF2 §8.2.1 | general-palette source: the pitch wheel sensitivity set by RPN 0 | index=16 |  |
+sf2.mod.src.link | player |  |  | SF2 §8.2.1 | general-palette source: the output of another modulator; not allowed as an amount source | index=127 |  |
+sf2.mod.srctype.linear | player |  |  | SF2 §8.2.4 | source type value: moves in a straight line | value=0 |  |
+sf2.mod.srctype.concave | player |  |  | SF2 §8.2.4 | source type value: follows the concave curve | value=1 |  |
+sf2.mod.srctype.convex | player |  |  | SF2 §8.2.4 | source type value: follows the concave curve mirrored | value=2 |  |
+sf2.mod.srctype.switch | player |  |  | SF2 §8.2.4 | source type value: jumps from minimum to maximum at the middle of the range | value=3 |  |
+sf2.mod.transform.linear | player |  |  | SF2 §8.3 | transform value 0: the output passes straight to the destination | value=0 |  |
+sf2.mod.transform.absoluteValue | player |  |  | SF2 §8.3 | transform value 2: the output is the magnitude of the input | value=2 |  |
+sf2.mod.source.palette | reader |  |  | SF2 §8.2 | a modulator source is a 16-bit word: an index in the low 7 bits, a controller-palette flag, a direction bit, a polarity bit and a type in the high bits |  |  |
+sf2.mod.source.general-palette.reserved | reader |  | recommended | SF2 §8.2.1 | a general-palette index that is not listed is reserved and the whole modulator is ignored |  |  |
+sf2.mod.source.midi-palette | player |  |  | SF2 §8.2.1 | with the palette flag set the index is one of the 128 MIDI continuous controllers |  |  |
+sf2.mod.source.midi-palette.illegal-index | reader |  | recommended | SF2 §8.2.1 | controller indices 0, 6, 32, 38, 98 to 101 and 120 to 127 are illegal in the MIDI palette and the whole modulator is ignored |  |  |
+sf2.mod.source.midi-palette.lsb-reserved | reader |  | recommended | SF2 §8.2.1 | controller indices 33 to 63 are reserved for LSB contributions and the whole modulator is ignored |  |  |
+sf2.mod.source.no-controller.is-one | player |  | recommended | SF2 §8.2.1 | the no-controller source behaves as the constant 1 and is not a way to switch a modulator off |  |  |
+sf2.mod.source.link.amount.unsupported | reader |  |  | SF2 §8.2.1 | link may not be the amount source of a modulator |  |  |
+sf2.mod.source.direction | player |  | recommended | SF2 §8.2.2 | bit 8 set reverses a source so the maximum input gives the minimum output |  |  |
+sf2.mod.source.polarity.unipolar | player |  | recommended | SF2 §8.2.3 | with the polarity bit clear a source maps to 0 to 1 |  |  |
+sf2.mod.source.polarity.bipolar | player |  | recommended | SF2 §8.2.3 | with the polarity bit set a source maps to -1 to 1 |  |  |
+sf2.mod.source.type.reserved-bits | reader |  | recommended | SF2 §8.2.4 | a source with any of the reserved high type bits set has its modulator ignored |  |  |
+sf2.mod.curve.concave | player |  |  | SF2 §8.2.4 | the concave type follows a logarithmic curve from minimum to maximum, in the direction and polarity chosen by the D and P bits |  |  |
+sf2.mod.curve.convex | player |  |  | SF2 §8.2.4 | the convex type is the concave curve with its start and end reversed |  |  |
+sf2.mod.curve.switch | player |  |  | SF2 §8.2.4 | the switch type outputs the minimum up to half the input range and the maximum above it |  |  |
+sf2.mod.curve.linear | player |  |  | SF2 §8.2.4 | the linear type moves in a straight line between minimum and maximum |  |  |
+sf2.mod.output.absolute | player |  |  | SF2 §8.3 | the absolute-value transform outputs the magnitude of its input |  |  |
+sf2.mod.output.linear | player |  |  | SF2 §8.3 | the linear transform passes its input unchanged to the destination's sum |  |  |
+sf2.mod.source-mapping.midi7 | player |  |  | SF2 §9.5.3 | a 7-bit controller maps 0 to 0 (unipolar) or -1 (bipolar) and 127 to 127/128 in both |  |  |
+sf2.mod.source-mapping.midi14 | player |  |  | SF2 §9.5.3 | a 14-bit controller maps 0 to 0 (unipolar) or -1 (bipolar) and 8191 to 8191/8192 in both |  |  |
+sf2.mod.model.equation | player |  |  | SF2 §9.5.1 | a modulator adds Transform(amount times the mapped primary source times the mapped secondary source) to its destination |  |  |
+sf2.mod.model.transform-unbounded | player |  |  | SF2 §9.5.1 | the transform knows no minimum or maximum, and its output adds to the destination's summing node |  |  |
+sf2.mod.model.destination-sum | player |  |  | SF2 §9.5.1 | a destination's value is its instrument-level generator value plus the output of every modulator aimed at it, preset modulators included |  |  |
+sf2.mod.model.unlimited | player |  |  | SF2 §9.5.1 | bar the file's size limits there is no limit on how many modulators there are, where they sit or how many aim at one destination |  |  |
+sf2.mod.model.identical | player |  |  | SF2 §9.5.1 | two modulators match when they agree on where they read from, where they write to, the amount control and the transform |  |  |
+sf2.mod.model.add-identical | player |  |  | SF2 §9.5.1 | adding identical modulators is the same as one modulator with the summed amount; modulators that are not identical are never summed into one |  |  |
+sf2.mod.model.global-instrument-replaces-default | player |  |  | SF2 §9.5.1 | a global instrument zone's modulator takes the place of the matching default modulator |  |  |
+sf2.mod.model.global-instrument-different-adds | player |  |  | SF2 §9.5.1 | a global instrument zone's modulator aimed at the same destination with a different source or transform adds to it |  |  |
+sf2.mod.model.local-instrument-replaces | player |  |  | SF2 §9.5.1 | a local instrument zone's modulator takes the place of the matching default or global-zone one |  |  |
+sf2.mod.model.local-instrument-different-adds | player |  |  | SF2 §9.5.1 | a local instrument zone's modulator that does not match adds to the destination |  |  |
+sf2.mod.model.preset-adds-identical | player |  |  | SF2 §9.5.1 | a preset modulator adds to the identical instrument modulator and otherwise adds its own effect to the destination |  |  |
+sf2.mod.model.preset-global-adds | player |  |  | SF2 §9.5.1 | a modulator of a global preset zone adds to the identical default or instrument one, or to the destination when none is identical |  |  |
+sf2.mod.model.preset-local-replaces-global | player |  |  | SF2 §9.5.1 | a local preset zone's modulator replaces the identical one of the global preset zone, and its effect then adds into every zone of the instrument |  |  |
+sf2.mod.model.zone-ranges | player |  |  | SF2 §9.5.1 | a zone's modulators are active over the key and velocity ranges of the generator list of the same zone |  |  |
+sf2.mod.model.units | player |  |  | SF2 §9.5.1 | an amount is in the units of its destination, which are perceptually additive; new generators must have such units too |  |  |
+sf2.mod.model.midi-translated | player |  |  | SF2 §9.5.1 | MIDI controller values are translated to the controller model, not mapped straight onto synthesis parameters |  |  |
+sf2.mod.link.chain | player |  |  | SF2 §9.5.4 | a modulator whose destination is a link feeds the source of another modulator in the same zone, and a chain may be longer than two |  |  |
+sf2.mod.link.summing | player |  |  | SF2 §9.5.4 | several modulators may link into one, whose source is the link value, and list order does not matter |  |  |
+sf2.mod.link.circular.ignored | reader |  | recommended | SF2 §9.5.4 | a circular link is illegal and every modulator in it is ignored |  |  |
+sf2.mod.midi-functions.not-sources | player |  |  | SF2 §9.2 | MIDI commands whose response MIDI itself defines may not be used as modulator sources |  |  |
+sf2.mod.default.1 | player |  |  | SF2 §8.4.1 | note-on velocity to initial attenuation: concave, negative unipolar, 960 centibels | src=0x0502 amtsrc=0x0000 type=1 p=0 d=1 cc=0 index=2 amount=960 transform=0 |  |
+sf2.mod.default.2 | player |  | permitted | SF2 §8.4.2 | note-on velocity to filter cutoff: linear, negative unipolar, -2400 cents | src=0x0102 amtsrc=0x0000 type=0 p=0 d=1 cc=0 index=2 amount=-2400 transform=0 |  |
+sf2.mod.default.3 | player |  |  | SF2 §8.4.3 | channel pressure drives the vibrato depth: linear unipolar, 50 cents at full excursion | src=0x000d amtsrc=0x0000 type=0 p=0 d=0 cc=0 index=13 amount=50 transform=0 |  |
+sf2.mod.default.4 | player |  | permitted | SF2 §8.4.4 | controller 1 drives the vibrato depth: linear unipolar, 50 cents | src=0x0081 amtsrc=0x0000 type=0 p=0 d=0 cc=1 index=1 amount=50 transform=0 |  |
+sf2.mod.default.5 | player |  |  | SF2 §8.4.5 | controller 7 to initial attenuation: concave, negative unipolar, 960 centibels | src=0x0582 amtsrc=0x0000 type=1 p=0 d=1 cc=1 index=7 amount=960 transform=0 |  |
+sf2.mod.default.6 | player |  |  | SF2 §8.4.6 | controller 10 to pan: linear bipolar, 1000 tenths of a percent (the spec's destination line says attenuation but the title and the sense say pan) | src=0x028a amtsrc=0x0000 type=0 p=1 d=0 cc=1 index=10 amount=1000 transform=0 |  |
+sf2.mod.default.7 | player |  |  | SF2 §8.4.7 | controller 11 to initial attenuation: concave, negative unipolar, 960 centibels | src=0x058b amtsrc=0x0000 type=1 p=0 d=1 cc=1 index=11 amount=960 transform=0 |  |
+sf2.mod.default.8 | player |  |  | SF2 §8.4.8 | controller 91 to the reverb send: linear unipolar, 200 tenths of a percent | src=0x00db amtsrc=0x0000 type=0 p=0 d=0 cc=1 index=91 amount=200 transform=0 |  |
+sf2.mod.default.9 | player |  |  | SF2 §8.4.9 | controller 93 to the chorus send: linear unipolar, 200 tenths of a percent | src=0x00dd amtsrc=0x0000 type=0 p=0 d=0 cc=1 index=93 amount=200 transform=0 |  |
+sf2.mod.default.10 | player |  |  | SF2 §8.4.10 | pitch wheel to initial pitch: linear bipolar, 12700 cents scaled by the wheel sensitivity as amount source | src=0x020e amtsrc=0x0010 type=0 p=1 d=0 cc=0 index=14 amount=12700 transform=0 |  |
+sf2.mod.defaults.instrument-level | player |  |  | SF2 §8.4 | the default modulators are in force at the instrument level; at the preset level none is, so no extra control exists there |  |  |
+sf2.mod.defaults.supersede | player |  |  | SF2 §8.4 | a default modulator is implicit and is switched off or changed only by an identical modulator at a level of the hierarchy |  |  |
+sf2.mod.defaults.velocity-filter.no-attack-condition | player |  |  | SF2 §8.4.2 | the velocity to filter cutoff default applies whatever the volume envelope attack time is |  |  |
+sf2.mod.defaults.pitch-wheel.sensitivity-scaled | player |  |  | SF2 §8.4.10 | the pitch wheel modulator is scaled by the wheel sensitivity as its amount source, 12700 cents at the largest |  |  |
+#
+# ---- synthesis model (section 9.1)
+sf2.synth.pitch.sources | player |  |  | SF2 §9.1.1 | pitch follows from the sample's rate and root key, three tuning offsets (coarse, fine, header correction), the key number as played and the scale tuning |  |  |
+sf2.synth.pitch.units | player |  |  | SF2 §9.1.1 | all pitch modulation is in octaves, semitones and cents, never in hertz |  |  |
+sf2.synth.pitch.shift-limit | player |  |  | SF2 §9.1.1 | upward pitch shift is limited in practice, to typically at least two octaves |  |  |
+sf2.synth.pitch.root-key | player |  |  | SF2 §9.1.1 | a note at the root key plays the sample at its own rate |  |  |
+sf2.synth.pitch.scale-tuning | player |  |  | SF2 §8.1.2 | scaleTuning sets cents per key; 0 removes key tracking and 100 is the tempered scale |  |  |
+sf2.synth.loop.unlooped | player |  |  | SF2 §9.1.2 | a sound flagged as unlooped ignores its loop points and plays to the end point |  |  |
+sf2.synth.loop.continuous | player |  |  | SF2 §9.1.2 | a continuously looped sound plays through the loop and repeats it until it is inaudible |  |  |
+sf2.synth.loop.until-release | player |  |  | SF2 §9.1.2 | a loop-while-key-down sound loops until key release, then plays on through the loop end to the sample end |  |  |
+sf2.synth.filter.shape | player |  |  | SF2 §9.1.3 | the filter is an idealised low-pass: flat up to the cutoff and falling above it (the prose gives 6 dB per octave and the figure 12 dB per octave, and a second-order filter is the one the generator text describes) |  |  |
+sf2.synth.filter.resonance.peak | player |  |  | SF2 §9.1.3 | resonance is a peak at the cutoff, its height measured against the DC gain |  |  |
+sf2.synth.filter.resonance.dc-gain | player |  |  | SF2 §9.1.3 | the DC gain falls below the zero-resonance DC gain by half the resonance value, so the peak stands half the value above that gain |  |  |
+sf2.synth.filter.cutoff-units | player |  |  | SF2 §9.1.3 | cutoff modulation is in octaves, semitones and cents |  |  |
+sf2.synth.filter.bypass | player |  |  | SF2 §8.1.2 | a cutoff above 20 kHz with zero resonance leaves the signal unfiltered |  |  |
+sf2.synth.filter.q.nonpositive | player |  |  | SF2 §8.1.2 | a resonance of zero or less is not resonant, and at a cutoff above 20 kHz the response is flat at unity |  |  |
+sf2.synth.gain.stage | player |  |  | SF2 §9.1.4 | the final gain is a multiplier set by an initial gain in dB, added to the volume envelope and other modulation, always in dB |  |  |
+sf2.synth.sends.pan | player |  |  | SF2 §9.1.5 | pan places the dry signal in the stereo field as a percentage left or right |  |  |
+sf2.synth.sends.effects | player |  |  | SF2 §9.1.5 | reverb and chorus sends are fractions of the signal amplitude from 0% to 100% |  |  |
+sf2.synth.sends.dry-unaffected | player |  |  | SF2 §8.1.2 | the amounts sent to reverb and chorus do not change the dry level |  |  |
+sf2.synth.sends.clamp | player |  |  | SF2 §8.1.2 | a send of 0% or less sends nothing and 100% or more sends at full level |  |  |
+sf2.synth.pan.range | player |  |  | SF2 §8.1.2 | a pan of -50% or less is entirely left, +50% or more entirely right and 0 is centred |  |  |
+sf2.synth.pan.example | player |  |  | SF2 §8.1.2 | a pan of -250 puts 75% of full level in the left output and 25% in the right |  |  |
+sf2.synth.lfo.two | player |  |  | SF2 §9.1.6 | there are two LFOs: the vibrato LFO modulates only pitch and the modulation LFO modulates pitch, cutoff and amplitude |  |  |
+sf2.synth.lfo.shape | player |  |  | SF2 §9.1.6 | an LFO stays at zero for its delay and then ramps as a triangle to +1, down to -1 and up again |  |  |
+sf2.synth.lfo.depth | player |  |  | SF2 §9.1.6 | a depth is the full-scale positive excursion, in cents for pitch and cutoff and in dB for amplitude |  |  |
+sf2.synth.lfo.frequency | player |  |  | SF2 §8.1.2 | an LFO frequency is in absolute cents with zero at 8.176 Hz, so -11610 is 10 mHz |  |  |
+sf2.synth.lfo.delay-example | player |  |  | SF2 §8.1.2 | an LFO or envelope delay of 0 is one second and a delay of 10 ms is -7973 timecents |  |  |
+sf2.synth.env.six-phases | player |  |  | SF2 §9.1.7 | an envelope has six phases: delay, attack, hold, decay, sustain and release |  |  |
+sf2.synth.env.delay | player |  |  | SF2 §9.1.7 | an envelope sits at zero from key-on through its delay |  |  |
+sf2.synth.env.attack-convex | player |  |  | SF2 §9.1.7 | the attack rises in a convex curve to one: linear in amplitude for the volume envelope |  |  |
+sf2.synth.env.hold | player |  |  | SF2 §9.1.7 | the envelope stays at one through the hold phase |  |  |
+sf2.synth.env.decay-linear | player |  |  | SF2 §9.1.7 | the decay falls linearly to the sustain level; the volume envelope falls at a constant dB per unit time |  |  |
+sf2.synth.env.decay-time | player |  |  | SF2 §8.1.2 | the decay time is that of a full-scale change; with a sustain below full level the decay takes the matching fraction of it |  |  |
+sf2.synth.env.sustain-zero | player |  |  | SF2 §8.1.2 | a sustain level of full scale means no decay phase whatever the decay time |  |  |
+sf2.synth.env.release | player |  |  | SF2 §9.1.7 | on key-off the envelope at once starts a linear ramp from its current value to zero and then stays at zero |  |  |
+sf2.synth.env.release-time | player |  |  | SF2 §8.1.2 | the release time is that of a full-scale fall; from full level the volume envelope reaches 100 dB of attenuation in it |  |  |
+sf2.synth.env.volume-db | player |  |  | SF2 §9.1.7 | the volume envelope works in dB with the attack peak at full scale scaled by the initial attenuation, and zero is zero gain |  |  |
+sf2.synth.env.volume-floor | player |  |  | SF2 §9.1.7 | at 96 dB of attenuation the gain may jump to zero |  |  |
+sf2.synth.env.modulation | player |  |  | SF2 §9.1.7 | the modulation envelope can drive pitch and cutoff, its depth being a cents figure reached at the attack peak |  |  |
+sf2.synth.env.keynum-tracking | player |  |  | SF2 §8.1.2 | the key number to hold and decay generators change the time by their value in timecents per key from key 60, and 100 makes it halve each octave up |  |  |
+sf2.synth.env.keynum-example | player |  |  | SF2 §8.1.2 | a hold of -7973 with a key-number value of 50 gives 20 ms at key 36 |  |  |
+sf2.synth.env.sustain-percent | player |  |  | SF2 §8.1.2 | the modulation envelope sustain is a decrease from full scale in 0.1%, with values below 0 read as 0 and above 1000 as 1000 |  |  |
+sf2.synth.env.sustain-cb | player |  |  | SF2 §8.1.2 | the volume envelope sustain is attenuation in centibels, values below 0 read as 0 and 1000 is conventionally full attenuation |  |  |
+sf2.synth.modulation-summary | player |  |  | SF2 §9.1.8 | the modulation engine connects the modulation envelope to pitch and cutoff, the vibrato LFO to pitch, the modulation LFO to pitch, cutoff and volume and the volume envelope to volume |  |  |
+#
+# ---- MIDI functions (section 9.2)
+sf2.midi.cc0.bank-select | player |  |  | SF2 §9.2 | bank select sets the bank that the following program change picks the program from |  |  |
+sf2.midi.cc6-38.data-entry | player |  | recommended | SF2 §9.2 | data entry MSB and LSB go to the RPN or NRPN mechanism by the current data entry mode |  |  |
+sf2.midi.cc32.bank-lsb | player |  | permitted | SF2 §9.2 | bank select LSB may combine with the MSB for 16384 banks |  |  |
+sf2.midi.cc64.sustain-active | player |  |  | SF2 §9.2 | sustain is active at 64 and above |  |  |
+sf2.midi.cc64.sustain-holds | player |  | recommended | SF2 §9.2 | while sustain is active key-off commands are stored and run when it goes inactive |  |  |
+sf2.midi.soft-pedal | player |  |  | SF2 §9.2 | the soft pedal is active at 64 and above and makes new notes sound soft, mostly through attenuation and cutoff |  |  |
+sf2.midi.sostenuto.holds | player |  |  | SF2 §9.2 | sostenuto active at 64 and above holds the notes then in key-on state until it goes inactive, and other notes behave normally |  |  |
+sf2.midi.sostenuto.sustain-independent | player |  |  | SF2 §9.2 | notes held by sostenuto stay held when sustain goes on and off |  |  |
+sf2.midi.soft-sostenuto.numbering | player |  |  | SF2 §9.2 | the list names controller 66 as the soft pedal and 67 as the sostenuto, the reverse of MIDI's own numbering |  |  |
+sf2.midi.cc98-101.nrpn-rpn | player |  | recommended | SF2 §9.2 | NRPN and RPN select messages go to their mechanisms, MSB first putting the synthesizer in that data entry mode |  |  |
+sf2.midi.cc120.all-sound-off | player |  |  | SF2 §9.2 | all sound off with any data value shuts every key-on note, skipping its release, whatever sustain or sostenuto does |  |  |
+sf2.midi.cc121.reset-controllers | player |  |  | SF2 §9.2 | reset all controllers returns the continuous controllers to their power-on state |  |  |
+sf2.midi.cc123.all-notes-off | player |  |  | SF2 §9.2 | all notes off with any data value sends every key-on note to release, subject to sustain and sostenuto |  |  |
+#
+# ---- parameter units (section 9.3)
+sf2.units.absolute-sample-points | player |  |  | SF2 §9.3 | absolute sample points index 16-bit words of the sample data, the first being 0 |  |  |
+sf2.units.relative-sample-points | player |  |  | SF2 §9.3 | relative sample points count words from an absolute position, negative toward the start |  |  |
+sf2.units.semitone | player |  |  | SF2 §9.3 | a semitone is a twelfth of an octave and absolute semitone 69 is 440 Hz |  |  |
+sf2.units.cent.absolute | player |  |  | SF2 §9.3 | an absolute cent is based on MIDI key times 100, so 6900 is 440 Hz, and values below 0 or above 12700 are allowed |  |  |
+sf2.units.cent.relative | player |  |  | SF2 §9.3 | a relative cent is a ratio of the 1200th root of two |  |  |
+sf2.units.centibel | player |  |  | SF2 §9.3 | a centibel is 0.1 dB, which as an amplitude ratio is the 200th root of ten |  |  |
+sf2.units.timecent.absolute | player |  |  | SF2 §9.3 | an absolute timecent is based on one second at zero, with 1200 doubling the time |  |  |
+sf2.units.timecent.relative | player |  |  | SF2 §9.3 | a relative timecent is a ratio of the 1200th root of two in time |  |  |
+sf2.units.percent.absolute | player |  |  | SF2 §9.3 | absolute percent is in 0.1% units, so 0 is 0% and 1000 is 100% |  |  |
+sf2.units.percent.relative | player |  |  | SF2 §9.3 | relative percent is in 0.1% units, with a gain below zero taken as zero and above 100% as 100% |  |  |
+#
+# ---- SoundFont NRPN (section 9.6)
+sf2.nrpn.message.four-controllers | player |  |  | SF2 §9.6.1 | an NRPN message is made of controllers 99, 98, 38 and 6 in that order |  |  |
+sf2.nrpn.running-status | player |  |  | SF2 §9.6.1 | an NRPN select byte combines with the most recent value of the other, whatever order they arrived in |  |  |
+sf2.nrpn.select.msb-120 | player |  | required | SF2 §9.6.2 | a synthesizer must respond to NRPN select MSB 120 as the start of a SoundFont NRPN message |  |  |
+sf2.nrpn.select.lsb-generator | player |  | required | SF2 §9.6.2 | a select LSB below 100 names the generator number modulo 100 when the last select MSB was 120 |  |  |
+sf2.nrpn.select.lsb-multiples | player |  | required | SF2 §9.6.2 | LSB values 100, 101 and 102 add a multiple of 100, 1000 or 10000 to the generator selected next |  |  |
+sf2.nrpn.select.lsb-unused | player |  | recommended | SF2 §9.6.2 | LSB values 103 to 127 are unused and ignored |  |  |
+sf2.nrpn.select.setup-only | player |  |  | SF2 §9.6.2 | an LSB of 100 or more is for setup and does not select a generator by itself |  |  |
+sf2.nrpn.select.no-repeat-running-status | player |  |  | SF2 §9.6.2 | running status does not cover repeated multiples, so selecting 251 after 250 needs the whole sequence again |  |  |
+sf2.nrpn.select.unrecognised | player |  |  | SF2 §9.6.2 | an LSB selecting a generator that is unknown, not real-time or not controllable without artifacts is ignored and the SoundFont NRPN state stays |  |  |
+sf2.nrpn.data-entry.applies-when | player |  |  | SF2 §9.6.3 | data entry applies only if the latest select was a SoundFont NRPN and no RPN select came after it |  |  |
+sf2.nrpn.data-entry.additive | player |  |  | SF2 §9.6.3 | data entry adds to a generator exactly as a modulator does, applied when the MSB arrives with the latest LSB |  |  |
+sf2.nrpn.data-entry.centre | player |  |  | SF2 §9.6.3 | data entry is a 14-bit value with its zero offset at 0x2000, which adds nothing |  |  |
+sf2.nrpn.data-entry.range | player |  |  | SF2 §9.6.3 | data entry spans the useful range of the generator, halved until it fits 8192 units, and a smaller range is left unchanged |  |  |
+#
+# ---- error handling (section 10)
+sf2.error.structural.rejected | reader |  | recommended | SF2 §10.1 | a structural error, such as a wrong length, a pointer out of range or a missing required chunk with no repair, means the file is rejected at load time |  |  |
+sf2.error.unknown-enumerator.ignored | reader |  |  | SF2 §10.3 | an unknown generator, source or transform makes only its generator or modulator ignored |  |  |
+sf2.error.illegal-value.default | player |  | recommended | SF2 §10.4 | an illegal parameter value found at run time is replaced by the default when the parameter is required, and the generator or modulator is ignored when it is optional |  |  |
+sf2.error.out-of-range.nearest | player |  |  | SF2 §10.5 | an out-of-range value, present in a generator or produced by summing the levels, is replaced by the nearest realisable value |  |  |
+sf2.error.missing-required.ignored | player |  |  | SF2 §10.6 | at run time an instrument or zone missing a required parameter is ignored, and a key-on with no sound left is ignored |  |  |
+sf2.error.illegal-enumerator.ignored | player |  |  | SF2 §10.7 | an enumerator that is illegal in its context is ignored at run time |  |  |
+#
+# ---- Silicon SoundFonts (section 11)
+sf2.silicon.rom-header | rom-loader |  |  | SF2 §11.2 | the Silicon SoundFont ROM header (sizes, checksums, a test sine wave) is read by the loader of a ROM image and has no part in reading or playing an sf2 file |  | other-side | SF2 2.04 section 11.1: the ROM image format belongs to firmware that loads a burned bank

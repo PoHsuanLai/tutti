@@ -575,6 +575,7 @@ mod tests {
     /// At the cutoff the 2-pole response is `q` (RBJ: `|H(w0)| = Q`), and the
     /// resonant peak is the spec's initialFilterQ above DC, within the 3% the
     /// fit promises.
+    /// Spec: sf2.synth.filter.resonance.peak, sf2.gen.initialFilterQ
     #[test]
     fn the_gain_at_the_cutoff_is_q_and_the_peak_is_the_spec_peak_height() {
         for db in [0.0f32, 6.0, 12.0, 24.0] {
@@ -601,6 +602,7 @@ mod tests {
 
     /// Above the cutoff the response follows the closed form and falls at
     /// 12 dB an octave (a 2-pole low-pass).
+    /// Spec: sf2.synth.filter.shape, sf2.gen.initialFilterFc
     #[test]
     fn the_stopband_follows_the_closed_form_at_twelve_db_per_octave() {
         let resonance = SoundFontMath::decibels_to_linear(6.0);
@@ -618,6 +620,7 @@ mod tests {
     }
 
     /// A cutoff at the solve ceiling or above is a bypass.
+    /// Spec: sf2.synth.filter.bypass, sf2.gen.initialFilterFc
     #[test]
     fn a_cutoff_near_nyquist_is_no_filter() {
         assert!(low_pass(0.4 * RATE.get() as f32, 1.0, RATE).is_some());

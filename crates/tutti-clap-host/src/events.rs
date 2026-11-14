@@ -96,13 +96,6 @@ impl ParamBounds {
         }
     }
 
-    /// This parameter, read-only (`CLAP_PARAM_IS_READONLY`).
-    #[must_use]
-    pub const fn with_read_only(mut self) -> Self {
-        self.read_only = true;
-        self
-    }
-
     /// The entry for `id` in a table sorted by id.
     pub(crate) fn find(table: &[Self], id: u32) -> Option<&Self> {
         table
@@ -927,21 +920,12 @@ impl InputEventList {
         PerNoteState::new(ports, PitchBendSensitivity::MPE_MEMBER_DEFAULT.semitones())
     }
 
-    /// Sets the note dialect of the plugin's input note port: `true` sends
-    /// notes as `clap_event_midi` (a port that takes MIDI but not CLAP note
-    /// events), `false` as CLAP note events. While set, a MIDI event's per-note
-    /// expression is sent as its MIDI 1.0 bytes where it has them (poly
-    /// pressure), and [`add_note_expressions`](Self::add_note_expressions)
-    /// adds nothing. Takes effect for events added after.
-    ///
-    /// This is [`set_note_ports`](Self::set_note_ports) for one port.
-    pub fn set_midi_notes(&mut self, midi_notes: bool) {
-        self.set_note_ports(&[midi_notes]);
-    }
-
     /// Sets the plugin's input note ports, one entry each (at most 16, the
     /// Groups of MIDI 2.0), `true` for a port that takes the MIDI dialect
-    /// only (see [`set_midi_notes`](Self::set_midi_notes)). A UMP Group is
+    /// only: notes go out as `clap_event_midi`, a MIDI event's per-note
+    /// expression is sent as its MIDI 1.0 bytes where it has them (poly
+    /// pressure), and [`add_note_expressions`](Self::add_note_expressions)
+    /// adds nothing for it. A UMP Group is
     /// the note port of its number: Group 0 reaches port 0, Group 1 port 1,
     /// and a Group past the last port is dropped and counted
     /// ([`groups_dropped`](Self::groups_dropped)), never folded onto another
@@ -983,7 +967,7 @@ impl InputEventList {
     }
 
     /// Whether notes to the first input note port go out as `clap_event_midi`:
-    /// see [`set_midi_notes`](Self::set_midi_notes).
+    /// see [`set_note_ports`](Self::set_note_ports).
     pub(crate) fn supports_midi_notes(&self) -> bool {
         self.midi_ports & 1 != 0
     }
@@ -2514,7 +2498,7 @@ mod tests {
         for midi_notes in [false, true] {
             let mut list = InputEventList::new();
             list.reserve(8);
-            list.set_midi_notes(midi_notes);
+            list.set_note_ports(&[midi_notes]);
             for words in [
                 [0x6000_0000u32, 0, 0, 0],
                 [0x7000_0000, 0, 0, 0],
@@ -2607,7 +2591,7 @@ mod tests {
             let mut list = InputEventList::new();
             list.reserve(64);
             list.reserve_sysex();
-            list.set_midi_notes(midi_notes);
+            list.set_note_ports(&[midi_notes]);
             list.add_midi_events(&packets);
             assert!(
                 list.len() >= 10,
@@ -2662,7 +2646,7 @@ mod tests {
     fn staged_midi(words: &[u32], midi_notes: bool) -> Vec<(u32, [u8; 3])> {
         let mut list = InputEventList::new();
         list.reserve(8);
-        list.set_midi_notes(midi_notes);
+        list.set_note_ports(&[midi_notes]);
         list.add_midi(&packet(11, words));
         list.events()
             .iter()
@@ -3883,7 +3867,7 @@ mod tests {
         let off = (at(0), fx::note_off(MidiGroup::FIRST, ch, 60, 0));
 
         let mut list = InputEventList::new();
-        list.set_midi_notes(true);
+        list.set_note_ports(&[true]);
         list.add_midi(&on)
             .add_midi(&mid)
             .add_midi(&quiet)
@@ -3921,7 +3905,7 @@ mod tests {
             value: 0.5,
         }];
         let mut list = InputEventList::new();
-        list.set_midi_notes(true);
+        list.set_note_ports(&[true]);
         list.add_note_expressions(&expr);
         assert!(list.events().is_empty());
     }
@@ -3933,7 +3917,7 @@ mod tests {
         let event = midi1_event(&[0xA3, 60, 90]);
 
         let mut list = InputEventList::new();
-        list.set_midi_notes(true);
+        list.set_note_ports(&[true]);
         list.add_midi(&event);
         assert_eq!(list.events().len(), 1);
         let ClapEvent::Midi(m) = &list.events()[0] else {

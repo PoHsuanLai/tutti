@@ -287,10 +287,10 @@ pub use instance::{
 // the shared `ParameterInfo` via `ClapLoaded::parameter_list`.
 pub use types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioBuffer, AudioBuffer32,
-    AudioBuffer64, AudioPortConfig, AudioPortFlags, AudioPortInfo, ChannelLayout, Color,
-    ContentScale, EditorCapabilities, NoteDialect, NoteDialects, NoteExpressionType, NoteName,
-    NotePortInfo, ParamAutomationState, ParameterChanges, ParameterPoint, ParameterQueue,
-    PluginInfo, StateContext, SurroundChannel, TransportInfo, VoiceInfo, WindowHandle, WireMidi,
+    AudioBuffer64, AudioPortFlags, AudioPortInfo, ChannelLayout, Color, ContentScale,
+    EditorCapabilities, NoteDialect, NoteDialects, NoteExpressionType, NoteName, NotePortInfo,
+    ParamAutomationState, ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo,
+    StateContext, SurroundChannel, TransportInfo, VoiceInfo, WindowHandle, WireMidi,
 };
 pub use types::{ClapNoteExpression, RtNoteExpressions};
 

@@ -336,23 +336,6 @@ impl ClapLoaded {
         })
     }
 
-    /// Consumes and returns the `audio_ports.config_changed` flag.
-    pub fn take_audio_ports_config_changed(&self) -> bool {
-        self.host_state
-            .take(&self.host_state.audio_ports.config_changed)
-    }
-
-    /// Consumes and returns the `notes.names_changed` flag.
-    pub fn take_note_names_changed(&self) -> bool {
-        self.host_state.take(&self.host_state.notes.names_changed)
-    }
-
-    /// Consumes and returns the `notes.voice_info_changed` flag.
-    pub fn take_voice_info_changed(&self) -> bool {
-        self.host_state
-            .take(&self.host_state.notes.voice_info_changed)
-    }
-
     /// Invokes the plugin's `on_main_thread` callback — call when
     /// the plugin raised a [`Request::Callback`](tutti_plugin_types::Request::Callback).
     ///

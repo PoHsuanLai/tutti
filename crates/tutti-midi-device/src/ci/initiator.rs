@@ -20,7 +20,7 @@
 //!   when it has none. That last Reply is the rule for the set being complete
 //!   ([`ProfileAction::ProfilesKnown`]); an address that replied is replaced by its Reply, and
 //!   an address that did not is dropped from the table then. Neither spec gives a time limit,
-//!   so a peer that never sends the final Reply is given up on after [`PROFILE_TIMEOUT`]
+//!   so a peer that never sends the final Reply is given up on after [`PEER_REPLY_TIMEOUT`]
 //!   ([`ProfileAction::InquiryTimedOut`]): the table keeps what it heard, and nothing is
 //!   pruned, since the set is not known to be complete. A NAK of the Inquiry
 //!   ([`ProfileAction::InquiryRefused`]) ends it too: the peer has no Profile Configuration.
@@ -37,7 +37,7 @@
 //!   cannot comply reports the state it kept), on a NAK of that message for that Profile
 //!   (Status `0x04`, Profile not supported on the requested Channel, Group, or Function Block,
 //!   or any other; the NAK's five detail bytes are the Profile Id, §5.11.3), or on
-//!   [`PROFILE_TIMEOUT`]. A Report of another Profile (M2-102 §2.8: a Profile Disabled
+//!   [`PEER_REPLY_TIMEOUT`]. A Report of another Profile (M2-102 §2.8: a Profile Disabled
 //!   Report for the Profile it replaced) is a change and resolves nothing.
 //! - Details ([`details`](ProfileInitiator::details)): the Reply that echoes the Profile
 //!   and Inquiry Target at that address resolves it; so does a NAK or the timeout.
@@ -63,11 +63,10 @@
 //!
 //! # The timeout
 //!
-//! [`PROFILE_TIMEOUT`] is tutti's choice, 3 seconds: M2-101 gives none for Profile
-//! Configuration, and the only wait it states is Discovery's 3 seconds at least (§5.5.5).
+//! An inquiry waits [`PEER_REPLY_TIMEOUT`] for its reply.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use std::vec::Vec;
 
 use super::TimeoutWait;
@@ -77,13 +76,10 @@ use tutti_ump::{MidiChannel, U7};
 
 use super::{
     Ack, CiDeviceId, CiHeader, CiMessage, Decoded, Destination, DetailsData, InquiryTarget, Muid,
-    Nak, ProfileChannels, ProfileId, ProfileLists, ProfileState, SUB_ID2_PROFILE_DETAILS_INQUIRY,
-    SUB_ID2_PROFILE_INQUIRY, SUB_ID2_SET_PROFILE_OFF, SUB_ID2_SET_PROFILE_ON, SpecificData,
+    Nak, PEER_REPLY_TIMEOUT, ProfileChannels, ProfileId, ProfileLists, ProfileState,
+    SUB_ID2_PROFILE_DETAILS_INQUIRY, SUB_ID2_PROFILE_INQUIRY, SUB_ID2_SET_PROFILE_OFF,
+    SUB_ID2_SET_PROFILE_ON, SpecificData,
 };
-
-/// How long a Profile Inquiry, Set Profile On or Off, or Details Inquiry waits for
-/// its answer: 3 seconds. See the module docs: tutti's figure, from §5.5.5.
-pub const PROFILE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Whether the five detail bytes of an ACK or a NAK name `profile` (§5.10.3, §5.11.3), or
 /// are zeroes, which a peer with nothing to name sends.
@@ -212,7 +208,7 @@ pub enum Outcome {
     /// The peer sent a NAK: [`Nak::status_code`] says why ([`Nak::STATUS_PROFILE_NOT_SUPPORTED`]
     /// for a Profile it does not have at that address).
     Refused(Nak),
-    /// [`PROFILE_TIMEOUT`] passed with no answer.
+    /// [`PEER_REPLY_TIMEOUT`] passed with no answer.
     TimedOut,
 }
 
@@ -239,7 +235,7 @@ pub enum ProfileAction {
     /// The final Reply (address `0x7F`) arrived: the table holds every Profile the
     /// peer declared.
     ProfilesKnown,
-    /// [`PROFILE_TIMEOUT`] passed before the final Reply: the table holds what was
+    /// [`PEER_REPLY_TIMEOUT`] passed before the final Reply: the table holds what was
     /// heard.
     InquiryTimedOut,
     /// The peer NAKed the Profile Inquiry.
@@ -449,7 +445,7 @@ impl ProfileInitiator {
     /// is replaced). The table is kept until the final Reply replaces it.
     pub fn inquire(&mut self, now: Instant) -> Vec<ProfileAction> {
         self.inquiry = Some(Inquiry {
-            deadline: now + PROFILE_TIMEOUT,
+            deadline: now + PEER_REPLY_TIMEOUT,
             replied: BTreeSet::new(),
         });
         vec![self.send(CiDeviceId::FunctionBlock, |header, to| {
@@ -792,7 +788,7 @@ impl ProfileInitiator {
         }
         self.pending.push(Pending {
             request,
-            deadline: now + PROFILE_TIMEOUT,
+            deadline: now + PEER_REPLY_TIMEOUT,
         });
         Ok(())
     }

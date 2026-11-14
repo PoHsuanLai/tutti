@@ -74,7 +74,7 @@ fn it_starts_with_a_capabilities_inquiry_to_the_peer_on_the_function_block() {
     assert_eq!(*to, Muid::of(PEER));
     assert_eq!(initiator.peer(), Muid::of(PEER));
     assert_eq!(initiator.features(), None);
-    assert_eq!(initiator.deadline(), Some(now + PROCESS_TIMEOUT));
+    assert_eq!(initiator.deadline(), Some(now + PEER_REPLY_TIMEOUT));
 }
 
 #[test]
@@ -107,12 +107,12 @@ fn the_reply_gives_the_features_and_ends_the_wait() {
 #[test]
 fn a_silent_peer_times_out_the_capabilities_after_the_process_timeout() {
     let (mut initiator, _, now) = start();
-    assert_eq!(PROCESS_TIMEOUT, Duration::from_secs(3));
-    let early = now + PROCESS_TIMEOUT - Duration::from_millis(1);
+    assert_eq!(PEER_REPLY_TIMEOUT, Duration::from_secs(3));
+    let early = now + PEER_REPLY_TIMEOUT - Duration::from_millis(1);
     assert!(initiator.on_timeout(early).is_empty());
-    assert_eq!(initiator.deadline(), Some(now + PROCESS_TIMEOUT));
+    assert_eq!(initiator.deadline(), Some(now + PEER_REPLY_TIMEOUT));
     assert_eq!(
-        initiator.on_timeout(now + PROCESS_TIMEOUT),
+        initiator.on_timeout(now + PEER_REPLY_TIMEOUT),
         [ProcessAction::CapabilitiesTimedOut]
     );
     assert_eq!(initiator.deadline(), None);
@@ -283,20 +283,20 @@ fn a_nak_of_the_capabilities_does_not_end_a_report() {
 fn a_report_waits_for_the_reply_and_the_reply_starts_the_wait_for_the_end() {
     let (mut initiator, now) = known(ProcessFeatures::MIDI_MESSAGE_REPORT);
     initiator.report(function_block(), now).unwrap();
-    assert_eq!(initiator.deadline(), Some(now + PROCESS_TIMEOUT));
+    assert_eq!(initiator.deadline(), Some(now + PEER_REPLY_TIMEOUT));
     // The Reply arrives late in its wait; the End gets a wait of its own.
-    let later = now + PROCESS_TIMEOUT - Duration::from_millis(1);
+    let later = now + PEER_REPLY_TIMEOUT - Duration::from_millis(1);
     initiator.on_message(&begin(everything(CiDeviceId::FunctionBlock)), later);
-    assert_eq!(initiator.deadline(), Some(later + PROCESS_TIMEOUT));
+    assert_eq!(initiator.deadline(), Some(later + PEER_REPLY_TIMEOUT));
     assert_eq!(
-        initiator.on_timeout(later + PROCESS_TIMEOUT),
+        initiator.on_timeout(later + PEER_REPLY_TIMEOUT),
         [ProcessAction::ReportTimedOut]
     );
     assert!(!initiator.is_reporting());
     // A report with no Reply times out in the first wait.
     initiator.report(function_block(), later).unwrap();
     assert_eq!(
-        initiator.on_timeout(later + PROCESS_TIMEOUT),
+        initiator.on_timeout(later + PEER_REPLY_TIMEOUT),
         [ProcessAction::ReportTimedOut]
     );
 }
@@ -316,7 +316,7 @@ fn a_timeout_wait_ack_adds_its_time_to_the_named_transaction() {
     );
     assert_eq!(
         initiator.deadline(),
-        Some(now + PROCESS_TIMEOUT + Duration::from_secs(10))
+        Some(now + PEER_REPLY_TIMEOUT + Duration::from_secs(10))
     );
     initiator.on_message(
         &wait(
@@ -328,7 +328,7 @@ fn a_timeout_wait_ack_adds_its_time_to_the_named_transaction() {
     );
     assert_eq!(
         initiator.deadline(),
-        Some(now + PROCESS_TIMEOUT + Duration::from_secs(10))
+        Some(now + PEER_REPLY_TIMEOUT + Duration::from_secs(10))
     );
 
     let (mut initiator, now) = known(ProcessFeatures::MIDI_MESSAGE_REPORT);
@@ -343,7 +343,7 @@ fn a_timeout_wait_ack_adds_its_time_to_the_named_transaction() {
     );
     assert_eq!(
         initiator.deadline(),
-        Some(now + PROCESS_TIMEOUT + Duration::from_secs(5))
+        Some(now + PEER_REPLY_TIMEOUT + Duration::from_secs(5))
     );
     // On another Device ID, or naming another message, it is not this report's.
     initiator.on_message(
@@ -360,7 +360,7 @@ fn a_timeout_wait_ack_adds_its_time_to_the_named_transaction() {
     );
     assert_eq!(
         initiator.deadline(),
-        Some(now + PROCESS_TIMEOUT + Duration::from_secs(5))
+        Some(now + PEER_REPLY_TIMEOUT + Duration::from_secs(5))
     );
 }
 
@@ -421,7 +421,7 @@ fn asking_again_for_the_capabilities_starts_the_wait_over_and_keeps_the_features
     let later = now + Duration::from_secs(60);
     let actions = initiator.inquire(later);
     assert_eq!(sent(&actions).len(), 1);
-    assert_eq!(initiator.deadline(), Some(later + PROCESS_TIMEOUT));
+    assert_eq!(initiator.deadline(), Some(later + PEER_REPLY_TIMEOUT));
     assert_eq!(
         initiator.features(),
         Some(ProcessFeatures::MIDI_MESSAGE_REPORT)

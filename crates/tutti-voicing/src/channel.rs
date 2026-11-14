@@ -402,7 +402,7 @@ impl ChannelState {
             .min(PORTAMENTO_RATE.len() - 2);
         let ((v0, r0), (v1, r1)) = (PORTAMENTO_RATE[i], PORTAMENTO_RATE[i + 1]);
         let along = ((at - v0) / (v1 - v0)).clamp(0.0, 1.0);
-        (r0.ln() + (r1.ln() - r0.ln()) * along).exp()
+        libm::expf(libm::logf(r0) + (libm::logf(r1) - libm::logf(r0)) * along)
     }
 
     /// How long a glide from key `from` to key `to` takes at the channel's
@@ -459,6 +459,25 @@ mod tests {
             let angle = std::f32::consts::FRAC_PI_4 * (pan_at(cc).get() + 1.0);
             assert!((angle - expected).abs() < 1e-5, "CC 10 = {cc}");
         }
+    }
+
+    /// General MIDI 2 section 3.3.3's figure, read in log: halfway along a
+    /// segment of the curve the rate is the geometric mean of its ends, and a
+    /// glide of `n` keys takes `100 n / rate` ms.
+    #[test]
+    fn the_glide_rate_is_the_geometric_mean_halfway_along_a_segment() {
+        let mut c = ChannelState::new(Semitones(2.0));
+        // CC 5 = 20 is halfway from the curve's (8, 30) to its (32, 8) cent/msec.
+        c.control(CCNumber::PORTAMENTO_TIME, U7::of(20));
+        let expected = (30.0f64 * 8.0).sqrt();
+        assert!((f64::from(c.glide_rate()) - expected).abs() < 1e-4 * expected);
+        let time = c.glide_time(NoteNumber::of(60), NoteNumber::of(72));
+        assert!((time.0 - 1200.0 / expected / 1000.0).abs() < 1e-6);
+        // The curve's own end points: CC 5 = 0 and 127.
+        c.control(CCNumber::PORTAMENTO_TIME, U7::of(0));
+        assert!((c.glide_rate() - 1000.0).abs() < 1e-3);
+        c.control(CCNumber::PORTAMENTO_TIME, U7::of(127));
+        assert!((c.glide_rate() - 0.01).abs() < 1e-6);
     }
 
     /// M1 p.12: a receiver sets its concept of the LSB to zero when an MSB is

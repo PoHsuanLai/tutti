@@ -48,8 +48,8 @@ pub use discovery::{
 };
 pub use endpoint::{CiInstanceId, EndpointInfo, EndpointStatus};
 pub use initiator::{
-    Outcome, PROFILE_TIMEOUT, ProfileAction, ProfileChange, ProfileEntry, ProfileInitiator,
-    ProfileTable, ProfileTarget, Request, RequestError,
+    Outcome, ProfileAction, ProfileChange, ProfileEntry, ProfileInitiator, ProfileTable,
+    ProfileTarget, Request, RequestError,
 };
 pub use pe::{
     ActionError, Arrival, BodyLimit, BufferLimit, CallError, CallId, CanSet, CcIndex, ChangeKind,
@@ -87,9 +87,7 @@ pub use process::{
     SUB_ID2_MESSAGE_REPORT_END, SUB_ID2_MESSAGE_REPORT_INQUIRY, SUB_ID2_MESSAGE_REPORT_REPLY,
     SUB_ID2_PROCESS_CAPABILITIES_INQUIRY, SUB_ID2_PROCESS_CAPABILITIES_REPLY, SystemMessages,
 };
-pub use process_initiator::{
-    PROCESS_TIMEOUT, ProcessAction, ProcessError, ProcessInitiator, ReportRequest,
-};
+pub use process_initiator::{ProcessAction, ProcessError, ProcessInitiator, ReportRequest};
 pub use profile::{
     ChannelsDetail, DetailsData, InquiryTarget, ListTooLong, ManufacturerProfile, ProfileChannels,
     ProfileDataError, ProfileId, ProfileLists, ProfileState, SUB_ID2_PROFILE_ADDED,
@@ -100,7 +98,7 @@ pub use profile::{
 };
 pub use status::{Ack, Nak};
 pub use text::MessageText;
-pub use wait::TimeoutWait;
+pub use wait::{PEER_REPLY_TIMEOUT, TimeoutWait};
 
 /// Universal SysEx non-real-time id, the first byte of every CI message: `0x7E`.
 pub const CI_UNIVERSAL_SYSEX: u8 = 0x7E;

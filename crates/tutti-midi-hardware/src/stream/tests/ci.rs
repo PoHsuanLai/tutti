@@ -1020,7 +1020,7 @@ fn a_ci_peers_product_instance_id_fills_what_the_device_left() {
 
 use crate::{ChannelCount, ListedProfile, ProfileError, ProfilesChange, Whole};
 use tutti_midi_device::{
-    Outcome, PROFILE_TIMEOUT, ProfileChange, ProfileChannels, ProfileId, ProfileLists,
+    Outcome, PEER_REPLY_TIMEOUT, ProfileChange, ProfileChannels, ProfileId, ProfileLists,
     ProfileState, Request, StandardProfile,
 };
 use tutti_ump::MidiChannel;
@@ -1581,7 +1581,7 @@ fn disabling_midi_ci_drops_the_profiles() {
     assert!(wire.session.profiles(&wire.id).is_empty());
 }
 
-/// M2-102 gives an Initiator no time limit; tutti's is [`PROFILE_TIMEOUT`]. A
+/// M2-102 gives an Initiator no time limit; tutti's is [`PEER_REPLY_TIMEOUT`]. A
 /// Set Profile On the peer never answers ends, and is reported, once that long
 /// has passed since it was sent and not before; the table is left as it was.
 #[test]
@@ -1597,7 +1597,7 @@ fn a_set_profile_nothing_answers_times_out_after_the_profile_timeout() {
         .unwrap();
     let sent_at = 200;
     let _ = polled(&mut wire, sent_at);
-    let wait = PROFILE_TIMEOUT.as_millis() as u64;
+    let wait = PEER_REPLY_TIMEOUT.as_millis() as u64;
     let early = polled(&mut wire, sent_at + wait - 1);
     assert!(profile_events(&early).is_empty(), "{early:?}");
     let ended = polled(&mut wire, sent_at + wait);
@@ -1622,14 +1622,14 @@ fn a_set_profile_nothing_answers_times_out_after_the_profile_timeout() {
 }
 
 /// A peer that answers only part of the Profile Inquiry, never the final Reply,
-/// is given up on after [`PROFILE_TIMEOUT`]: it is reported, the table keeps
+/// is given up on after [`PEER_REPLY_TIMEOUT`]: it is reported, the table keeps
 /// what was heard, and it is not known to be whole.
 #[test]
 fn an_inquiry_without_a_final_reply_times_out_keeping_what_was_heard() {
     let (mut wire, ours) = peer_declaring(CiCategories::PROFILE_CONFIGURATION);
     reply_at_address(&wire, ours, channel(0), vec![profile(1)], vec![], 60);
     let _ = polled(&mut wire, 70);
-    let wait = PROFILE_TIMEOUT.as_millis() as u64;
+    let wait = PEER_REPLY_TIMEOUT.as_millis() as u64;
     let ended = polled(&mut wire, 50 + wait);
     assert_eq!(profile_events(&ended), [&ProfilesChange::InquiryTimedOut]);
     let peers = wire.session.profiles(&wire.id);
@@ -1678,8 +1678,8 @@ fn a_channel_count_is_at_least_one_and_fits_fourteen_bits() {
 
 use crate::{ProcessChange, ReportError};
 use tutti_midi_device::{
-    ChannelControllers, DataControl, Nak, NoteData, PROCESS_TIMEOUT, ProcessError, ProcessFeatures,
-    ReportRequest, ReportScope, SUB_ID2_MESSAGE_REPORT_INQUIRY, SystemMessages,
+    ChannelControllers, DataControl, Nak, NoteData, ProcessError, ProcessFeatures, ReportRequest,
+    ReportScope, SUB_ID2_MESSAGE_REPORT_INQUIRY, SystemMessages,
 };
 
 fn process_events(polled: &[Polled]) -> Vec<&ProcessChange> {
@@ -1908,7 +1908,7 @@ fn a_report_nothing_answers_times_out_after_the_process_timeout() {
         .unwrap();
     let sent_at = 200;
     let _ = polled(&mut wire, sent_at);
-    let wait = PROCESS_TIMEOUT.as_millis() as u64;
+    let wait = PEER_REPLY_TIMEOUT.as_millis() as u64;
     let early = polled(&mut wire, sent_at + wait - 1);
     assert!(process_events(&early).is_empty(), "{early:?}");
     let ended = polled(&mut wire, sent_at + wait);

@@ -12,7 +12,9 @@
 //! next block of the same run.
 
 use tutti_graph::{Due, Env, Offset};
-use tutti_types::{At, FRAME_TOLERANCE, LoopRange, Samples, first_frame_at_or_after};
+use tutti_types::{
+    At, FRAME_TOLERANCE, LoopRange, Samples, first_frame_at_or_after, frames_per_beat,
+};
 
 /// An event scheduled at a beat.
 pub(crate) trait Beated {
@@ -70,7 +72,7 @@ impl Walk {
         let t = seg.transport;
         let len = seg.block_len.get();
         let at = |k: usize| Offset::new(Samples(start.index() + k), block.block_len);
-        let Some(fpb) = frames_per_beat(seg).filter(|_| t.playing) else {
+        let Some(fpb) = frames_per_beat(t.tempo, seg.sample_rate).filter(|_| t.playing) else {
             v.stop(at(0));
             self.expected = None;
             return;
@@ -209,9 +211,4 @@ fn emit<T: Beated>(
             v.event(offset, e);
         }
     }
-}
-
-/// Frames per beat in `seg`, when it moves.
-fn frames_per_beat(seg: &Env) -> Option<f64> {
-    tutti_types::frames_per_beat(seg.transport.tempo, seg.sample_rate)
 }

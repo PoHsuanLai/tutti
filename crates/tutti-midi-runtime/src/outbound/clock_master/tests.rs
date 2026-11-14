@@ -462,7 +462,11 @@ fn a_rate_change_keeps_the_mtc_quarter_frame_on_time() {
         "the restart is not a seek"
     );
     let after = of(&events, 0xF1);
-    assert_eq!(after[0], 10_240 + 374, "344 old frames are 374.4 new ones");
+    assert_eq!(
+        after[0],
+        10_240 + 375,
+        "344 old frames are 374.4 new ones, which is reached on frame 375"
+    );
     assert!(
         (spacing(&after) - 480.0).abs() < 0.05,
         "{}",
@@ -470,13 +474,14 @@ fn a_rate_change_keeps_the_mtc_quarter_frame_on_time() {
     );
 }
 
-/// **The MTC grid is closed form.** Quarter-frame `k` goes out on frame
-/// `floor(k × rate / (4 × fps))`, however many blocks it took to get
-/// there: at 29.97 fps and 44.1 kHz a quarter-frame is 367.867… frames,
+/// **The MTC grid is closed form, and a quarter-frame is never early.**
+/// Quarter-frame `k` goes out on the first frame at or after
+/// `k × rate / (4 × fps)`, however many blocks it took to get there: at 29.97
+/// fps and 44.1 kHz a quarter-frame is 367.867… frames,
 /// which binary cannot represent, and a carried phase that adds it
 /// block after block drifts off the grid.
 #[test]
-fn the_mtc_grid_is_closed_form() {
+fn the_mtc_grid_is_closed_form_and_never_early() {
     let rate = 44_100.0;
     let fps = MtcRate::Fps2997Df;
     let (mut cm, transport, cons) = master(Bpm::of(120.0), SampleRate::of(rate));
@@ -495,8 +500,12 @@ fn the_mtc_grid_is_closed_form() {
     let quarters = of(&events, 0xF1);
     assert!(quarters.len() > 8_000, "{} quarter-frames", quarters.len());
     for (k, &at) in quarters.iter().enumerate() {
-        let due = ((k as f64 * rate) / (SmpteFrameRate::from(fps).fps() * 4.0)).floor() as u64;
-        assert_eq!(at, due, "quarter-frame {k}");
+        let time = (k as f64 * rate) / (SmpteFrameRate::from(fps).fps() * 4.0);
+        let at = at as f64;
+        assert!(
+            at >= time - 1e-6 && at - time < 1.0 + 1e-6,
+            "quarter-frame {k} due at {time} placed at {at}: not the first frame at or after"
+        );
     }
 }
 

@@ -3389,6 +3389,7 @@ name = "tutti-voicing"
 version = "0.0.1"
 dependencies = [
  "assert_no_alloc",
+ "libm",
  "thiserror 2.0.21",
  "tutti-midi-protocol",
  "tutti-types",

@@ -94,7 +94,7 @@ impl std::fmt::Debug for PluginBridge {
 /// a path, in this process (`OutOfProcess::load_editor` for the path's
 /// format). The host passes its own: which formats it was built with is the
 /// host's, not the bridge's.
-pub type EditorLoader = fn(&MainThread, &Path, &Load) -> BridgeResult<Box<dyn Editor>>;
+pub(crate) type EditorLoader = fn(&MainThread, &Path, &Load) -> BridgeResult<Box<dyn Editor>>;
 
 /// How many parameter writes wait for the next editor idle. A full ring drops
 /// the newest: the mirror is cosmetic, and the audio command is authoritative.

@@ -85,13 +85,13 @@ const PARAM_TIMEOUT: Duration = Duration::from_secs(5);
 /// Listener for plugin-originated unsolicited events. Invoked on the
 /// bridge thread (a plain OS thread) — blocking is OK, but prefer posting
 /// to a channel and returning promptly.
-pub type BridgeListener = Arc<dyn Fn(BridgeEvent) + Send + Sync>;
+pub(crate) type BridgeListener = Arc<dyn Fn(BridgeEvent) + Send + Sync>;
 
 pub(super) type ListenerSlot = Arc<Mutex<Option<BridgeListener>>>;
 
 /// Clone is cheap (Arc-based).
 #[derive(Clone)]
-pub struct AudioBridge {
+pub(crate) struct AudioBridge {
     channels: Channels,
     payloads: PayloadPool,
     lifecycle: Lifecycle,

@@ -35,11 +35,12 @@ mod transport;
 #[cfg(test)]
 mod process_pipeline_tests;
 
-pub use batcher::{Batcher, BlockPayload, Chunks};
-pub use client::audio::{
-    AudioBridge, BridgeEvent, BridgeListener, BridgeThread, HarmonyInputs, Submitted,
-};
-pub use client::{EditorLoader, PluginBridge};
+pub use batcher::{BlockPayload, Chunks};
+pub(crate) use batcher::Batcher;
+pub use client::audio::{BridgeEvent, BridgeThread, HarmonyInputs, Submitted};
+pub(crate) use client::audio::BridgeListener;
+pub use client::{PluginBridge};
+pub(crate) use client::EditorLoader;
 // The bridge's free-buffer pool, for the delivery test in `tutti-plugin` that
 // fills it the way the node does.
 #[doc(hidden)]
@@ -49,7 +50,7 @@ pub use error::PluginRenderFault;
 pub use ipc::{Ipc, IpcController, IpcOrigin, IpcParts, IpcProcessor, Launched};
 pub use offline_wait::OfflineWait;
 pub use process_guard::ProcessGuard;
-pub use protocol::frame::{FrameTooLarge, read_frame, write_frame};
+pub use protocol::frame::{read_frame, write_frame};
 pub use protocol::{
     BridgeMessage, HostMessage, MAX_FRAME_BYTES, MAX_STATE_BYTES, PROTOCOL_VERSION,
     ProcessAudioData, STATE_CHUNK_BYTES, SlabLayout, StagedState,

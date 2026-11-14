@@ -233,7 +233,7 @@ pub trait Chunks {
 /// The pipeline between the plugin node and the plugin-server bridge: an
 /// input FIFO that ships a chunk when full, and an output ring the previous
 /// chunk's output is read from.
-pub struct Batcher {
+pub(crate) struct Batcher {
     wire: WireStorage,
     /// The slab's input writer: the one in this process, so the node is the
     /// only thing that writes a chunk (`SlabWriter`). Reads go through the
@@ -345,12 +345,6 @@ impl Batcher {
     /// The frames every submission carries.
     pub fn chunk(&self) -> usize {
         self.chunk
-    }
-
-    /// [`chunk`](Self::chunk) as the latency it adds: exactly one chunk,
-    /// whatever the blocks (module docs).
-    pub fn pipeline_latency(&self) -> Samples {
-        Samples(self.chunk)
     }
 
     /// Make every collect wait for its chunk, up to `budget` per chunk: the
@@ -768,21 +762,21 @@ mod tests {
     fn the_pipeline_chunk_is_the_device_quantum_else_the_max_block() {
         let mut b = Batcher::new(2, 2, SampleFormat::Float32, MAX_CHUNK, slab(MAX_CHUNK));
         b.prepare(Samples(1024), Some(Samples(480)));
-        assert_eq!(b.pipeline_latency(), Samples(480));
+        assert_eq!(Samples(b.chunk()), Samples(480));
         b.prepare(Samples(64), Some(Samples(2048)));
         assert_eq!(
-            b.pipeline_latency(),
+            Samples(b.chunk()),
             Samples(2048),
             "the quantum, not MaxBlock"
         );
         b.prepare(Samples(1024), None);
-        assert_eq!(b.pipeline_latency(), Samples(1024), "no quantum: MaxBlock");
+        assert_eq!(Samples(b.chunk()), Samples(1024), "no quantum: MaxBlock");
         b.prepare(Samples(32), None);
-        assert_eq!(b.pipeline_latency(), Samples(32));
+        assert_eq!(Samples(b.chunk()), Samples(32));
 
         let mut small_slab = Batcher::new(2, 2, SampleFormat::Float32, 16, slab(16));
         small_slab.prepare(Samples(1024), None);
-        assert_eq!(small_slab.pipeline_latency(), Samples(16));
+        assert_eq!(Samples(small_slab.chunk()), Samples(16));
     }
 
     /// A re-prepare starts the pipeline over: the chunk in flight was

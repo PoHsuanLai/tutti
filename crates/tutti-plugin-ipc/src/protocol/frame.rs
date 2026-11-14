@@ -33,7 +33,7 @@ use super::MAX_FRAME_BYTES;
 /// A frame whose length is over [`MAX_FRAME_BYTES`].
 #[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
 #[error("frame of {len} bytes is over the {MAX_FRAME_BYTES}-byte protocol limit")]
-pub struct FrameTooLarge {
+pub(crate) struct FrameTooLarge {
     /// The body length, in bytes, that was advertised or about to be sent.
     pub len: usize,
 }

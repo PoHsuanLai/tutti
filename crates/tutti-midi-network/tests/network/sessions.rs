@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use tutti_midi_network::{
     Admission, AuthFailure, AuthMethods, AuthState, Bye, ByeReason, Command, Credentials,
-    DatagramBuilder, Digest, Endpoint, Event, HostConfig, Initiator, Invitation, NakReason, Nonce,
-    PingId, RetransmitRequest, SendError, SequenceNumber, SessionConfig, SessionState, UmpData,
-    UserAuthState, Username,
+    DatagramBuilder, Digest, Endpoint, Event, Fec, HostConfig, Initiator, Invitation, NakReason,
+    Nonce, PingId, Requests, Retransmit, RetransmitRequest, SendError, SequenceNumber,
+    SessionConfig, SessionState, UmpData, UserAuthState, Username,
 };
 
 use crate::sim::{Direction, Fate, Sim, client_addr, fixed_nonce, host_addr, identity, note_on};
@@ -593,7 +593,7 @@ fn forward_error_correction_recovers_two_lost_datagrams_with_no_retransmit_reque
 }
 
 fn no_fec() -> SessionConfig {
-    SessionConfig::default().with_fec_repeats(0)
+    SessionConfig::default().with_fec(Fec::Off)
 }
 
 fn lossy_sim(client: SessionConfig, lost: Vec<usize>) -> Sim {
@@ -653,7 +653,7 @@ fn a_retransmit_request_the_sender_cannot_serve_reports_the_data_lost() {
     // Only the last command is kept; commands 1 and 2 are gone.
     let mut sim = lossy_sim(
         no_fec()
-            .with_retransmit_buffer(1)
+            .with_retransmit(Retransmit::Buffer(std::num::NonZeroUsize::MIN))
             .with_idle_interval(ms(300)),
         vec![2, 3],
     );
@@ -699,7 +699,7 @@ fn a_retransmit_request_the_sender_cannot_serve_reports_the_data_lost() {
 
 #[test]
 fn a_peer_without_retransmit_naks_the_request_and_the_gap_is_given_up() {
-    let mut sim = lossy_sim(no_fec().with_retransmit_buffer(0), vec![2]);
+    let mut sim = lossy_sim(no_fec().with_retransmit(Retransmit::Unsupported), vec![2]);
     let notes: Vec<_> = (60..63).map(note_on).collect();
     for n in &notes {
         sim.client.send(sim.now, &[*n]).unwrap();
@@ -1295,4 +1295,34 @@ fn only_an_invitation_below_capacity_creates_a_host_entry() {
     let mut sim = Sim::open();
     sim.connect();
     assert_eq!(sim.host.session_count(), 1);
+}
+
+#[test]
+fn a_receiver_that_never_requests_gives_a_gap_up_without_asking() {
+    let mut host = HostConfig::new(identity("Studio", "HOST-1"));
+    host.session = SessionConfig::default().with_requests(Requests::Never);
+    let mut sim = Sim::new(host, Credentials::none(), no_fec());
+    sim.connect();
+    sim.host_events.clear();
+    let notes: Vec<_> = (60..63).map(note_on).collect();
+    let mut datagrams = Vec::new();
+    for n in &notes {
+        sim.client.send(sim.now, &[*n]).unwrap();
+        datagrams.push(sim.client.poll_transmit().unwrap());
+    }
+    for i in [0, 2] {
+        sim.host
+            .handle_datagram(sim.now, client_addr(), &datagrams[i].payload);
+    }
+    sim.advance(ms(10));
+    assert!(sim.host_events.contains(&Event::DataLost {
+        peer: client_addr(),
+        first: SequenceNumber::new(1),
+        count: 1
+    }));
+    assert!(
+        !sim.commands(Direction::HostToClient)
+            .iter()
+            .any(|c| matches!(c, Command::RetransmitRequest(_)))
+    );
 }

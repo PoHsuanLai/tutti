@@ -1,5 +1,6 @@
 //! [`SessionConfig`]: the timing and data-integrity choices of a Session.
 
+use std::num::{NonZeroU8, NonZeroUsize};
 use std::time::Duration;
 
 /// The longest the first Zero Length UMP Data Command may follow the last
@@ -10,6 +11,63 @@ const IDLE_INTERVAL_MAX: Duration = Duration::from_millis(300);
 const REPEAT_INTERVAL_MIN: Duration = Duration::from_millis(300);
 const REPEAT_INTERVAL_MAX: Duration = Duration::from_secs(2);
 
+const BUFFER_DEFAULT: NonZeroUsize = NonZeroUsize::new(256).unwrap();
+const REQUESTS_DEFAULT: NonZeroU8 = NonZeroU8::new(5).unwrap();
+
+/// Forward error correction (M2-124 section 7.2.2), an optional mechanism.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Fec {
+    /// No earlier command is sent again.
+    Off,
+    /// Each new command follows this many earlier ones.
+    Repeats(NonZeroU8),
+}
+
+impl Fec {
+    pub(crate) const fn repeats(self) -> u8 {
+        match self {
+            Self::Off => 0,
+            Self::Repeats(n) => n.get(),
+        }
+    }
+}
+
+/// Serving Retransmit Requests (M2-124 section 7.2.3), an optional mechanism.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Retransmit {
+    /// Retransmit is not implemented: a request is answered with a NAK.
+    Unsupported,
+    /// The last this many sent UMP Data Commands are kept to be sent again.
+    Buffer(NonZeroUsize),
+}
+
+impl Retransmit {
+    pub(crate) const fn capacity(self) -> usize {
+        match self {
+            Self::Unsupported => 0,
+            Self::Buffer(n) => n.get(),
+        }
+    }
+}
+
+/// Asking for missing commands with Retransmit Requests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Requests {
+    /// A gap is given up as lost without asking.
+    Never,
+    /// A gap is asked for up to this many times.
+    UpTo(NonZeroU8),
+}
+
+impl Requests {
+    pub(crate) const fn limit(self) -> u8 {
+        match self {
+            Self::Never => 0,
+            Self::UpTo(n) => n.get(),
+        }
+    }
+}
+
 /// How a Session sends, repeats, probes and recovers.
 ///
 /// [`Default`] is a conservative choice for a local network: two forward
@@ -17,11 +75,11 @@ const REPEAT_INTERVAL_MAX: Duration = Duration::from_secs(2);
 /// two silent seconds and a Session lost after six.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SessionConfig {
-    pub(crate) fec_repeats: u8,
-    pub(crate) retransmit_buffer: usize,
+    pub(crate) fec: Fec,
+    pub(crate) retransmit: Retransmit,
     pub(crate) idle_interval: Duration,
     pub(crate) reorder_wait: Duration,
-    pub(crate) max_retransmit_requests: u8,
+    pub(crate) requests: Requests,
     pub(crate) ping_interval: Duration,
     pub(crate) liveness_timeout: Duration,
     pub(crate) repeat_interval: Duration,
@@ -32,11 +90,11 @@ pub struct SessionConfig {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            fec_repeats: 2,
-            retransmit_buffer: 256,
+            fec: Fec::Repeats(NonZeroU8::MIN.saturating_add(1)),
+            retransmit: Retransmit::Buffer(BUFFER_DEFAULT),
             idle_interval: Duration::from_millis(10),
             reorder_wait: Duration::from_millis(10),
-            max_retransmit_requests: 5,
+            requests: Requests::UpTo(REQUESTS_DEFAULT),
             ping_interval: Duration::from_secs(2),
             liveness_timeout: Duration::from_secs(6),
             repeat_interval: Duration::from_millis(500),
@@ -47,21 +105,20 @@ impl Default for SessionConfig {
 }
 
 impl SessionConfig {
-    /// How many earlier UMP Data Commands each new one carries again (forward
-    /// error correction, M2-124 section 7.2.2). Two is the recommended
-    /// figure; none turns it off.
+    /// Whether, and how far, each new UMP Data Command carries earlier ones
+    /// again (forward error correction, M2-124 section 7.2.2). Two repeats
+    /// is the recommended figure.
     #[must_use]
-    pub const fn with_fec_repeats(mut self, repeats: u8) -> Self {
-        self.fec_repeats = repeats;
+    pub const fn with_fec(mut self, fec: Fec) -> Self {
+        self.fec = fec;
         self
     }
 
-    /// How many sent UMP Data Commands are kept to answer a Retransmit
-    /// Request. None means the Session does not support retransmit and
-    /// answers a request with a NAK.
+    /// Whether this end answers Retransmit Requests, and how many sent UMP
+    /// Data Commands it keeps to do so.
     #[must_use]
-    pub const fn with_retransmit_buffer(mut self, commands: usize) -> Self {
-        self.retransmit_buffer = commands;
+    pub const fn with_retransmit(mut self, retransmit: Retransmit) -> Self {
+        self.retransmit = retransmit;
         self
     }
 
@@ -83,11 +140,12 @@ impl SessionConfig {
         self
     }
 
-    /// How many Retransmit Requests are sent for one gap before it is given
-    /// up as lost. The wait between requests doubles.
+    /// Whether this end asks for missing commands, and how many Retransmit
+    /// Requests it sends for one gap before giving it up as lost. The wait
+    /// between requests doubles.
     #[must_use]
-    pub const fn with_max_retransmit_requests(mut self, requests: u8) -> Self {
-        self.max_retransmit_requests = requests;
+    pub const fn with_requests(mut self, requests: Requests) -> Self {
+        self.requests = requests;
         self
     }
 

@@ -88,19 +88,22 @@ impl Link {
 
     fn remember(&mut self, cfg: &SessionConfig, command: UmpData) {
         self.history.push_back(command);
-        let capacity = cfg.retransmit_buffer.max(usize::from(cfg.fec_repeats));
+        let capacity = cfg
+            .retransmit
+            .capacity()
+            .max(usize::from(cfg.fec.repeats()));
         while self.history.len() > capacity {
             self.history.pop_front();
         }
     }
 
-    /// The commands a new one is sent behind: the last `fec_repeats` sent, in
+    /// The commands a new one is sent behind: the last FEC repeat count sent, in
     /// the order sent.
     fn fec_prefix(&self, cfg: &SessionConfig, out: &mut Vec<Command>) {
         let skip = self
             .history
             .len()
-            .saturating_sub(usize::from(cfg.fec_repeats));
+            .saturating_sub(usize::from(cfg.fec.repeats()));
         out.extend(
             self.history
                 .iter()
@@ -132,7 +135,7 @@ impl Link {
         self.idle = Idle::Quiet {
             next: now + cfg.idle_interval,
             interval: cfg.idle_interval,
-            fec_left: cfg.fec_repeats,
+            fec_left: cfg.fec.repeats(),
         };
     }
 
@@ -312,9 +315,7 @@ impl Link {
             self.gap = None;
             return;
         };
-        if self.peer_retransmit == PeerRetransmit::Presumed
-            && gap.requests < cfg.max_retransmit_requests
-        {
+        if self.peer_retransmit == PeerRetransmit::Presumed && gap.requests < cfg.requests.limit() {
             let missing = u16::try_from(nearest.distance_from(self.expected)).unwrap_or(u16::MAX);
             out.push(Command::RetransmitRequest(RetransmitRequest {
                 first: self.expected,

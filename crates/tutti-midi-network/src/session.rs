@@ -11,8 +11,8 @@ use crate::link::{Link, Loss};
 use crate::{
     Admission, AuthChallenge, AuthFailure, AuthMethods, AuthState, Bye, ByeReason, Command,
     Credentials, Digest, EndpointIdentity, Event, Header, Initiator, Invitation, Nak, NakReason,
-    Nonce, PingId, SendError, SessionConfig, SessionState, UserAuthChallenge, UserAuthState,
-    UserAuthentication,
+    Nonce, PingId, Retransmit, SendError, SessionConfig, SessionState, UserAuthChallenge,
+    UserAuthState, UserAuthentication,
 };
 
 /// Failed authentications a Host tolerates before it ends the invitation.
@@ -335,7 +335,9 @@ impl Session {
                 _ => self.not_established(now),
             },
             Command::RetransmitRequest(request) => match self.phase {
-                Phase::Established | Phase::Resetting(_) if self.cfg.retransmit_buffer == 0 => {
+                Phase::Established | Phase::Resetting(_)
+                    if self.cfg.retransmit == Retransmit::Unsupported =>
+                {
                     self.nak(
                         NakReason::NotSupported,
                         Command::RetransmitRequest(request).header(),

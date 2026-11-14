@@ -81,7 +81,7 @@ pub use command::{
     RetransmitRefusal, RetransmitRequest, UmpData, UmpDataError, UserAuthChallenge, UserAuthState,
     UserAuthentication,
 };
-pub use config::SessionConfig;
+pub use config::{Fec, Requests, Retransmit, SessionConfig};
 pub use datagram::{
     Commands, DatagramBuilder, MAX_DATAGRAM_BYTES, Refused, SIGNATURE, SignatureError, parse,
 };

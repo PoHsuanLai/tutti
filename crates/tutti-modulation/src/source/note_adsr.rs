@@ -46,7 +46,8 @@ fn slot(key: Key) -> usize {
 #[derive(Clone, Debug)]
 pub struct NoteAdsr {
     adsr: Adsr,
-    /// Attack, decay and release in frames at the prepared rate.
+    /// Attack, decay and release in frames at the prepared rate; zero-length
+    /// until `prepare`.
     attack: Samples,
     decay: Samples,
     release: Samples,
@@ -63,19 +64,19 @@ impl NoteAdsr {
     /// [`prepare`](ControlSource::prepare).
     #[must_use]
     pub fn new(adsr: Adsr) -> Self {
-        let mut source = Self {
+        let s = adsr.sustain.get();
+        Self {
             adsr,
             attack: Samples(0),
             decay: Samples(0),
             release: Samples(0),
-            sustain: 0.0,
+            // A NaN sustain is 0: the envelope never sends a NaN.
+            sustain: if s >= 0.0 { s.min(1.0) } else { 0.0 },
             held: [0; NOTE_WORDS],
             holding: 0,
             stage: Stage::Idle,
             boundary: None,
-        };
-        source.prepare(SampleRate::DEFAULT);
-        source
+        }
     }
 
     /// Enters `stage` on play frame `at` from level `from`, through any
@@ -113,9 +114,6 @@ impl ControlSource for NoteAdsr {
         self.attack = self.adsr.attack.to_samples(rate);
         self.decay = self.adsr.decay.to_samples(rate);
         self.release = self.adsr.release.to_samples(rate);
-        let s = self.adsr.sustain.get();
-        // A NaN sustain is 0: the envelope never sends a NaN.
-        self.sustain = if s >= 0.0 { s.min(1.0) } else { 0.0 };
     }
 
     /// Every note forgotten, idle at 0: a 0 to send unless it was idle.

@@ -99,7 +99,9 @@ pub struct ModulatorNode<M: Modulator> {
     /// index a random wave steps on stays exact for as long as a session
     /// runs; no unit type covers an unwrapped position).
     position: f64,
-    sample_rate: SampleRate,
+    /// The rate [`Node::prepare`] set; `None` until then, when a free-running
+    /// clock has no step and the node renders silence.
+    sample_rate: Option<SampleRate>,
 }
 
 /// The concrete LFO node the graph builds — a [`ModulatorNode`] driving a
@@ -171,7 +173,7 @@ impl<M: Modulator> ModulatorNode<M> {
             depth: Param::new(Depth::FULL),
             phase_offset: PhaseIncrement(0.0),
             position: 0.0,
-            sample_rate: SampleRate::DEFAULT,
+            sample_rate: None,
         }
     }
 
@@ -246,7 +248,7 @@ impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
     }
 
     fn prepare(&mut self, p: &Prepare) {
-        self.sample_rate = p.sample_rate();
+        self.sample_rate = Some(p.sample_rate());
     }
 
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
@@ -280,8 +282,12 @@ impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
                 // In f64, not `PhaseIncrement::per_sample` (f32): the step is
                 // accumulated for as long as the node runs, and an f32-rounded
                 // step drifts the cycle index off the frame.
-                let per_hz = 1.0 / self.sample_rate.get();
                 let out = io.output(0);
+                let Some(sample_rate) = self.sample_rate else {
+                    out[..size].fill(0.0);
+                    return Status::Modified;
+                };
+                let per_hz = 1.0 / sample_rate.get();
                 for (i, o) in out[..size].iter_mut().enumerate() {
                     let rate = rate_lane
                         .map(|l| l[i])

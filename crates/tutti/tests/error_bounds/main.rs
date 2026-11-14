@@ -1,15 +1,18 @@
 //! Every error type the umbrella reaches is an `Error` a caller can box and move.
 //!
-//! `?` into `Box<dyn Error + Send + Sync>` or `anyhow::Error` needs
+//! `?` into `Box<dyn Error + Send + Sync>` or anyhow's error type needs
 //! `Error + Send + Sync + 'static`; the check is the bound, so a type that gains
 //! a non-`Send` field stops compiling here. A feature-gated type is held where
 //! the umbrella exposes it.
+//!
+//! The functions are never called: the compiler checks each bound where the
+//! function is written, so the failure is a build error, not a test result.
+#![allow(dead_code)]
 
 use std::error::Error;
 
 fn err<T: Error + Send + Sync + 'static>() {}
 
-#[test]
 fn types_errors_are_boxable() {
     use tutti::types::{
         BeatsPerCycleOutOfRange, BpmOutOfRange, BusTooWide, ChannelCountOutOfRange,
@@ -34,7 +37,6 @@ fn types_errors_are_boxable() {
     err::<UnitParamOutOfRange>();
 }
 
-#[test]
 fn rt_transport_and_engine_errors_are_boxable() {
     err::<tutti::rt::ClaimConflict>();
     err::<tutti::rt::Contended>();
@@ -45,7 +47,6 @@ fn rt_transport_and_engine_errors_are_boxable() {
     err::<tutti::engine::GraphEngineError>();
 }
 
-#[test]
 fn graph_errors_are_boxable() {
     use tutti::graph::{
         BusError, CloseError, CommitError, CompileError, EventCapacityError, EventOrderError,
@@ -71,20 +72,17 @@ fn graph_errors_are_boxable() {
     err::<VerifyError>();
 }
 
-#[test]
 fn session_errors_are_boxable() {
     err::<tutti::Error>();
     err::<tutti::session::TempoError>();
 }
 
 #[cfg(feature = "device")]
-#[test]
 fn device_errors_are_boxable() {
     err::<tutti::session::RestartError>();
 }
 
 #[cfg(feature = "modulation")]
-#[test]
 fn modulation_errors_are_boxable() {
     err::<tutti::modulation::CompileError>();
     err::<tutti::modulation::ProgramError>();
@@ -93,14 +91,12 @@ fn modulation_errors_are_boxable() {
 }
 
 #[cfg(feature = "sampler")]
-#[test]
 fn sampler_errors_are_boxable() {
     err::<tutti::sampler::StreamerGone>();
     err::<tutti::sampler::StreamingAddError>();
 }
 
 #[cfg(feature = "plugin")]
-#[test]
 fn recovery_errors_are_boxable() {
     err::<tutti::session::RecoveryFailure>();
     err::<tutti::session::ReloadCause>();

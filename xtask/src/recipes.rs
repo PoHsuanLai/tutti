@@ -212,6 +212,26 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "no file:line pointer in code prose; one under docs/ names a line that exists",
     ),
     (
+        "check-doc-idents",
+        "",
+        "a backticked item name in prose is used by some code; a per-file ratchet",
+    ),
+    (
+        "check-passive-tests",
+        "",
+        "a #[test] asserts something; a per-file ratchet",
+    ),
+    (
+        "check-comments",
+        "",
+        "no comment gains a citation of a design doc, audit, pull request, commit or CLAUDE.md",
+    ),
+    (
+        "check-alloc-binaries",
+        "",
+        "no top-level test file installs AllocDisabler: allocation tests are modules of the area binary",
+    ),
+    (
         "check-platform-seam",
         "",
         "a platform cfg stands only on a mod declaration, bar the temporary rows",
@@ -515,11 +535,15 @@ impl Planner<'_> {
             "check-ffi" => self.out.push(Step::Gate(Gate::Ffi)),
             "check-errors" => self.out.push(Step::Gate(Gate::Errors)),
             "check-layout" => self.out.push(Step::Gate(Gate::Layout)),
+            "check-alloc-binaries" => self.out.push(Step::Gate(Gate::AllocBinaries)),
             "check-lints" => self.out.push(Step::Gate(Gate::Lints)),
             "check-value-traits" => self.out.push(Step::Gate(Gate::ValueTraits)),
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-doc-refs" => self.out.push(Step::Gate(Gate::DocRefs)),
             "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
+            "check-doc-idents" => self.out.push(Step::Gate(Gate::DocIdents)),
+            "check-passive-tests" => self.out.push(Step::Gate(Gate::PassiveTests)),
+            "check-comments" => self.out.push(Step::Gate(Gate::Comments)),
             "check-platform-seam" => self.out.push(Step::Gate(Gate::PlatformSeam)),
             "check-conformance" => self.out.push(Step::Gate(Gate::Conformance)),
             "conformance" => {
@@ -628,7 +652,8 @@ impl Planner<'_> {
                     "check-paths", "check-session", "check-guards", "check-ffi", "check-errors",
                     "check-layout", "check-range-types", "check-hosting", "check-lints",
                     "check-value-traits", "check-submodule-pins", "check-doc-refs",
-                    "check-pointers", "check-platform-seam",
+                    "check-pointers", "check-comments", "check-platform-seam", "check-doc-idents",
+                    "check-passive-tests", "check-alloc-binaries",
                 ] {
                     self.dep(d)?;
                 }

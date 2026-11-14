@@ -147,6 +147,8 @@
 //!   [`ResampleError`]) and [`StreamingResampler`], sized by a [`ChunkSize`].
 //! - **Dither** (`dither/`): [`DitherNoise`] ([`DitherShape`]) and [`DitherSink`], the
 //!   `tutti_types::Sink` adapter export and recording share.
+//! - **Oscillator** (`oscillator.rs`): [`Oscillator`], a sine, or a saw, square or
+//!   triangle band-limited by PolyBLEP and PolyBLAMP ([`OscillatorWave`]).
 //! - **Small kernels**: [`cubic_hermite`], [`ShapeKind`] and [`Shaper`], [`Smoother`],
 //!   [`balance_gains`].
 //!
@@ -174,6 +176,7 @@ mod fft;
 mod filter;
 mod interp;
 mod modulation;
+mod oscillator;
 mod waveshape;
 
 mod model;
@@ -228,6 +231,7 @@ pub use modulation::phaser::{
     StagesError, SweepRange, SweepRangeError,
 };
 pub use modulation::sweep::{Stagger, StaggerError, Sweep, SweepError};
+pub use oscillator::{Oscillator, OscillatorWave};
 pub use resample::{ChunkSize, FftResampler, ResampleError, StreamingResampler, WindowedSinc};
 pub use reverb::fdn::design::{FdnControls, FdnFamily, MAX_PRE_DELAY, MIN_DECAY};
 pub use reverb::fdn::recurrence::FdnRecurrence;

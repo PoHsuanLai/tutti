@@ -160,27 +160,11 @@ tempfile = "3.10"
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
-# The instrument contract (`tests/instrument_support`): the same cases against
-# `PolySynth`, the SoundFont unit and a hosted plugin. The plugin subject needs
-# a built `plugin-server`, and fails without it.
+# The instrument contract (`tests/instrument/instrument_support`): the same cases
+# against `PolySynth`, the SoundFont unit and a hosted plugin. The plugin subject
+# needs a built `plugin-server`, and fails without it.
 [[test]]
-name = "instrument_polysynth"
-required-features = ["synth", "soundfont", "clap"]
-
-[[test]]
-name = "instrument_soundfont"
-required-features = ["synth", "soundfont", "clap"]
-
-[[test]]
-name = "instrument_plugin"
-required-features = ["synth", "soundfont", "clap"]
-
-[[test]]
-name = "instrument_refusal"
-required-features = ["synth", "soundfont", "clap"]
-
-[[test]]
-name = "instrument_main_pair"
+name = "instrument"
 required-features = ["synth", "soundfont", "clap"]
 
 # Each block's load against its deadline, on a heavy scene of the engine's

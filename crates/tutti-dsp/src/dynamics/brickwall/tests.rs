@@ -156,7 +156,7 @@ fn render_blocks(
 ) -> Vec<Vec<f32>> {
     let family = design();
     let rate = SampleRate::SR_48K;
-    let mut k: Realized<BrickwallRecurrence> = family.realized();
+    let mut k: Realized<BrickwallRecurrence> = family.realized(rate);
     k.prepare(
         &(),
         &Setup {

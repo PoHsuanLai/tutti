@@ -240,8 +240,8 @@ impl Family for FdnFamily {
         Network::new(rate)
     }
 
-    fn recurrence(&self) -> FdnRecurrence {
-        FdnRecurrence::new()
+    fn recurrence(&self, rate: SampleRate) -> FdnRecurrence {
+        FdnRecurrence::new(rate)
     }
 
     fn member_into(&self, c: &FdnControls, rate: SampleRate, out: &mut Network) {

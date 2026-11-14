@@ -1753,8 +1753,8 @@ impl Voicing {
 mod tests {
     use super::*;
     use crate::LIVE_NOTES;
-    use tutti_midi_protocol::MpeZoneConfig;
     use tutti_midi_protocol::widen;
+    use tutti_midi_protocol::{MpeZoneConfig, PitchBendSensitivity};
     use tutti_ump::BendValue;
     use tutti_ump::NoteVelocity;
     use tutti_ump::{Attribute, CCNumber, Pitch, RegisteredPerNoteController, U7, Voice1};
@@ -2709,7 +2709,18 @@ mod tests {
     /// The layout of `lower` and `upper` member counts (0: no such zone), the
     /// tests' shorthand for the protocol's [`MpeZones`].
     fn zones(lower: u8, upper: u8) -> Option<MpeZones> {
-        MpeZones::new(MpeZoneConfig::lower(lower), MpeZoneConfig::upper(upper))
+        MpeZones::new(
+            MpeZoneConfig::lower(
+                lower,
+                PitchBendSensitivity::MPE_MASTER_DEFAULT,
+                PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+            ),
+            MpeZoneConfig::upper(
+                upper,
+                PitchBendSensitivity::MPE_MASTER_DEFAULT,
+                PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+            ),
+        )
     }
 
     // ---- bends -------------------------------------------------------------

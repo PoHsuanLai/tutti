@@ -298,13 +298,14 @@ fn the_owner_takes_attaches_and_detaches_in_order() {
     let inlets = inlets(Duration::ZERO);
     let a = inlets.open().unwrap();
     let b = inlets.open().unwrap();
+    let (slot_a, slot_b) = (a.slot(), b.slot());
     let first: Vec<_> = inlets.take_changes().collect();
     assert!(matches!(
         first.as_slice(),
         [
-            InletChange::Attach { slot: 0, .. },
-            InletChange::Attach { slot: 1, .. }
-        ]
+            InletChange::Attach { slot: s0, .. },
+            InletChange::Attach { slot: s1, .. }
+        ] if (*s0, *s1) == (slot_a, slot_b) && (s0.index(), s1.index()) == (0, 1)
     ));
     drop(b);
     drop(a);
@@ -312,9 +313,9 @@ fn the_owner_takes_attaches_and_detaches_in_order() {
     assert!(matches!(
         second.as_slice(),
         [
-            InletChange::Detach { slot: 1 },
-            InletChange::Detach { slot: 0 }
-        ]
+            InletChange::Detach { slot: s1 },
+            InletChange::Detach { slot: s0 }
+        ] if (*s0, *s1) == (slot_a, slot_b)
     ));
     assert_eq!(inlets.take_changes().count(), 0, "taken once");
 }
@@ -345,11 +346,11 @@ fn draining_changes_holds_no_lock_across_the_owners_work() {
     for change in inlets.take_changes() {
         match change {
             InletChange::Attach { slot, .. } => {
-                seen.push(("attach", slot));
+                seen.push(("attach", slot.index()));
                 // The device goes while the owner is handling its attach.
                 drop(a.take());
             }
-            InletChange::Detach { slot } => seen.push(("detach", slot)),
+            InletChange::Detach { slot } => seen.push(("detach", slot.index())),
         }
     }
     assert_eq!(seen, [("attach", 0), ("detach", 0)]);

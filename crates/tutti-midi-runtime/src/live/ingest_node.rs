@@ -80,8 +80,8 @@ use tutti_graph::{
     Cx, Event, EventDensity, EventKind, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io,
     Node, NodeParts, Offset, Prepare, Shape, Status,
 };
-use tutti_midi_protocol::MpeMode;
 use tutti_midi_protocol::Translator;
+use tutti_midi_protocol::{MpeMode, MpeZones};
 use tutti_rt::{ArcLend, Reader};
 use tutti_types::{Frame, SampleRate, Samples};
 use tutti_ump::{Message, MidiChannel, MidiGroup, System, Ump};
@@ -90,7 +90,7 @@ use super::mpe_ingest::MpeIngest;
 use super::order::{BLANK, in_offset_order, offset_of};
 use super::sensing::ActiveSensing;
 use crate::held::HeldState;
-use crate::live::device_inlets::DeviceInlets;
+use crate::live::device_inlets::{DeviceInlets, DeviceSlot};
 
 /// The port that carries a Group's events with no channel: after its sixteen
 /// channel ports. For the first Group (and a node that hears only it); Group
@@ -259,15 +259,49 @@ pub struct MidiIngestNode {
     ports: MidiInputPorts,
     /// The MPE mode in force on every slot.
     mpe_mode: MpeMode,
-    /// The MPE mode a host asked for, read once per block. The reader owns
-    /// its cell (`Reader::cell`), which the controls publish to.
-    mpe_request: Reader<Option<MpeMode>>,
+    /// What a host asked for, read once per block. The reader owns its cell
+    /// (`Reader::cell`), which the controls publish to.
+    mpe_request: Reader<Requests>,
+    /// The Profile zones in force on each slot's Groups: what the requests
+    /// last read set.
+    profiles: Box<[GroupProfiles]>,
+    /// The generation of the requests `profiles` was read from.
+    profiles_generation: u64,
     /// Translated events a block had no room for in `out`
     /// ([`MidiIngestControls::losses`]).
     dropped: Arc<AtomicU64>,
     /// The events a block translates and each port holds, from the block the
     /// node was prepared for.
     capacity: usize,
+}
+
+/// The MPE Profile zones of each of a device's Groups.
+type GroupProfiles = [Option<MpeZones>; MidiGroup::COUNT as usize];
+
+/// What the control side asks of the node, published whole.
+#[derive(Clone, Debug)]
+struct Requests {
+    /// The MPE 1.1 mode for every slot, if one was asked for.
+    mode: Option<MpeMode>,
+    /// The MPE Profile zones each slot's devices enabled.
+    profiles: Box<[GroupProfiles]>,
+    /// Counts the changes of `profiles`, so the node reads them only when
+    /// there is one.
+    generation: u64,
+}
+
+impl Requests {
+    fn new(slots: NonZeroUsize) -> Self {
+        Self {
+            mode: None,
+            profiles: no_profiles(slots),
+            generation: 0,
+        }
+    }
+}
+
+fn no_profiles(slots: NonZeroUsize) -> Box<[GroupProfiles]> {
+    vec![[None; MidiGroup::COUNT as usize]; slots.get()].into_boxed_slice()
 }
 
 /// What one device slot keeps between blocks: its MIDI 1.0 assembler and its
@@ -375,6 +409,7 @@ impl std::fmt::Debug for MidiIngestNode {
             .field("devices", &self.devices.len())
             .field("mpe_mode", &self.mpe_mode)
             .field("mpe_request", &self.mpe_request)
+            .field("profiles", &self.profiles)
             .field("dropped", &self.dropped)
             .finish_non_exhaustive()
     }
@@ -385,13 +420,15 @@ impl MidiIngestNode {
     /// with MPE ingestion off.
     #[must_use]
     pub fn new(devices: NonZeroUsize) -> Self {
-        let cell = Arc::new(ArcLend::new(None));
+        let cell = Arc::new(ArcLend::new(Requests::new(devices)));
         Self {
             mpe_request: cell.reader(),
             count: devices,
             devices: (0..devices.get())
                 .map(|_| Device::new(MpeMode::Disabled))
                 .collect(),
+            profiles: no_profiles(devices),
+            profiles_generation: 0,
             epochs: None,
             out: vec![BLANK; tutti_graph::note_off_room(MIDI_INPUT_EVENT_CAPACITY)]
                 .into_boxed_slice(),
@@ -459,7 +496,7 @@ impl MidiIngestNode {
     /// the ingest, so re-adopting it every block would drop every sounding
     /// note's voice mapping, and re-send the ranges, every block.
     fn adopt_mpe_request(&mut self) -> bool {
-        let Some(mode) = *self.mpe_request.lend() else {
+        let Some(mode) = self.mpe_request.lend().mode else {
             return false;
         };
         if self.mpe_mode == mode {
@@ -484,12 +521,13 @@ pub struct SlotCountMismatch {
     pub inlets: NonZeroUsize,
 }
 
-/// The host's handle on a [`MidiIngestNode`]: its MPE mode. Cheap to clone.
+/// The host's handle on a [`MidiIngestNode`]: its MPE mode and the MPE Profile
+/// zones of its devices. Cheap to clone.
 #[derive(Clone, Debug)]
 pub struct MidiIngestControls {
     /// What the node reads; the controls publish to it and read it back with
     /// `ArcLend::current`.
-    request: Arc<ArcLend<Option<MpeMode>>>,
+    request: Arc<ArcLend<Requests>>,
     dropped: Arc<AtomicU64>,
 }
 
@@ -501,7 +539,59 @@ impl MidiIngestControls {
     /// ahead of the new zones' default bend ranges); the others keep their
     /// notes. Setting the mode in force changes nothing.
     pub fn set_mpe_mode(&self, mode: MpeMode) {
-        self.request.publish(Some(mode));
+        let mut request = (*self.request.current()).clone();
+        request.mode = Some(mode);
+        self.request.publish(request);
+    }
+
+    /// The MIDI-CI MPE Profile zones (M2-120) the device holding `slot` enabled
+    /// on `group`: from the next block, what the device sends on that Group
+    /// follows the zones' rules instead of the mode's, until `zones` is `None`
+    /// ([`MpeIngest::set_profile`] says what the change stops and resets).
+    /// Control thread. Setting what is set changes nothing.
+    ///
+    /// The zones are the device's alone: another slot's, and the mode
+    /// [`set_mpe_mode`](Self::set_mpe_mode) sets, are not changed. A slot a
+    /// new device takes starts with none, but the control side's record stays
+    /// until it is set: clear it when the device goes
+    /// ([`clear_mpe_profiles`](Self::clear_mpe_profiles)).
+    ///
+    /// # Panics
+    ///
+    /// If `slot` is not one of the inlets the node follows
+    /// ([`MidiIngestNode::following`]): those have as many slots as the node,
+    /// so each slot they hand out is one of its event inputs.
+    pub fn set_mpe_profile(&self, slot: DeviceSlot, group: MidiGroup, zones: Option<MpeZones>) {
+        self.edit_profiles(slot, |held| {
+            let changed = held[group.index()] != zones;
+            held[group.index()] = zones;
+            changed
+        });
+    }
+
+    /// [`set_mpe_profile`](Self::set_mpe_profile) with none, on every Group of
+    /// `slot`.
+    ///
+    /// # Panics
+    ///
+    /// As [`set_mpe_profile`](Self::set_mpe_profile).
+    pub fn clear_mpe_profiles(&self, slot: DeviceSlot) {
+        self.edit_profiles(slot, |held| {
+            let changed = held.iter().any(Option::is_some);
+            *held = [None; MidiGroup::COUNT as usize];
+            changed
+        });
+    }
+
+    /// Publishes the requests with `edit` applied to the slot's zones, when it
+    /// says it changed them.
+    fn edit_profiles(&self, slot: DeviceSlot, edit: impl FnOnce(&mut GroupProfiles) -> bool) {
+        let mut request = (*self.request.current()).clone();
+        let held = &mut request.profiles[slot.index()];
+        if edit(held) {
+            request.generation += 1;
+            self.request.publish(request);
+        }
     }
 
     /// What the node has lost since it was built, in events: all of it
@@ -571,6 +661,30 @@ impl Node for MidiIngestNode {
                 });
             }
         }
+        // The Profile zones a host set, at frame 0 too: each device's change
+        // stops and resets the channels it moves, and starts the zones at their
+        // bend ranges.
+        {
+            let requests = self.mpe_request.lend();
+            if requests.generation != self.profiles_generation {
+                self.profiles_generation = requests.generation;
+                for (slot, device) in self.devices.iter_mut().enumerate() {
+                    let Some(wants) = requests.profiles.get(slot) else {
+                        continue;
+                    };
+                    for group in MidiGroup::all() {
+                        let want = wants[group.index()];
+                        let held = &mut self.profiles[slot][group.index()];
+                        if want != *held {
+                            *held = want;
+                            staging.whole(false, |send| {
+                                device.mpe.set_profile(group, want, Offset::ZERO, send);
+                            });
+                        }
+                    }
+                }
+            }
+        }
         for (slot, device) in self.devices.iter_mut().enumerate() {
             // A device that took the slot or let go of it: what the one before
             // held is ended before anything else of the slot is read.
@@ -579,6 +693,8 @@ impl Node for MidiIngestNode {
                 if epoch != device.epoch {
                     device.release(None, Offset::ZERO, &mut staging);
                     device.restart(mode, epoch);
+                    // The new device has enabled no Profile.
+                    self.profiles[slot] = [None; MidiGroup::COUNT as usize];
                 }
             }
             device.pay(&mut staging);

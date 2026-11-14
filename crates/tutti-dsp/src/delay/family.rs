@@ -586,7 +586,7 @@ impl Family for DelayFamily {
         *out = DelayMember::of(self, c, rate);
     }
 
-    fn recurrence(&self) -> DelayRecurrence {
+    fn recurrence(&self, rate: SampleRate) -> DelayRecurrence {
         DelayRecurrence {
             width: self.width(),
             interpolation: self.interpolation,
@@ -594,7 +594,7 @@ impl Family for DelayFamily {
             routing: self.routing,
             routed: !self.routing.is_none(),
             max_secs: self.max_delay.get().to_f32(),
-            rate: SampleRate::DEFAULT,
+            rate,
             cap: 0,
         }
     }
@@ -696,7 +696,8 @@ pub struct DelayRecurrence {
     routed: bool,
     /// The longest delay, in seconds, as the lane's `f32`.
     max_secs: f32,
-    /// The prepared rate, and the line's capacity in frames there.
+    /// The rate it runs at, and the line's capacity in frames there (0 until
+    /// prepared).
     rate: SampleRate,
     cap: usize,
 }

@@ -76,10 +76,10 @@ pub(super) fn check_bands(bands: usize) -> Result<(), CrossoverError> {
     }
 }
 
-/// Checks a whole set: count, then each frequency in order.
-pub(super) fn validate(frequencies: &[Hz], rate: SampleRate) -> Result<(), CrossoverError> {
+/// Checks a set against the rate-free limits: the count, then each frequency in order
+/// (finite, above 0, above the one before).
+pub(super) fn validate_order(frequencies: &[Hz]) -> Result<(), CrossoverError> {
     check_bands(frequencies.len() + 1)?;
-    let nyquist = rate.nyquist();
     for (index, &hz) in frequencies.iter().enumerate() {
         if !(hz.get().is_finite() && hz.get() > 0.0) {
             return Err(CrossoverError::Frequency { index, hz });
@@ -87,6 +87,15 @@ pub(super) fn validate(frequencies: &[Hz], rate: SampleRate) -> Result<(), Cross
         if index > 0 && hz <= frequencies[index - 1] {
             return Err(CrossoverError::Order { index });
         }
+    }
+    Ok(())
+}
+
+/// Checks a whole set at `rate`: [`validate_order`], then each frequency below Nyquist.
+pub(super) fn validate(frequencies: &[Hz], rate: SampleRate) -> Result<(), CrossoverError> {
+    validate_order(frequencies)?;
+    let nyquist = rate.nyquist();
+    for (index, &hz) in frequencies.iter().enumerate() {
         if hz >= nyquist {
             return Err(CrossoverError::Nyquist { index, nyquist });
         }

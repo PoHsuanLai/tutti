@@ -139,8 +139,7 @@ impl SessionNode for tutti_nodes::MultibandCompressorNode {
     }
 }
 // The delay, modulation, LFO and oscillator nodes, and the two reverbs (wet only: their
-// blend is the graph's mix). The convolution reverb has no param addressed (its
-// wet gain is a linear trim with no `UnitParam`).
+// blend is the graph's mix), and the convolution reverb (its wet gain, `Volume`).
 param_session_node!(
     tutti_nodes::DelayNode,
     tutti_nodes::ModDelayNode,
@@ -149,8 +148,8 @@ param_session_node!(
     tutti_nodes::OscillatorNode,
     tutti_nodes::FreeverbNode,
     tutti_nodes::FdnNode,
+    tutti_nodes::ConvolverNode,
 );
-param_session_node!(tutti_nodes::ConvolverNode);
 
 /// An audio inlet as a graph node: no controls (the writer is the producer's),
 /// no params. Its fork is refused ([`Graph::open_inlet`](crate::Graph::open_inlet)).

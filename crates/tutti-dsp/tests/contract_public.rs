@@ -124,7 +124,7 @@ impl Family for GainFamily {
         };
     }
 
-    fn recurrence(&self) -> GainRecurrence {
+    fn recurrence(&self, _: SampleRate) -> GainRecurrence {
         GainRecurrence
     }
 }

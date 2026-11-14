@@ -116,9 +116,10 @@ impl Family for FreeverbFamily {
         Network::new(rate)
     }
 
-    /// A [`Freeverb`] at the default rate; the runner's `prepare` re-tunes it.
-    fn recurrence(&self) -> FreeverbRecurrence {
-        FreeverbRecurrence::new()
+    /// A [`Freeverb`] at `rate`; the runner's `prepare` re-tunes it when the graph runs at
+    /// another.
+    fn recurrence(&self, rate: SampleRate) -> FreeverbRecurrence {
+        FreeverbRecurrence::new(rate)
     }
 
     fn member_into(&self, controls: &FreeverbControls, rate: SampleRate, out: &mut Network) {

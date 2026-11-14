@@ -302,6 +302,15 @@ fn profile_bench_keeps_its_defaults_and_its_glob() {
 }
 
 #[test]
+fn book_builds_into_its_own_dir_or_the_one_named() {
+    assert_eq!(dry("book", &[]), ["mdbook build book"]);
+    assert_eq!(
+        dry("book", &["/srv/site/book"]),
+        ["mdbook build book --dest-dir /srv/site/book"]
+    );
+}
+
+#[test]
 fn verify_audio_defaults_its_out_dir() {
     let s = dry("verify-audio", &[]);
     assert_eq!(s.len(), 11);

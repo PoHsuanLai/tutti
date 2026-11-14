@@ -1057,7 +1057,13 @@ mod tests {
     /// reports whether any block was silent.
     #[cfg(feature = "clap")]
     fn save_during_playback(name: &str, write: bool) -> SteadySave {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        // The first blocks warm the render side up and are dropped from the
+        // result; the save waits until this many more have rendered, so blocks
+        // from before the save are always in it.
+        const WARM_UP: usize = 10;
+        const SETTLED: usize = 10;
 
         const FRAMES: usize = 64;
         // The probe's `Gain` parameter (`params_state::GAIN_PARAM_ID`).
@@ -1079,8 +1085,10 @@ mod tests {
 
         let side = Arc::clone(&s.side);
         let stop = Arc::new(AtomicBool::new(false));
+        let rendered = Arc::new(AtomicUsize::new(0));
         let player = std::thread::spawn({
             let stop = Arc::clone(&stop);
+            let rendered = Arc::clone(&rendered);
             move || {
                 let mut blocks = Vec::new();
                 let mut seq = 0u64;
@@ -1113,13 +1121,21 @@ mod tests {
                         0.0
                     };
                     blocks.push((started, peak));
+                    rendered.fetch_add(1, Ordering::Release);
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
                 blocks
             }
         });
-        // Let the Processor reach the render side and the blocks settle.
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while rendered.load(Ordering::Acquire) < WARM_UP + SETTLED {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the player rendered {} blocks in 30 s",
+                rendered.load(Ordering::Acquire)
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         if write {
             let r = s
                 .handle(
@@ -1142,7 +1158,7 @@ mod tests {
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
         stop.store(true, Ordering::Release);
-        let blocks: Vec<_> = player.join().unwrap().into_iter().skip(10).collect();
+        let blocks: Vec<_> = player.join().unwrap().into_iter().skip(WARM_UP).collect();
         SteadySave {
             silent: blocks.iter().map(|&(_, peak)| peak == 0.0).collect(),
             peaks_before_save: blocks

@@ -98,6 +98,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         ("check-pointers", "gate check-pointers"),
         ("check-doc-idents", "gate check-doc-idents"),
         ("check-passive-tests", "gate check-passive-tests"),
+        ("check-alloc-binaries", "gate check-alloc-binaries"),
         ("check-platform-seam", "gate check-platform-seam"),
         ("check-conformance", "gate check-conformance"),
     ] {
@@ -121,6 +122,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         "gate check-pointers",
         "gate check-doc-idents",
         "gate check-passive-tests",
+        "gate check-alloc-binaries",
         "gate check-platform-seam",
         "gate check-conformance",
     ] {

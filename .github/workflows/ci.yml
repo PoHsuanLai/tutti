@@ -198,6 +198,7 @@ jobs:
       # asserts; each is a per-file ratchet over its `xtask/*.txt` baseline.
       - run: cargo xtask check-doc-idents
       - run: cargo xtask check-passive-tests
+      - run: cargo xtask check-alloc-binaries
       # A platform cfg stands only on a `mod` declaration; the `-ffi` crates are
       # exempt and the temporary rows in the gate are a ratchet.
       - run: cargo xtask check-platform-seam

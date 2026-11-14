@@ -2,10 +2,10 @@
 //! workspace's code uses.
 //!
 //! The gate reads the [prose](super::prose) of the repo: the comments of every
-//! `.rs` file and the text of the `.md` files outside `docs/design/` and
-//! `docs/archive/`. In it, a backticked span (outside a fenced block) that is
-//! a Rust path, optionally followed by `()`, `!` or generics, is an item name
-//! when it is:
+//! `.rs` file and the text of the `.md` files, apart from the design and
+//! archive directories under `docs/`. In it, a backticked span (outside a
+//! fenced block) that is a Rust path, optionally followed by `()`, `!` or
+//! generics, is an item name when it is:
 //!
 //! - one `CamelCase` word (an uppercase first letter, a lowercase letter, at
 //!   least three letters) or one `SCREAMING_SNAKE` word with an underscore;

@@ -62,7 +62,7 @@ fn release_takes_one_plain_version() {
 
 #[test]
 fn the_recipe_list_is_the_one_the_help_prints() {
-    assert_eq!(RECIPES.len(), 45);
+    assert_eq!(RECIPES.len(), 46);
 }
 
 /// Every static gate is a Rust gate: no recipe plans a script.

@@ -34,8 +34,9 @@
 //! main-thread call, and a controller that holds the `Plugin` cannot make an
 //! audio-thread one, however the embedder wires them.
 //!
-//! A `Plugin` dropped on another thread calls nothing and leaks the instance,
-//! since its `gui.destroy` and `destroy` are main-thread entries too. The host
+//! A `Plugin` dropped on another thread calls nothing there: `gui.destroy` and
+//! `destroy` are main-thread entries too, so the whole value is handed to its
+//! owner's `MainWork` and torn down at that collector's next run. The host
 //! callbacks CLAP marks `[main-thread]` (timers, descriptors, rescans) are refused
 //! when a plugin makes them from another thread, or from inside an audio-side
 //! call such as `process`; `deactivate` and `destroy` run under the roles lock

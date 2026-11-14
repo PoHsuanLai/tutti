@@ -168,7 +168,7 @@ impl AuLoaded {
                 descriptor_id(&desc)
             ),
         })?;
-        let mut loaded = AuLoaded::new(component, LOAD_RATE, LOAD_BLOCK).map_err(|e| {
+        let mut loaded = AuLoaded::new(component, LOAD_RATE, LOAD_BLOCK, work).map_err(|e| {
             match plugin_error(e) {
                 // The component's own failure, at the stage it reports.
                 load @ PluginError::Load { .. } => load,
@@ -188,7 +188,6 @@ impl AuLoaded {
         let _ = loaded.install_host_callbacks();
         let _ = loaded.watch_properties();
         loaded.origin = Origin::new(path, load.clone());
-        loaded.work = work.clone();
         Ok(loaded)
     }
 }

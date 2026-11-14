@@ -18,7 +18,7 @@ use tutti_nodes::testing::Const;
 use tutti_plugin_host::PluginHandle;
 use tutti_plugin_types::fake::{Call, FakePlugin};
 use tutti_plugin_types::{
-    ContentScale, EditorError, MainThreadMarker, Normalized, ParamId, ParameterInfo, PluginFailure,
+    ContentScale, EditorError, Normalized, ParamId, ParameterInfo, PluginFailure,
 };
 use tutti_session::{Opened, PluginChange, PluginEvent, Session, SessionEvent};
 use tutti_types::{ChannelLayout, SampleRate};
@@ -76,10 +76,6 @@ impl tutti_plugin_types::Health for Inert {
     fn terminate(&self, _reason: tutti_plugin_types::TerminationReason) {}
 }
 
-fn main_thread() -> MainThreadMarker {
-    tutti_fixtures::main_thread()
-}
-
 /// A detached session with a fake plugin (with an editor) at a node.
 fn session_with_editor() -> (Session, NodeKey, FakePlugin) {
     let (fake, loaded) = FakePlugin::new();
@@ -135,7 +131,7 @@ fn idles(fake: &FakePlugin) -> usize {
 #[test]
 fn an_editor_that_requests_a_size_raises_editor_wants_size() {
     let (mut s, node, fake) = session_with_editor();
-    let mut ui = s.main(main_thread());
+    let mut ui = s.main(tutti_fixtures::main_thread());
     let opened = ui
         .plugin(node)
         .unwrap()
@@ -159,7 +155,7 @@ fn an_editor_that_requests_a_size_raises_editor_wants_size() {
 #[test]
 fn update_services_the_open_editor_and_no_other() {
     let (mut s, node, fake) = session_with_editor();
-    let mut ui = s.main(main_thread());
+    let mut ui = s.main(tutti_fixtures::main_thread());
 
     fake.request_editor_size(PhysicalSize::new(1, 1));
     assert!(wanted_sizes(&ui.update(), node).is_empty());
@@ -193,7 +189,7 @@ fn update_services_the_open_editor_and_no_other() {
 #[test]
 fn rescale_reaches_the_plugins_scale_call_or_is_refused_by_name() {
     let (mut s, node, fake) = session_with_editor();
-    let mut ui = s.main(main_thread());
+    let mut ui = s.main(tutti_fixtures::main_thread());
     let mut plugin = ui.plugin(node).unwrap();
     let mut editor = plugin.editor();
     editor.open(&StandInWindow, ContentScale::IDENTITY).unwrap();
@@ -229,7 +225,7 @@ fn a_removed_plugin_is_dropped_by_the_main_view_not_by_update() {
     assert_eq!(s.retired_plugins(), 1, "removal parks the record");
     let _ = s.update();
     assert_eq!(s.retired_plugins(), 1, "Session::update frees no plugin");
-    let _ = s.main(main_thread()).update();
+    let _ = s.main(tutti_fixtures::main_thread()).update();
     assert_eq!(s.retired_plugins(), 0, "the view's update drops it");
 }
 
@@ -238,7 +234,7 @@ fn a_removed_plugin_is_dropped_by_the_main_view_not_by_update() {
 #[test]
 fn a_removed_plugin_has_its_open_editor_closed_by_the_main_view() {
     let (mut s, node, fake) = session_with_editor();
-    s.main(main_thread())
+    s.main(tutti_fixtures::main_thread())
         .plugin(node)
         .unwrap()
         .editor()
@@ -249,6 +245,6 @@ fn a_removed_plugin_has_its_open_editor_closed_by_the_main_view() {
         !fake.calls().contains(&Call::CloseEditor),
         "not before the main view"
     );
-    let _ = s.main(main_thread()).update();
+    let _ = s.main(tutti_fixtures::main_thread()).update();
     assert!(fake.calls().contains(&Call::CloseEditor));
 }

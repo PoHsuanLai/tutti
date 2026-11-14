@@ -820,7 +820,7 @@ mod tests {
         assert_eq!(host.get_process_level(), ProcessLevel::Realtime);
     }
 
-    /// Outside a process call the answer is the caller's thread: the claimed main thread is
+    /// Outside a process call the answer is the caller's thread: the main thread is
     /// `User`, another thread is `Unknown`, and the process scope ending ends `Realtime`.
     #[test]
     fn process_level_outside_process_is_user_on_main_and_unknown_elsewhere() {

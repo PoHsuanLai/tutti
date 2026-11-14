@@ -25,7 +25,7 @@ use std::sync::Arc;
 use tutti_au_ffi::property::{BypassEffect, ClassInfo, ClassInfoFromDocument, Latency};
 use tutti_au_ffi::{AuEditor, Element, HostCallbacks, Scope, TransportState, Unit};
 use tutti_plugin_types::{
-    ChannelLayout, MainThreadMarker, PluginDescriptor, RequestWord, TransportInfo,
+    ChannelLayout, MainThreadMarker, MainWorkHandle, PluginDescriptor, RequestWord, TransportInfo,
 };
 use tutti_types::value::units::Seconds;
 use tutti_types::{SampleRate, Samples};
@@ -109,7 +109,7 @@ pub struct AuLoaded {
     /// A unit made straight from a component has no owner: its collector is gone,
     /// so work sent to it runs at once on the main thread and is otherwise counted
     /// ([`MainWork::stranded`](tutti_plugin_types::MainWork::stranded)).
-    pub(crate) work: tutti_plugin_types::MainWorkHandle,
+    pub(crate) work: MainWorkHandle,
 }
 
 impl std::fmt::Debug for AuLoaded {
@@ -121,7 +121,8 @@ impl std::fmt::Debug for AuLoaded {
 }
 
 impl AuLoaded {
-    /// Instantiates and applies the initial stream configuration.
+    /// Instantiates and applies the initial stream configuration. `work` is where
+    /// the unit's drop off the main thread hands its close.
     ///
     /// # Errors
     /// [`AuError::LoadFailed`](crate::AuError::LoadFailed) or
@@ -132,6 +133,7 @@ impl AuLoaded {
         component: AuComponentRef,
         sample_rate: SampleRate,
         block_size: u32,
+        work: &MainWorkHandle,
     ) -> Result<Self> {
         let handle = AuHandle::new(component)?;
 
@@ -147,7 +149,11 @@ impl AuLoaded {
             outputs: ChannelLayout::from(probed.outputs.count().max(2)),
             has_input: probed.has_input,
         };
-        Self::with_layout(handle, StreamConfig::new(sample_rate, block_size, channels))
+        Self::with_layout(
+            handle,
+            StreamConfig::new(sample_rate, block_size, channels),
+            work,
+        )
     }
 
     /// Instantiates at a caller-chosen [`StreamConfig`], bypassing the stereo
@@ -160,8 +166,12 @@ impl AuLoaded {
     ///
     /// # Errors
     /// As [`AuLoaded::new`].
-    pub fn new_with_config(component: AuComponentRef, config: StreamConfig) -> Result<Self> {
-        Self::with_layout(AuHandle::new(component)?, config)
+    pub fn new_with_config(
+        component: AuComponentRef,
+        config: StreamConfig,
+        work: &MainWorkHandle,
+    ) -> Result<Self> {
+        Self::with_layout(AuHandle::new(component)?, config, work)
     }
 
     /// Shared tail of both constructors: apply the config, verify the block size
@@ -187,7 +197,11 @@ impl AuLoaded {
     /// exception: it is *returned* rather than enforced because a narrower width
     /// is recoverable by resizing the scratch, and nothing downstream indexes
     /// past an allocation on account of it.
-    fn with_layout(handle: AuHandle, mut config: StreamConfig) -> Result<Self> {
+    fn with_layout(
+        handle: AuHandle,
+        mut config: StreamConfig,
+        work: &MainWorkHandle,
+    ) -> Result<Self> {
         // `apply` returns the layout the AU actually accepted, which may differ
         // from what was requested. Store the effective layout so the render
         // scratch is later sized to the real topology, not the wished-for one.
@@ -214,7 +228,7 @@ impl AuLoaded {
             mode_accepted,
             last_latency: Cell::new(Samples::ZERO),
             origin: tutti_plugin_types::Origin::new("", tutti_plugin_types::Load::new()),
-            work: tutti_plugin_types::MainWork::new().1,
+            work: work.clone(),
         })
     }
 

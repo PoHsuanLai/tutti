@@ -461,7 +461,7 @@ impl Bundle {
         index: usize,
         host: Host,
         roles: Arc<ThreadRoles>,
-        work: MainWorkHandle,
+        work: &MainWorkHandle,
     ) -> Result<Plugin, LoadError> {
         let id = &self.descriptors[index].id;
         let id_cstr =
@@ -479,7 +479,7 @@ impl Bundle {
         if plugin.is_null() {
             return Err(LoadError::CreateFailed);
         }
-        Plugin::from_created(plugin, self, host, roles, work)
+        Plugin::from_created(plugin, self, host, roles, work.clone())
     }
 }
 

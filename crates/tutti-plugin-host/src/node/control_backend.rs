@@ -70,7 +70,10 @@ pub(crate) struct ControlBackend<F: InProcess> {
 }
 
 /// How long an off-main-thread call waits for the main thread to run its work
-/// (see the module docs, "Threads"). Under `cfg(test)` it is shortened to one
+/// (see the module docs, "Threads"). A collector that has never run
+/// ([`MainWorkHandle::is_pumped`]) is not waited for at all: the call answers
+/// "unavailable" at once, as a call with no main thread does, and a post is
+/// refused rather than queued without bound. Under `cfg(test)` it is shortened to one
 /// second so the test of the expiry does not stall the suite; the pumped tests
 /// answer in one tick.
 const OFF_MAIN_DEADLINE: Duration = if cfg!(test) {
@@ -85,14 +88,18 @@ where
     F::Processor: 'static,
 {
     /// Runs `work` on the plugin on the main thread, under the instance lock,
-    /// from whichever thread asks. `None` when it cannot be answered: the main
-    /// thread did not run the work within [`OFF_MAIN_DEADLINE`].
+    /// from whichever thread asks. `None` when it cannot be answered: the
+    /// collector has never run, or the main thread did not run the work within
+    /// [`OFF_MAIN_DEADLINE`].
     fn on_main<R: Send + 'static>(
         &self,
         work: impl FnOnce(MainThreadMarker, &mut Instance<F>) -> R + Send + 'static,
     ) -> Option<R> {
         if let Some(main) = MainThreadMarker::new() {
             return Some(work(main, &mut self.inner.lock()));
+        }
+        if !self.work.is_pumped() {
+            return None;
         }
         let (answer, wait) = sync_channel(1);
         let inner = Arc::clone(&self.inner);
@@ -103,14 +110,14 @@ where
     }
 
     /// `work` on the main thread without waiting: at once on it, posted to the
-    /// owner's collector off it. Skipped when the instance is locked, as a write
-    /// has always been.
+    /// owner's collector off it (refused while that collector has never run).
+    /// Skipped when the instance is locked, as a write has always been.
     fn post(&self, work: impl FnOnce(MainThreadMarker, &mut Instance<F>) + Send + 'static) {
         if let Some(main) = MainThreadMarker::new() {
             if let Some(mut instance) = self.inner.try_lock() {
                 work(main, &mut instance);
             }
-        } else {
+        } else if self.work.is_pumped() {
             let inner = Arc::clone(&self.inner);
             self.work.defer(move |main| {
                 if let Some(mut instance) = inner.try_lock() {
@@ -342,8 +349,9 @@ mod off_main_tests {
         tutti_fixtures::Pump,
     ) {
         let (collector, work) = MainWork::new();
+        let pump = tutti_fixtures::pump(collector);
         let (client, handle) = load(&work);
-        (client, handle, tutti_fixtures::pump(collector))
+        (client, handle, pump)
     }
 
     /// The probe, loaded in process, with parameter 1 written to 0.75; its main-thread
@@ -389,13 +397,14 @@ mod off_main_tests {
         assert_eq!(value.map(Normalized::get), Some(0.75));
     }
 
-    /// **With nothing pumping the main thread, an off-main call answers
-    /// "unavailable" after the deadline**, not never.
+    /// **With a collector that has never run, an off-main call answers
+    /// "unavailable" at once**, well under the deadline, and queues nothing.
     #[test]
-    fn an_unpumped_main_thread_gets_the_unavailable_answer() {
-        let (_collector, work) = MainWork::new();
+    fn a_never_run_collector_gets_the_unavailable_answer_at_once() {
+        let (collector, work) = MainWork::new();
         let (_client, handle) = load(&work);
         let id = ParamId::new(1);
+        let started = std::time::Instant::now();
         let (state, value) = std::thread::spawn(move || {
             (
                 handle.any_thread().save_state(),
@@ -405,6 +414,26 @@ mod off_main_tests {
         .join()
         .expect("the job returns");
         assert!(matches!(state, Err(StateError::Unavailable)), "{state:?}");
+        assert_eq!(value, None);
+        assert!(
+            started.elapsed() < super::OFF_MAIN_DEADLINE / 4,
+            "answered in {:?}, not after the deadline",
+            started.elapsed()
+        );
+        assert_eq!(collector.run(main_thread()), 0, "nothing was queued");
+    }
+
+    /// **A collector that runs but is not run again answers "unavailable" after
+    /// the deadline**, not never.
+    #[test]
+    fn a_stalled_main_thread_gets_the_unavailable_answer_after_the_deadline() {
+        let (collector, work) = MainWork::new();
+        let (_client, handle) = load(&work);
+        assert_eq!(collector.run(main_thread()), 0);
+        let id = ParamId::new(1);
+        let value = std::thread::spawn(move || handle.any_thread().parameter_value(id))
+            .join()
+            .expect("the job returns");
         assert_eq!(value, None);
     }
 

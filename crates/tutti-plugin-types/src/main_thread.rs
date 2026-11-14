@@ -26,7 +26,8 @@
 //! once when the sender is on the main thread; otherwise nothing can run it, and
 //! the work is counted in [`MainWork::stranded`].
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 pub use tutti_rt::MainThreadMarker;
@@ -53,6 +54,7 @@ static STRANDED: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug)]
 pub struct MainWork {
     queue: Receiver<Work>,
+    pumped: Arc<AtomicBool>,
 }
 
 /// The send side of a [`MainWork`]: a plugin's way to hand a close to the main
@@ -61,6 +63,7 @@ pub struct MainWork {
 #[derive(Clone, Debug)]
 pub struct MainWorkHandle {
     queue: Sender<Work>,
+    pumped: Arc<AtomicBool>,
 }
 
 impl MainWork {
@@ -68,12 +71,20 @@ impl MainWork {
     #[must_use]
     pub fn new() -> (MainWork, MainWorkHandle) {
         let (queue, inbox) = channel();
-        (MainWork { queue: inbox }, MainWorkHandle { queue })
+        let pumped = Arc::new(AtomicBool::new(false));
+        (
+            MainWork {
+                queue: inbox,
+                pumped: Arc::clone(&pumped),
+            },
+            MainWorkHandle { queue, pumped },
+        )
     }
 
     /// Runs the work handed over so far, on the calling (main) thread, and says
     /// how many ran. Work that defers more work leaves it for the next call.
     pub fn run(&self, main: MainThreadMarker) -> usize {
+        self.pumped.store(true, Ordering::Release);
         let arrived: Vec<Work> = self.queue.try_iter().collect();
         let ran = arrived.len();
         for work in arrived {
@@ -116,6 +127,14 @@ impl Drop for MainWork {
 }
 
 impl MainWorkHandle {
+    /// Whether the collector has run at least once. A collector nobody runs
+    /// (its owner never reaches the main thread) never answers `true`, so a
+    /// caller that would wait for deferred work declines to wait.
+    #[must_use]
+    pub fn is_pumped(&self) -> bool {
+        self.pumped.load(Ordering::Acquire)
+    }
+
     /// Hands `work` to the collector's main thread, to run at its next
     /// [`MainWork::run`]. Never waits and never loses the work to a full queue.
     ///

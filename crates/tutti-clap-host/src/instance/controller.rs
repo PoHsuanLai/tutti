@@ -151,8 +151,8 @@ impl Drop for ClapController {
         // The FFI plugin stops processing under the audio claim (waiting out a
         // `process` in flight), deactivates, and destroys on drop, so a
         // Processor that outlives this renders nothing. A drop off the main
-        // thread has no token to deactivate with: the FFI plugin then leaks
-        // the instance instead (its drop).
+        // thread has no token to deactivate with: the FFI plugin's drop hands
+        // the teardown to the owner's main-thread collector instead.
         if let Some(mut loaded) = self.loaded.take()
             && let Some(main) = MainThreadMarker::new()
         {

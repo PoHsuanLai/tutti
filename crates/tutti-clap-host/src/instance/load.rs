@@ -157,7 +157,7 @@ impl ClapLoaded {
         let host_state = Arc::new(HostState::new(main));
         let host = ClapHost::new(host_state.clone()).into_inner();
         let plugin = bundle
-            .instantiate(index, host, host_state.roles.clone(), work.clone())
+            .instantiate(index, host, host_state.roles.clone(), work)
             .map_err(|e| load_failed(bundle_path, e))?;
 
         let (ports, supports_f64) = read_audio_ports(main, &mut plugin_info, &plugin)?;

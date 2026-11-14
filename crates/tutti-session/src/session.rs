@@ -485,8 +485,9 @@ pub struct Session {
     pub(crate) main_work: tutti_plugin_types::MainWork,
 }
 
+#[cfg(feature = "plugin")]
 impl Drop for Session {
-    /// The fallback of `Session::close` (with the `plugin` feature): on the main
+    /// The fallback of `Session::close`: on the main
     /// thread, runs the work other threads handed over, and the plugins then drop
     /// with the fields, their closes collected by the last field's own drop.
     ///
@@ -494,7 +495,6 @@ impl Drop for Session {
     /// thread; dropped elsewhere, it leaks those plugins and counts them in
     /// `tutti_plugin_types::MainWork::stranded()`.
     fn drop(&mut self) {
-        #[cfg(feature = "plugin")]
         if let Some(main) = tutti_plugin_types::MainThreadMarker::new() {
             self.main_work.run(main);
         }

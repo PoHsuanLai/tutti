@@ -101,8 +101,7 @@ fn an_in_process_instrument_without_a_live_render_mode_bounces_its_clip() {
 }
 
 fn main() {
-    tutti_fixtures::main_thread_cases(&[(
-        "an_in_process_instrument_without_a_live_render_mode_bounces_its_clip",
+    tutti_fixtures::main_thread_cases(tutti_fixtures::cases![
         an_in_process_instrument_without_a_live_render_mode_bounces_its_clip,
-    )]);
+    ]);
 }

@@ -73,7 +73,7 @@ pub struct InProcClient<F: Loaded> {
     pub(super) descriptor: PluginDescriptor,
     /// Where the plugin came from, for an in-process one: what a fork loads
     /// again. `None` for a hosting that reopens another way.
-    pub(super) origin: Option<Reload>,
+    pub(super) reload: Option<Reload>,
     /// What the Processor adds to the plugin's own latency
     /// ([`Processor::latency`]), as the last `prepare` read it: the served
     /// pipeline's chunk.
@@ -439,7 +439,7 @@ impl<F: Loaded> InProcClient<F> {
         inner: Arc<Mutex<Instance<F>>>,
         rt: Rt<F::Processor>,
         descriptor: PluginDescriptor,
-        origin: Option<Reload>,
+        reload: Option<Reload>,
         declared: Declared,
         features: Features,
         sample_rate: f64,
@@ -473,7 +473,7 @@ impl<F: Loaded> InProcClient<F> {
             inner,
             rt,
             descriptor,
-            origin,
+            reload,
             pipeline,
             declared,
             midi: MidiEventVec::new(),

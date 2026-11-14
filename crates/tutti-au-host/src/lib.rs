@@ -75,12 +75,13 @@
 //! # {
 //! use tutti_au_host::component::enumerate_components_of_type;
 //! use tutti_au_host::{AuLoaded, AuType};
-//! use tutti_plugin_types::{Loaded, MainThreadMarker, MaxBlock, Prepare, SampleRate, Samples};
+//! use tutti_plugin_types::{Loaded, MainThreadMarker, MainWork, MaxBlock, Prepare, SampleRate, Samples};
 //!
 //! let effects = enumerate_components_of_type(AuType::Effect);
 //! if let Some(info) = effects.first() {
 //!     let main = MainThreadMarker::new().unwrap();
-//!     let au = AuLoaded::new(info.component, SampleRate::SR_44K1, 512).unwrap();
+//!     let (_collector, work) = MainWork::new();
+//!     let au = AuLoaded::new(info.component, SampleRate::SR_44K1, 512, &work).unwrap();
 //!     let prepare = Prepare::new(SampleRate::SR_44K1, MaxBlock::of(Samples(512)));
 //!     let Ok((mut processor, _controller)) = au.activate(main, prepare) else {
 //!         return;
@@ -102,11 +103,12 @@
 //! # {
 //! use tutti_au_host::component::enumerate_components_of_type;
 //! use tutti_au_host::{AuLoaded, AuType};
-//! use tutti_plugin_types::SampleRate;
+//! use tutti_plugin_types::{MainWork, SampleRate};
 //!
 //! # let effects = enumerate_components_of_type(AuType::Effect);
 //! # if let Some(info) = effects.first() {
-//! let au = AuLoaded::new(info.component, SampleRate::SR_44K1, 512).unwrap();
+//! let (_collector, work) = MainWork::new();
+//! let au = AuLoaded::new(info.component, SampleRate::SR_44K1, 512, &work).unwrap();
 //!
 //! // `Samples` and `Seconds`, not bare numbers: the engine's unit newtypes reach
 //! // this far, and stop at the C ABI below them.

@@ -90,10 +90,6 @@ fn handle_with(cause: Option<PluginFailure>) -> PluginHandle {
     )
 }
 
-fn main_thread() -> tutti_plugin_types::MainThreadMarker {
-    tutti_fixtures::main_thread()
-}
-
 /// A detached session with a fake plugin (reporting `cause`) hosted at a dc
 /// node.
 fn session_with(cause: Option<PluginFailure>) -> (Session, NodeKey) {
@@ -137,7 +133,7 @@ fn deaths_at(s: &mut Session, t0: Instant, ms: u64) -> Vec<(NodeKey, PluginFailu
 /// One observation every half window, as frames at 60 Hz span it: `frames`
 /// of them. The deaths each reported.
 fn observe(s: &mut Session, frames: usize) -> Vec<(NodeKey, PluginFailure)> {
-    let _ = main_thread();
+    let _ = tutti_fixtures::main_thread();
     let t0 = Instant::now();
     let half = Liveness::DEFAULT_WINDOW.as_millis() as u64 / 2;
     let mut died = Vec::new();
@@ -154,7 +150,7 @@ fn observe(s: &mut Session, frames: usize) -> Vec<(NodeKey, PluginFailure)> {
 /// update and re-plan compensation forever.
 #[test]
 fn a_non_plugin_node_never_marks_the_graph_edited() {
-    let _ = main_thread();
+    let _ = tutti_fixtures::main_thread();
     let mut s = Session::builder()
         .outputs_floor(ChannelLayout::STEREO)
         .build_detached(SampleRate::DEFAULT)
@@ -313,7 +309,7 @@ fn plugin_events(s: &mut Session) -> Vec<PluginEvent> {
 #[test]
 fn a_plugins_own_edit_arrives_as_param_changed() {
     use tutti_plugin_types::ParamEdit;
-    let _ = main_thread();
+    let _ = tutti_fixtures::main_thread();
     let (mut s, node, params, _, _) = session_reporting();
     let id = ParamId::new(7);
     let value = Normalized::clamped(0.25);
@@ -350,7 +346,7 @@ fn a_plugins_own_edit_arrives_as_param_changed() {
 #[test]
 fn a_plugins_refreshes_and_invalidations_arrive_in_the_stream() {
     use tutti_plugin_types::{PluginInvalidation, PluginRefresh, PluginTail};
-    let _ = main_thread();
+    let _ = tutti_fixtures::main_thread();
     let (mut s, _, _, refresh, invalidate) = session_reporting();
     refresh.fire(PluginRefresh::ParamValues);
     refresh.fire(PluginRefresh::ParamTitles);

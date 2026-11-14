@@ -8,10 +8,6 @@ use tutti_plugin_types::BridgeError;
 use tutti_session::{PluginLoadRequest, Session};
 use tutti_types::{MaxBlock, Samples};
 
-fn main_thread() -> tutti_plugin_types::MainThreadMarker {
-    tutti_fixtures::main_thread()
-}
-
 fn session() -> Session {
     Session::builder()
         .max_block(MaxBlock::of(Samples(512)))
@@ -46,7 +42,7 @@ fn a_blacklisted_plugin_is_refused_at_load() {
     let mut catalog = catalog();
     catalog.blacklist(&path, "SIGSEGV during probe");
     let mut s = session();
-    let main = main_thread();
+    let main = tutti_fixtures::main_thread();
 
     set_server("/nonexistent/plugin-server");
     let load = s
@@ -86,7 +82,7 @@ fn a_plugin_blacklisted_after_the_load_is_made_is_refused_when_it_runs() {
     let plugin = PluginRef::file(&path).expect("a plugin file");
     let mut catalog = catalog();
     let mut s = session();
-    let main = main_thread();
+    let main = tutti_fixtures::main_thread();
 
     set_server("/nonexistent/plugin-server");
     let load = s
@@ -123,7 +119,7 @@ fn vst2_asked_for_out_of_process_is_refused_at_load() {
         !load.opens_in_process(),
         "nothing is left for the main thread"
     );
-    match s.add_plugin(main_thread(), load.run()) {
+    match s.add_plugin(tutti_fixtures::main_thread(), load.run()) {
         Err(BridgeError::NotOutOfProcess { format, .. }) => assert_eq!(format, "VST2"),
         other => panic!("expected NotOutOfProcess, got {other:?}"),
     }
@@ -144,7 +140,7 @@ fn a_clap_plugin_asked_in_process_is_hosted_here() {
     assert!(load.opens_in_process());
 
     let node = s
-        .add_plugin(main_thread(), load.run())
+        .add_plugin(tutti_fixtures::main_thread(), load.run())
         .expect("the reference plugin loads in this process");
     let hosted = s.plugin(node).expect("it is hosted");
     assert_eq!(hosted.diagnostics().server_pid(), None);

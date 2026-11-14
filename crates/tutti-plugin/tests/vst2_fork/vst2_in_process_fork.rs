@@ -537,42 +537,15 @@ fn client_id(handle: &PluginHandle) -> String {
 }
 
 /// The cases, run by `main`.
-pub(crate) const CASES: &[(&str, fn())] = &[
-    (
-        "a_chunk_plugin_forks_with_the_live_chunk_and_renders_offline",
-        a_chunk_plugin_forks_with_the_live_chunk_and_renders_offline,
-    ),
-    (
-        "a_plugin_without_chunks_forks_with_its_program_and_parameters",
-        a_plugin_without_chunks_forks_with_its_program_and_parameters,
-    ),
-    (
-        "a_fork_at_another_rate_tells_the_plugin_its_rate",
-        a_fork_at_another_rate_tells_the_plugin_its_rate,
-    ),
-    (
-        "a_fork_of_a_dropped_plugin_is_live_gone",
-        a_fork_of_a_dropped_plugin_is_live_gone,
-    ),
+pub(crate) const CASES: &[(&str, fn())] = tutti_fixtures::cases![
+    a_chunk_plugin_forks_with_the_live_chunk_and_renders_offline,
+    a_plugin_without_chunks_forks_with_its_program_and_parameters,
+    a_fork_at_another_rate_tells_the_plugin_its_rate,
+    a_fork_of_a_dropped_plugin_is_live_gone,
     #[cfg(not(target_os = "macos"))]
-    (
-        "a_plugin_handed_back_by_into_client_forks",
-        a_plugin_handed_back_by_into_client_forks,
-    ),
-    (
-        "a_fork_reads_its_transport_from_the_render",
-        a_fork_reads_its_transport_from_the_render,
-    ),
-    (
-        "a_live_fork_keeps_the_live_render_mode",
-        a_live_fork_keeps_the_live_render_mode,
-    ),
-    (
-        "a_second_instance_of_another_plugin_is_a_mismatch",
-        a_second_instance_of_another_plugin_is_a_mismatch,
-    ),
-    (
-        "a_live_program_out_of_the_second_instances_range_is_a_named_error",
-        a_live_program_out_of_the_second_instances_range_is_a_named_error,
-    ),
+    a_plugin_handed_back_by_into_client_forks,
+    a_fork_reads_its_transport_from_the_render,
+    a_live_fork_keeps_the_live_render_mode,
+    a_second_instance_of_another_plugin_is_a_mismatch,
+    a_live_program_out_of_the_second_instances_range_is_a_named_error,
 ];

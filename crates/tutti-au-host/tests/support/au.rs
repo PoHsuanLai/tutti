@@ -58,7 +58,12 @@ impl Au {
         rate: SampleRate,
         block: u32,
     ) -> tutti_au_host::Result<Self> {
-        Ok(Self::of(AuLoaded::new(component, rate, block)?))
+        Ok(Self::of(AuLoaded::new(
+            component,
+            rate,
+            block,
+            &tutti_fixtures::detached_work(),
+        )?))
     }
 
     /// See [`AuLoaded::new_with_config`].
@@ -66,7 +71,11 @@ impl Au {
         component: tutti_au_host::component::AuComponentRef,
         config: StreamConfig,
     ) -> tutti_au_host::Result<Self> {
-        Ok(Self::of(AuLoaded::new_with_config(component, config)?))
+        Ok(Self::of(AuLoaded::new_with_config(
+            component,
+            config,
+            &tutti_fixtures::detached_work(),
+        )?))
     }
 
     /// The shared test plugin's Audio Unit at `rate`/`block`, loaded the way a

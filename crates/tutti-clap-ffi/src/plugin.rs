@@ -243,6 +243,12 @@ pub struct Plugin {
     _bundle: ManuallyDrop<Bundle>,
     /// Where a drop off the main thread hands the instance's destruction.
     work: MainWorkHandle,
+    /// Whether the owner's collector is running this drop: the value a drop off
+    /// the main thread rebuilt and handed over. The collector holds a main-thread
+    /// token, so its drop tears down in place whatever thread id the plugin was
+    /// made under (a plugin made under `MainThreadMarker::new_unchecked` has a
+    /// "main" thread that is not the OS's), and never defers again.
+    collected: bool,
     // `Send` but not `Sync`: two threads never call the instance's main-thread
     // entries at once.
     _not_sync: PhantomData<Cell<()>>,
@@ -394,6 +400,7 @@ impl Plugin {
             _host: ManuallyDrop::new(host),
             _bundle: ManuallyDrop::new(bundle),
             work,
+            collected: false,
             _not_sync: PhantomData,
         })
     }
@@ -1127,7 +1134,7 @@ impl Drop for Plugin {
     fn drop(&mut self) {
         // Rule 4: retire, then wait out the audio side, then stop, deactivate
         // and destroy, on this (the main) thread, once.
-        if std::thread::current().id() != self.core.roles.main_thread_id() {
+        if !self.collected && std::thread::current().id() != self.core.roles.main_thread_id() {
             // A drop has no token. Off the main thread, `gui.destroy` and the
             // plugin's `destroy` would run on the wrong thread, which a plugin
             // may not survive, and skipping them leaks the instance, its host
@@ -1158,6 +1165,7 @@ impl Drop for Plugin {
                 _host: ManuallyDrop::new(host),
                 _bundle: ManuallyDrop::new(bundle),
                 work: self.work.clone(),
+                collected: true,
                 _not_sync: PhantomData,
             };
             let count = OFF_THREAD_DROPS.fetch_add(1, Ordering::Relaxed) + 1;

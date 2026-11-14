@@ -9,7 +9,7 @@ use tutti_rt::MainThreadMarker;
 /// two threads makes one on each.
 #[must_use]
 pub fn main_thread() -> MainThreadMarker {
-    #[allow(
+    #[expect(
         unsafe_code,
         reason = "test-only: a test thread stands in for the main thread"
     )]
@@ -54,4 +54,18 @@ pub fn main_thread_cases(cases: &[(&str, fn())]) {
             println!("test {name} ... ok");
         }
     }
+}
+
+/// The list [`main_thread_cases`] takes: each function named, paired with its own
+/// name from `stringify!`. `cases!["module"; a, b]` prefixes every name with
+/// `module::`, for a target that gathers the cases of several modules. An entry
+/// may carry `#[cfg(..)]`.
+#[macro_export]
+macro_rules! cases {
+    ($prefix:literal; $($(#[$meta:meta])* $case:ident),* $(,)?) => {
+        &[$($(#[$meta])* (concat!($prefix, "::", stringify!($case)), $case as fn())),*]
+    };
+    ($($(#[$meta:meta])* $case:ident),* $(,)?) => {
+        &[$($(#[$meta])* (stringify!($case), $case as fn())),*]
+    };
 }

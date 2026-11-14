@@ -726,54 +726,18 @@ fn tempo() -> tutti_transport::TempoReader {
 /// The cases run on the process's main thread (`harness = false`): the node's `prepare`
 /// and a fork tell the plugin at once only there.
 fn main() {
-    tutti_fixtures::main_thread_cases(&[
-        (
-            "reset_dispatches_no_mains_changed_to_the_plugin",
-            reset_dispatches_no_mains_changed_to_the_plugin,
-        ),
-        (
-            "blocks_past_64_frames_reach_the_plugin_after_a_prepare",
-            blocks_past_64_frames_reach_the_plugin_after_a_prepare,
-        ),
-        (
-            "set_sample_rate_parks_the_rate_instead_of_dispatching_it",
-            set_sample_rate_parks_the_rate_instead_of_dispatching_it,
-        ),
-        (
-            "the_parked_rate_reaches_the_plugin_on_the_main_thread_drain",
-            the_parked_rate_reaches_the_plugin_on_the_main_thread_drain,
-        ),
-        (
-            "a_prepare_on_the_main_thread_tells_the_plugin_at_once",
-            a_prepare_on_the_main_thread_tells_the_plugin_at_once,
-        ),
-        (
-            "a_drain_with_nothing_parked_dispatches_nothing",
-            a_drain_with_nothing_parked_dispatches_nothing,
-        ),
-        (
-            "the_output_is_what_the_plugin_wrote",
-            the_output_is_what_the_plugin_wrote,
-        ),
-        (
-            "outputs_past_the_tables_are_silent",
-            outputs_past_the_tables_are_silent,
-        ),
-        (
-            "the_handle_counts_lost_parameter_reports",
-            the_handle_counts_lost_parameter_reports,
-        ),
-        (
-            "a_block_past_the_announced_maximum_is_split_before_the_plugin",
-            a_block_past_the_announced_maximum_is_split_before_the_plugin,
-        ),
-        (
-            "an_io_change_reaches_a_subscriber_and_the_shape",
-            an_io_change_reaches_a_subscriber_and_the_shape,
-        ),
-        (
-            "the_shape_declares_the_plugins_buses",
-            the_shape_declares_the_plugins_buses,
-        ),
+    tutti_fixtures::main_thread_cases(tutti_fixtures::cases![
+        reset_dispatches_no_mains_changed_to_the_plugin,
+        blocks_past_64_frames_reach_the_plugin_after_a_prepare,
+        set_sample_rate_parks_the_rate_instead_of_dispatching_it,
+        the_parked_rate_reaches_the_plugin_on_the_main_thread_drain,
+        a_prepare_on_the_main_thread_tells_the_plugin_at_once,
+        a_drain_with_nothing_parked_dispatches_nothing,
+        the_output_is_what_the_plugin_wrote,
+        outputs_past_the_tables_are_silent,
+        the_handle_counts_lost_parameter_reports,
+        a_block_past_the_announced_maximum_is_split_before_the_plugin,
+        an_io_change_reaches_a_subscriber_and_the_shape,
+        the_shape_declares_the_plugins_buses,
     ]);
 }

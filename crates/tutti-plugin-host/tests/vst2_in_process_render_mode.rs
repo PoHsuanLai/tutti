@@ -309,26 +309,11 @@ fn tempo() -> tutti_transport::TempoReader {
 /// The cases run on the process's main thread (`harness = false`): the node's `prepare`
 /// and a fork tell the plugin at once only there.
 fn main() {
-    tutti_fixtures::main_thread_cases(&[
-        (
-            "the_handle_accepts_a_render_mode",
-            the_handle_accepts_a_render_mode,
-        ),
-        (
-            "a_plugin_renders_at_realtime_level_by_default",
-            a_plugin_renders_at_realtime_level_by_default,
-        ),
-        (
-            "an_offline_mode_set_on_the_handle_reaches_the_plugin",
-            an_offline_mode_set_on_the_handle_reaches_the_plugin,
-        ),
-        (
-            "restoring_realtime_reaches_the_plugin",
-            restoring_realtime_reaches_the_plugin,
-        ),
-        (
-            "a_rate_change_keeps_the_render_mode",
-            a_rate_change_keeps_the_render_mode,
-        ),
+    tutti_fixtures::main_thread_cases(tutti_fixtures::cases![
+        the_handle_accepts_a_render_mode,
+        a_plugin_renders_at_realtime_level_by_default,
+        an_offline_mode_set_on_the_handle_reaches_the_plugin,
+        restoring_realtime_reaches_the_plugin,
+        a_rate_change_keeps_the_render_mode,
     ]);
 }

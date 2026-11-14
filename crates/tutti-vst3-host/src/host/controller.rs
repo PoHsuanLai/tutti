@@ -225,7 +225,9 @@ impl Vst3Controller {
 impl Drop for Vst3Controller {
     fn drop(&mut self) {
         // Dropped without a rejoin: the plugin is destroyed here, on the
-        // control side, unless the Processor still renders, in which case it is
+        // control side (`Plugin`'s drop defers the teardown to the owner's
+        // main-thread collector when this is not the thread it was made on),
+        // unless the Processor still renders, in which case it is
         // parked on the shell for the Processor's drop to retire.
         if let Some(loaded) = self.loaded.take() {
             drop(self.shell.controller_gone(loaded));

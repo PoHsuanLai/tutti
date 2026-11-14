@@ -403,10 +403,11 @@ pub struct ShellPlugin {
 ///
 /// **A drop has no token**, so the close is guarded another way: the instance records the
 /// thread it was made on (the one that held the `MainThreadMarker` it was made with), and drops
-/// the plugin properly only there. Dropped anywhere else it **leaks** the plugin, never
-/// closing it and never freeing its core: a plugin that closes on the wrong thread may not
-/// survive, and the live [`RenderHandle`] may still be rendering. The host crate that owns
-/// the instance drops it on the control side.
+/// the plugin properly only there. Dropped anywhere else it hands the close to its owner's
+/// [`MainWorkHandle`], to run at the collector's next
+/// run on the main thread, with the core alive in it: a plugin that closes on the wrong
+/// thread may not survive, and the live [`RenderHandle`] may still be rendering. The host
+/// crate that owns the instance drops it on the control side.
 ///
 /// The drop on the right thread is: close the editor if open, `effStopProcess` if
 /// processing, `effMainsChanged(0)` if resumed, then `effClose`, in that order and under the
@@ -2029,8 +2030,8 @@ impl RenderHandle {
 // that core (which is `Send + Sync`) and a library handle. `Send` is what lets a host load on
 // one thread and own the plugin on another. It permits moving only: the entries that VST2
 // puts on the main thread take a `MainThreadMarker`, which only that thread holds, and a drop off
-// the thread the instance was made on leaks the plugin instead of closing it (see the type's
-// docs). It is not `Sync` (`_not_sync`).
+// the thread the instance was made on defers the close to the owner's main-thread collector
+// (see the type's docs). It is not `Sync` (`_not_sync`).
 unsafe impl Send for PluginInstance {}
 
 /// The entries of the main thread. See the type's docs for which take a token and why.

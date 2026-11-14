@@ -23,12 +23,6 @@ fn vst2_probe() -> std::path::PathBuf {
     tutti_fixtures::vst2_probe().to_path_buf()
 }
 
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThreadMarker {
-    tutti_fixtures::main_thread()
-}
-
 /// A detached stereo session at 48 kHz with the probe loaded in process, on
 /// the outputs, its parameter values read.
 fn session_with_probe() -> (Session, NodeKey) {
@@ -38,7 +32,7 @@ fn session_with_probe() -> (Session, NodeKey) {
         .expect("a detached session builds");
     let node = s
         .add_plugin_blocking(
-            main_thread(),
+            tutti_fixtures::main_thread(),
             PluginLoadRequest::new(PluginRef::file(vst2_probe()).expect("a plugin file")),
         )
         .expect("the in-process VST2 loads");
@@ -131,7 +125,7 @@ fn a_plugin_gui_edit_becomes_the_knob() {
     s.plugin(node)
         .expect("the plugin's handle")
         .handle()
-        .editor_idle(main_thread());
+        .editor_idle(tutti_fixtures::main_thread());
     update(&mut s, Instant::now());
 
     let state = s.mod_state();
@@ -261,7 +255,7 @@ fn a_plugin_echoing_the_lane_keeps_its_knob() {
             .expect("the plugin's handle")
             .handle()
             .clone();
-        handle.editor_idle(main_thread());
+        handle.editor_idle(tutti_fixtures::main_thread());
         update(&mut s, Instant::now());
         assert_eq!(
             s.mod_state().lane(p0.key()).expect("a lane").1.knob(),
@@ -278,17 +272,8 @@ fn a_plugin_echoing_the_lane_keeps_its_knob() {
 }
 
 /// The cases of this module, run by `main`.
-pub(crate) const CASES: &[(&str, fn())] = &[
-    (
-        "vst2_modulation::a_plugin_gui_edit_becomes_the_knob",
-        a_plugin_gui_edit_becomes_the_knob,
-    ),
-    (
-        "vst2_modulation::a_plugins_midi_rewiring_keeps_its_lanes",
-        a_plugins_midi_rewiring_keeps_its_lanes,
-    ),
-    (
-        "vst2_modulation::a_plugin_echoing_the_lane_keeps_its_knob",
-        a_plugin_echoing_the_lane_keeps_its_knob,
-    ),
+pub(crate) const CASES: &[(&str, fn())] = tutti_fixtures::cases!["vst2_modulation";
+a_plugin_gui_edit_becomes_the_knob,
+a_plugins_midi_rewiring_keeps_its_lanes,
+a_plugin_echoing_the_lane_keeps_its_knob,
 ];

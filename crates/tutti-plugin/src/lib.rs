@@ -33,7 +33,7 @@
 //! // `sample_rate` takes anything convertible to `SampleRate` — the engine's
 //! // unit type, not a bare rate that could be a block size.
 //! let file = PluginRef::file("/usr/lib/vst3/MyPlugin.vst3").expect("a plugin file");
-//! let (_collector, work) = tutti_plugin_types::MainWork::new();
+//! let (_collector, work) = tutti_plugin::MainWork::new();
 //! let plugin = Plugin::open(None, &work, &file, SampleRate::SR_48K)?;
 //! println!("{} by {}", plugin.descriptor().name, plugin.descriptor().vendor);
 //!
@@ -358,8 +358,10 @@ mod host;
 pub use tutti_plugin_ipc::BridgeConfig;
 
 // The main-thread token the editor, state and polling entries take; a host
-// makes it once, on its UI thread, with `MainThreadMarker::new`.
-pub use tutti_plugin_types::MainThreadMarker;
+// makes it once, on its UI thread, with `MainThreadMarker::new`. `MainWork` is the
+// collector a host runs on that thread, and `MainWorkHandle` what a plugin it loads
+// defers its close through.
+pub use tutti_plugin_types::{MainThreadMarker, MainWork, MainWorkHandle};
 // `PluginClient::set_automation_state` takes this, so callers must be able to
 // name it without depending on tutti-plugin-types directly.
 pub use tutti_plugin_types::AutomationMode;

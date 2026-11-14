@@ -150,16 +150,10 @@ impl Subject for Plugin {
     fn rig() -> Rig {
         let (mut session, loaded) = Self::notes();
         let handle = session
-            .instrument_plugin(main_thread(), loaded)
+            .instrument_plugin(tutti_fixtures::main_thread(), loaded)
             .expect("the plugin declares itself an instrument");
         let mut rig = Rig::wired(session, handle);
         rig.pace = std::time::Duration::from_millis(10);
         rig
     }
-}
-
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThreadMarker {
-    tutti_fixtures::main_thread()
 }

@@ -142,21 +142,9 @@ fn a_spawned_thread_cannot_make_a_main_thread_token() {
 }
 
 /// The cases of this module, run by `main`.
-pub(crate) const CASES: &[(&str, fn())] = &[
-    (
-        "main_work::a_sessions_update_runs_only_its_own_plugins_closes",
-        a_sessions_update_runs_only_its_own_plugins_closes,
-    ),
-    (
-        "main_work::close_runs_the_closes_the_session_is_owed",
-        close_runs_the_closes_the_session_is_owed,
-    ),
-    (
-        "main_work::a_session_dropped_off_the_main_thread_counts_its_stranded_closes",
-        a_session_dropped_off_the_main_thread_counts_its_stranded_closes,
-    ),
-    (
-        "main_work::a_spawned_thread_cannot_make_a_main_thread_token",
-        a_spawned_thread_cannot_make_a_main_thread_token,
-    ),
+pub(crate) const CASES: &[(&str, fn())] = tutti_fixtures::cases!["main_work";
+a_sessions_update_runs_only_its_own_plugins_closes,
+close_runs_the_closes_the_session_is_owed,
+a_session_dropped_off_the_main_thread_counts_its_stranded_closes,
+a_spawned_thread_cannot_make_a_main_thread_token,
 ];

@@ -399,7 +399,8 @@ mod halves {
 
     fn active(rate: tutti_types::SampleRate, block: usize) -> (AuProcessor, AuController) {
         let comp = find_apple_delay().expect("AUDelay should be present");
-        let loaded = AuLoaded::new(comp, rate, block as u32).unwrap();
+        let loaded =
+            AuLoaded::new(comp, rate, block as u32, &tutti_fixtures::detached_work()).unwrap();
         loaded
             .activate(main_thread(), prepare(rate, block))
             .unwrap_or_else(|e| panic!("AUDelay activates: {}", e.reason))
@@ -558,10 +559,15 @@ mod halves {
             .with_mode(tutti_plugin_types::RenderMode::Offline);
 
         let sampler = support::corpus::SAMPLER.require();
-        let (p, c) = AuLoaded::new(sampler.component, tutti_types::SampleRate::SR_44K1, 512)
-            .unwrap()
-            .activate(main_thread(), offline)
-            .unwrap_or_else(|e| panic!("AUSampler activates: {}", e.reason));
+        let (p, c) = AuLoaded::new(
+            sampler.component,
+            tutti_types::SampleRate::SR_44K1,
+            512,
+            &tutti_fixtures::detached_work(),
+        )
+        .unwrap()
+        .activate(main_thread(), offline)
+        .unwrap_or_else(|e| panic!("AUSampler activates: {}", e.reason));
         assert!(
             c.render_mode_accepted(),
             "AUSampler takes the offline-render property"
@@ -570,10 +576,15 @@ mod halves {
         drop((p, c));
 
         let comp = find_apple_delay().expect("AUDelay should be present");
-        let (p, c) = AuLoaded::new(comp, tutti_types::SampleRate::SR_44K1, 512)
-            .unwrap()
-            .activate(main_thread(), offline)
-            .unwrap_or_else(|e| panic!("AUDelay activates: {}", e.reason));
+        let (p, c) = AuLoaded::new(
+            comp,
+            tutti_types::SampleRate::SR_44K1,
+            512,
+            &tutti_fixtures::detached_work(),
+        )
+        .unwrap()
+        .activate(main_thread(), offline)
+        .unwrap_or_else(|e| panic!("AUDelay activates: {}", e.reason));
         assert!(
             !c.render_mode_accepted(),
             "AUDelay does not implement the property, so it did not take the mode"

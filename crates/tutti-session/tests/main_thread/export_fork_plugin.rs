@@ -98,12 +98,6 @@ fn probe_env(key: &str, value: impl ToString) {
     unsafe { std::env::set_var(key, value.to_string()) };
 }
 
-/// This process's main thread. Each test is its own process under nextest, so
-/// the claim cannot be refused.
-fn main_thread() -> tutti_plugin_types::MainThreadMarker {
-    tutti_fixtures::main_thread()
-}
-
 /// A detached stereo session at the export's rate, with the reference plugin
 /// loaded from `path` in `mode` and routed to the outputs.
 fn session_with_probe_at(
@@ -121,7 +115,7 @@ fn session_with_probe_at(
     session.graph().set_sample_rate(SampleRate::of(RATE));
     let probe = session
         .add_plugin_blocking(
-            main_thread(),
+            tutti_fixtures::main_thread(),
             PluginLoadRequest::new(
                 PluginRef::file(path)
                     .expect("a plugin file")
@@ -352,25 +346,10 @@ fn a_plugin_fork_that_crashes_mid_export_is_a_named_failure() {
 }
 
 /// The cases of this module, run by `main`.
-pub(crate) const CASES: &[(&str, fn())] = &[
-    (
-        "export_fork_plugin::a_plugin_effect_exports_through_its_fork",
-        a_plugin_effect_exports_through_its_fork,
-    ),
-    (
-        "export_fork_plugin::a_plugin_fork_that_cannot_be_built_is_a_named_failure",
-        a_plugin_fork_that_cannot_be_built_is_a_named_failure,
-    ),
-    (
-        "export_fork_plugin::an_exported_plugin_instrument_plays_its_clip",
-        an_exported_plugin_instrument_plays_its_clip,
-    ),
-    (
-        "export_fork_plugin::an_exported_in_process_plugin_instrument_plays_its_clip",
-        an_exported_in_process_plugin_instrument_plays_its_clip,
-    ),
-    (
-        "export_fork_plugin::a_plugin_fork_that_crashes_mid_export_is_a_named_failure",
-        a_plugin_fork_that_crashes_mid_export_is_a_named_failure,
-    ),
+pub(crate) const CASES: &[(&str, fn())] = tutti_fixtures::cases!["export_fork_plugin";
+a_plugin_effect_exports_through_its_fork,
+a_plugin_fork_that_cannot_be_built_is_a_named_failure,
+an_exported_plugin_instrument_plays_its_clip,
+an_exported_in_process_plugin_instrument_plays_its_clip,
+a_plugin_fork_that_crashes_mid_export_is_a_named_failure,
 ];

@@ -35,10 +35,6 @@ fn set_server() {
     unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", plugin_server()) };
 }
 
-fn main_thread() -> tutti_plugin_types::MainThreadMarker {
-    tutti_fixtures::main_thread()
-}
-
 /// An offline stereo session at 48 kHz whose block is the plugin's pipeline
 /// chunk ([`BLOCK`]: with no device callback size known, a plugin ships its
 /// chunk at the graph's `MaxBlock`).
@@ -54,7 +50,7 @@ fn offline() -> Session {
 fn add_probe_on_outputs(s: &mut Session) -> tutti_graph::NodeKey {
     let node = s
         .add_plugin_blocking(
-            main_thread(),
+            tutti_fixtures::main_thread(),
             PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
         )
         .expect("the reference CLAP plugin loads");

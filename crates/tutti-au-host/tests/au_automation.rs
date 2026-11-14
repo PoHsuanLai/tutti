@@ -33,7 +33,7 @@ fn delay_loaded() -> AuLoaded {
         componentFlagsMask: 0,
     };
     let comp = find_component(&desc).expect("AUDelay ships with macOS");
-    AuLoaded::new(comp, RATE, BLOCK as u32).unwrap()
+    AuLoaded::new(comp, RATE, BLOCK as u32, &tutti_fixtures::detached_work()).unwrap()
 }
 
 fn activate(au: AuLoaded) -> (AuProcessor, AuController) {

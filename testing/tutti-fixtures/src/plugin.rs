@@ -26,8 +26,10 @@ pub struct Pump {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
-/// Runs `work` on a new thread, every millisecond, with a token of its own.
+/// Runs `work` on a new thread, every millisecond, with a token of its own. It
+/// has run once before this returns, so the collector already counts as pumped.
 pub fn pump(work: MainWork) -> Pump {
+    work.run(main_thread());
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let seen = std::sync::Arc::clone(&stop);
     let thread = std::thread::spawn(move || {

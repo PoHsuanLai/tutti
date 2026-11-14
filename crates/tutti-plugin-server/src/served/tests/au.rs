@@ -425,6 +425,7 @@ fn a_unit_without_the_callbacks_is_not_published_to() {
             .component,
         SAMPLE_RATE,
         512,
+        &tutti_fixtures::detached_work(),
     )
     .expect("AUDelay instantiates");
     assert!(loaded.transport().is_none(), "nothing installed it");

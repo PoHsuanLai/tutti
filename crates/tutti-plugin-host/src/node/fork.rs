@@ -150,11 +150,12 @@ where
     /// again.
     pub(super) fn of(bound: &PluginNode<F>) -> Option<Self> {
         let client = &bound.client;
+        let reload = client.reload.as_ref()?;
         Some(Self {
             tempo: bound.tempo.clone(),
             live: Arc::downgrade(&client.inner),
-            origin: client.origin.as_ref()?.origin.clone(),
-            work: client.origin.as_ref()?.work.clone(),
+            origin: reload.origin.clone(),
+            work: reload.work.clone(),
             id: client.descriptor.id.clone(),
             sample_rate: tutti_types::SampleRate::new(client.sample_rate)?,
             features: client.features,

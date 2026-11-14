@@ -188,8 +188,6 @@ struct Extensions {
     audio_presentation_latency: Option<ComPtr<IAudioPresentationLatency>>,
 }
 
-/// What a [`Plugin`] holds: the instance itself, apart from the wrapper whose
-/// `Drop` decides where the teardown runs. Reached through `Plugin`'s `Deref`.
 /// The thread a plugin was made on, under a `MainThreadMarker`, and that proof: a
 /// drop has no token, and on this thread the stored one is the caller's.
 struct Home {
@@ -211,6 +209,8 @@ impl Home {
     }
 }
 
+/// What a [`Plugin`] holds: the instance itself, apart from the wrapper whose
+/// `Drop` decides where the teardown runs. Reached through `Plugin`'s `Deref`.
 pub struct Parts {
     // Fields drop in declaration order after `Drop::drop`. Every COM object
     // below is implemented inside the plugin's module, so the module is the
@@ -261,14 +261,14 @@ pub(super) struct CallScope;
 /// and deactivate, close the editor, disconnect a separate controller, clear
 /// the component handler, terminate the controller, terminate the component.
 ///
-/// A plugin dropped with an editor open on a thread that is not the main thread
-/// is not torn down there (a view cannot be detached off its thread, and
-/// `terminate` and a module's close are main-thread calls too): it is handed to
-/// its owner's main-thread collector (`tutti_plugin_types::MainWorkHandle`) and dropped at the
-/// collector's next run, as the CLAP and VST2 hosts do.
+/// A plugin dropped on a thread other than the one it was made on is not torn
+/// down there (`terminate` and a module's close are main-thread calls, and a
+/// view cannot be detached off its thread): it is handed to its owner's
+/// main-thread collector (`tutti_plugin_types::MainWorkHandle`) and dropped at
+/// the collector's next run, as the CLAP and VST2 hosts do.
 pub struct Plugin {
     parts: ManuallyDrop<Parts>,
-    /// Where a drop with an editor open off the main thread hands the teardown.
+    /// Where a drop off the plugin's home thread hands the teardown.
     work: MainWorkHandle,
 }
 
@@ -305,10 +305,10 @@ impl Drop for Plugin {
     fn drop(&mut self) {
         // SAFETY: taken once, here, and `self.parts` is not used again.
         let parts = unsafe { ManuallyDrop::take(&mut self.parts) };
-        if parts.editor.is_some() && parts.home.here().is_none() {
+        if parts.home.here().is_none() {
             eprintln!(
-                "tutti-vst3-ffi: a VST3 plugin with an open editor was dropped off the main thread; its \
-                 teardown is handed to the main thread"
+                "tutti-vst3-ffi: a VST3 plugin was dropped off the main thread; its teardown is \
+                 handed to the main thread"
             );
             // Never the audio thread: a unit leaves the graph on the control side
             // (`MainWorkHandle::defer`, "Never from an audio thread"). The audio half holds
@@ -342,13 +342,15 @@ impl std::fmt::Debug for Parts {
 // breaks the SDK's contract, not this type's. The host objects are `Send + Sync`
 // and touch atomics, queues and mutexes only. The editor view, the controller,
 // the component's buses and state, and the lifecycle calls are main-thread by
-// spec: each of those entries takes a `MainThreadMarker`, which only the claiming
-// thread holds. The tokenless entries are `latency_samples` and `tail_samples`
+// spec: each of those entries takes a `MainThreadMarker`, which only the main
+// thread holds. `Home` stores the marker but hands it out only on the thread it
+// was made on (thread ids are never reused), so moving it to another thread
+// does not move the proof. The tokenless entries are `latency_samples` and `tail_samples`
 // (plain getters; see their docs), `is_active`, `set_processing` and
 // `audio_side` (audio-half bookkeeping under the claim), and the
 // `MidiLearn` handle, which forwards live MIDI. `Plugin`'s `Drop` has no token:
-// with an editor open and no main thread under it, it hands the whole plugin to
-// the owner's main-thread collector (`MainWorkHandle`); otherwise it tears down as usual.
+// off the thread the plugin was made on, it hands the whole plugin to the
+// owner's main-thread collector (`MainWorkHandle`); on it, it tears down as usual.
 unsafe impl Send for Parts {}
 
 impl Parts {

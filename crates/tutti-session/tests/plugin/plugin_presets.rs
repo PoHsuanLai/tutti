@@ -8,13 +8,9 @@
 //! count the environment sets.
 
 use tutti_plugin::catalog::PluginRef;
-use tutti_plugin_types::{MainThreadMarker, PresetError};
+use tutti_plugin_types::PresetError;
 use tutti_session::{PluginLoadRequest, PresetKind, Session};
 use tutti_types::{ChannelLayout, SampleRate};
-
-fn main_thread() -> MainThreadMarker {
-    tutti_fixtures::main_thread()
-}
 
 #[cfg(feature = "clap")]
 mod clap {
@@ -37,7 +33,7 @@ mod clap {
             .expect("an offline session builds");
         let node = s
             .add_plugin_blocking(
-                main_thread(),
+                tutti_fixtures::main_thread(),
                 PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
             )
             .expect("the reference CLAP plugin loads")
@@ -62,7 +58,7 @@ mod clap {
     #[test]
     fn clap_loads_a_preset_file_and_lists_nothing() {
         let (mut s, node) = loaded();
-        let mut ui = s.main(main_thread());
+        let mut ui = s.main(tutti_fixtures::main_thread());
         let plugin = ui.plugin(node).unwrap();
         let presets = plugin.presets().expect("CLAP has a preset-load extension");
         assert_eq!(presets.kind(), PresetKind::File);
@@ -120,7 +116,7 @@ mod clap {
         }
         let before = cutoff(&s, node).expect("Cutoff is read");
 
-        let mut ui = s.main(main_thread());
+        let mut ui = s.main(tutti_fixtures::main_thread());
         ui.plugin(node)
             .unwrap()
             .presets()
@@ -155,7 +151,7 @@ mod vst2 {
             .expect("a detached session builds");
         let node = s
             .add_plugin_blocking(
-                main_thread(),
+                tutti_fixtures::main_thread(),
                 PluginLoadRequest::new(
                     PluginRef::file(tutti_fixtures::vst2_probe().to_path_buf())
                         .expect("a plugin file"),
@@ -173,7 +169,7 @@ mod vst2 {
     #[test]
     fn a_listed_preset_loads_by_its_id() {
         let (mut s, node, _env) = probe_with("3");
-        let mut ui = s.main(main_thread());
+        let mut ui = s.main(tutti_fixtures::main_thread());
         let plugin = ui.plugin(node).unwrap();
         let presets = plugin.presets().expect("VST2 programs are presets");
         assert_eq!(presets.kind(), PresetKind::Browse);
@@ -198,7 +194,7 @@ mod vst2 {
     #[test]
     fn a_plugin_with_no_programs_has_no_presets() {
         let (mut s, node, _env) = probe_with("0");
-        let mut ui = s.main(main_thread());
+        let mut ui = s.main(tutti_fixtures::main_thread());
         let plugin = ui.plugin(node).unwrap();
         assert!(matches!(plugin.presets(), Err(PresetError::Unsupported)));
     }

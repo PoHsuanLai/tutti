@@ -694,7 +694,7 @@ pub(crate) struct Outgoing {
 /// owner of an in-process plugin tears its editor down, a main-thread call.
 /// `Session` is `Send` and has no main thread of its own, so whatever
 /// retires a record parks it here instead of dropping it, and the view that
-/// holds the proof empties the yard. A host that never claims the main
+/// holds the proof empties the yard. A host that never reaches the OS's main
 /// thread (a headless one) never empties it: [`len`](Self::len) is what
 /// `Phase::Plugins` warns on past [`Graveyard::WARN_AT`].
 #[derive(Default)]
@@ -2835,7 +2835,10 @@ mod tests {
     #[cfg(feature = "clap")]
     #[test]
     fn a_reload_that_resolves_in_process_is_refused_unopened() {
-        assert!(MainThreadMarker::new().is_none(), "nobody claimed");
+        assert!(
+            MainThreadMarker::new().is_none(),
+            "this test thread is not the main thread"
+        );
         let mut rig = rig(None);
         rig.recovering_in_process();
         let job = rig.plugins_at(0).pop().expect("the reload is submitted");
@@ -2856,7 +2859,10 @@ mod tests {
             ),
             "{cause:?}"
         );
-        assert!(MainThreadMarker::new().is_none(), "still nobody claimed");
+        assert!(
+            MainThreadMarker::new().is_none(),
+            "still not the main thread"
+        );
     }
 
     /// **A reload job that outlives its node lands nowhere, silently.** The

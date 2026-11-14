@@ -60,7 +60,6 @@ fn a_pool_thread_is_answered_while_the_main_thread_updates_the_session() {
 }
 
 /// The cases of this module, run by `main`.
-pub(crate) const CASES: &[(&str, fn())] = &[(
-    "vst2_off_main_handle::a_pool_thread_is_answered_while_the_main_thread_updates_the_session",
-    a_pool_thread_is_answered_while_the_main_thread_updates_the_session,
-)];
+pub(crate) const CASES: &[(&str, fn())] = tutti_fixtures::cases!["vst2_off_main_handle";
+a_pool_thread_is_answered_while_the_main_thread_updates_the_session,
+];

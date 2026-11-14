@@ -96,7 +96,7 @@ macro_rules! placed {
 /// use tutti_plugin::catalog::PluginRef;
 ///
 /// let file = PluginRef::file("/usr/lib/vst3/MyPlugin.vst3").expect("a plugin file");
-/// let (_collector, work) = tutti_plugin_types::MainWork::new();
+/// let (_collector, work) = tutti_plugin::MainWork::new();
 /// let plugin = Plugin::open(None, &work, &file, SampleRate::SR_48K)?;
 /// println!("{} ({:?})", plugin.descriptor().name, plugin.role());
 /// if plugin.takes_midi() {
@@ -131,7 +131,7 @@ impl Plugin {
     /// # fn ex() -> tutti_plugin_types::BridgeResult<()> {
     /// use tutti_plugin::catalog::{Plugin, PluginRef};
     /// let foo = PluginRef::file("/Library/Audio/Plug-Ins/VST3/Foo.vst3").expect("a plugin file");
-    /// let (_collector, work) = tutti_plugin_types::MainWork::new();
+    /// let (_collector, work) = tutti_plugin::MainWork::new();
     /// let plugin = Plugin::open(None, &work, &foo, tutti_types::SampleRate::SR_48K)?;
     /// # Ok(()) }
     /// ```

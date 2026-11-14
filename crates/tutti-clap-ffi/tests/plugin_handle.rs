@@ -109,12 +109,7 @@ fn load_with(callbacks: Arc<Recorder>, work: &tutti_plugin_types::MainWorkHandle
         .expect("selects");
     let host = Host::new(callbacks);
     bundle
-        .instantiate(
-            index,
-            host,
-            Arc::new(ThreadRoles::new(main_thread())),
-            work.clone(),
-        )
+        .instantiate(index, host, Arc::new(ThreadRoles::new(main_thread())), work)
         .expect("instantiates")
 }
 

@@ -32,10 +32,6 @@ fn probe() -> &'static ClapProbe {
     })
 }
 
-fn main_thread() -> tutti_plugin_types::MainThreadMarker {
-    tutti_fixtures::main_thread()
-}
-
 /// A session with the reference plugin hosted in this process, an editor open
 /// on it, and the plugin's latched command run by the editor's `show`.
 fn session_with_open_editor(command: u32) -> Session {
@@ -52,9 +48,9 @@ fn session_with_open_editor(command: u32) -> Session {
         .with_hosting(Hosting::InProcess);
     let load = s.plugin_load(PluginLoadRequest::new(plugin));
     let node = s
-        .add_plugin(main_thread(), load.run())
+        .add_plugin(tutti_fixtures::main_thread(), load.run())
         .expect("the reference plugin loads in this process");
-    s.main(main_thread())
+    s.main(tutti_fixtures::main_thread())
         .plugin(node)
         .expect("it is hosted")
         .editor()
@@ -74,7 +70,7 @@ fn an_in_process_editors_descriptor_is_served_by_the_views_update() {
         "the plugin registered a descriptor when its editor was shown"
     );
 
-    let mut ui = s.main(main_thread());
+    let mut ui = s.main(tutti_fixtures::main_thread());
     let _ = ui.update();
     assert_eq!(
         probe.thread_capture().fd_fires,
@@ -107,7 +103,7 @@ fn an_in_process_editors_timer_is_served_by_the_views_update_at_its_period() {
     assert!(probe.thread_capture().timer_registered);
     let ticks = || probe.thread_capture().sites[Site::OnTimer as usize].visits;
 
-    let mut ui = s.main(main_thread());
+    let mut ui = s.main(tutti_fixtures::main_thread());
     let _ = ui.update();
     assert_eq!(ticks(), 0, "not before its period");
     std::thread::sleep(Duration::from_millis(250));
@@ -119,13 +115,7 @@ fn an_in_process_editors_timer_is_served_by_the_views_update_at_its_period() {
 }
 
 /// The cases of this module, run by `main`.
-pub(crate) const CASES: &[(&str, fn())] = &[
-    (
-        "plugin_event_sources::an_in_process_editors_descriptor_is_served_by_the_views_update",
-        an_in_process_editors_descriptor_is_served_by_the_views_update,
-    ),
-    (
-        "plugin_event_sources::an_in_process_editors_timer_is_served_by_the_views_update_at_its_period",
-        an_in_process_editors_timer_is_served_by_the_views_update_at_its_period,
-    ),
+pub(crate) const CASES: &[(&str, fn())] = tutti_fixtures::cases!["plugin_event_sources";
+an_in_process_editors_descriptor_is_served_by_the_views_update,
+an_in_process_editors_timer_is_served_by_the_views_update_at_its_period,
 ];

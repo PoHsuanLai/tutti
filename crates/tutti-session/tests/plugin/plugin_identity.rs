@@ -21,10 +21,6 @@ fn second_id() -> &'static str {
         .expect("utf-8")
 }
 
-fn main_thread() -> tutti_plugin_types::MainThreadMarker {
-    tutti_fixtures::main_thread()
-}
-
 fn session() -> Session {
     // SAFETY: nextest runs each test in its own process, and this is set before
     // the first server is spawned, from the test's own thread.
@@ -53,7 +49,7 @@ fn entry_ref(path: &std::path::Path, id: &str) -> PluginRef {
 fn the_second_plugin_of_a_bundle_loads_by_its_entry() {
     let path = clap_probe();
     let mut s = session();
-    let main = main_thread();
+    let main = tutti_fixtures::main_thread();
 
     let second = s
         .add_plugin_blocking(main, PluginLoadRequest::new(entry_ref(&path, second_id())))
@@ -86,7 +82,7 @@ fn a_state_is_refused_by_another_plugin() {
     let first_ref = entry_ref(&path, first_id());
     let second_ref = entry_ref(&path, second_id());
     let mut s = session();
-    let main = main_thread();
+    let main = tutti_fixtures::main_thread();
     let first = s
         .add_plugin_blocking(main, PluginLoadRequest::new(first_ref.clone()))
         .expect("loads");

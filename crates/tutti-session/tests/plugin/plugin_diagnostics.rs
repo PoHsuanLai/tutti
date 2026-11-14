@@ -9,16 +9,11 @@
 
 use tutti_buffers::InterleavedMut;
 use tutti_plugin::catalog::PluginRef;
-use tutti_plugin_types::MainThreadMarker;
 use tutti_session::{PluginLoadRequest, Root, Session};
 use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 512;
-
-fn main_thread() -> MainThreadMarker {
-    tutti_fixtures::main_thread()
-}
 
 fn offline() -> Session {
     Session::builder()
@@ -56,7 +51,7 @@ mod clap {
         let mut s = offline();
         let node = s
             .add_plugin_blocking(
-                main_thread(),
+                tutti_fixtures::main_thread(),
                 PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
             )
             .expect("the reference CLAP plugin loads");
@@ -200,7 +195,7 @@ mod vst2 {
         let mut s = offline();
         let node = s
             .add_plugin_blocking(
-                main_thread(),
+                tutti_fixtures::main_thread(),
                 PluginLoadRequest::new(
                     PluginRef::file(tutti_fixtures::vst2_probe().to_path_buf())
                         .expect("a plugin file"),

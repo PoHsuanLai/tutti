@@ -46,10 +46,6 @@ fn set_server() {
     }
 }
 
-fn main_thread() -> tutti_plugin_types::MainThreadMarker {
-    tutti_fixtures::main_thread()
-}
-
 /// `1.0` at absolute frame [`FIRE`], `+0.0` everywhere else.
 #[derive(Clone, Default)]
 struct Click {
@@ -92,7 +88,7 @@ fn rig(mode: NodeMode) -> Rig {
         .expect("an offline session builds");
     let plugin = s
         .add_plugin_blocking(
-            main_thread(),
+            tutti_fixtures::main_thread(),
             PluginLoadRequest::new(PluginRef::file(clap_probe()).expect("a plugin file")),
         )
         .expect("the reference CLAP plugin loads");

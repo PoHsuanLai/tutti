@@ -282,18 +282,9 @@ fn tempo() -> tutti_transport::TempoReader {
 /// The cases run on the process's main thread (`harness = false`): the node's `prepare`
 /// and a fork tell the plugin at once only there.
 fn main() {
-    tutti_fixtures::main_thread_cases(&[
-        (
-            "a_moving_parameter_reaches_the_plugin",
-            a_moving_parameter_reaches_the_plugin,
-        ),
-        (
-            "a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it",
-            a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it,
-        ),
-        (
-            "an_export_renders_an_edit_made_in_the_plugin_as_live_does",
-            an_export_renders_an_edit_made_in_the_plugin_as_live_does,
-        ),
+    tutti_fixtures::main_thread_cases(tutti_fixtures::cases![
+        a_moving_parameter_reaches_the_plugin,
+        a_held_value_is_sent_once_and_an_edit_on_the_plugin_survives_it,
+        an_export_renders_an_edit_made_in_the_plugin_as_live_does,
     ]);
 }

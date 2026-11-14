@@ -28,6 +28,8 @@ extern "C" fn init() {
 static INIT: extern "C" fn() = init;
 
 pub(super) fn is_main_thread() -> bool {
+    // Referencing `INIT` keeps its object in an MSVC rlib link, which would otherwise drop it.
+    core::hint::black_box(&INIT);
     let primary = PRIMARY.load(Ordering::Relaxed);
     // SAFETY: as above.
     primary != 0 && primary == unsafe { GetCurrentThreadId() }

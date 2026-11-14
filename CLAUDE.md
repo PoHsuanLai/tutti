@@ -42,7 +42,8 @@ std only. A rule the compiler already enforces is not a gate.
   the engineering notes before touching `tutti-plugin-ipc`'s transport or plugin loading.
 - **Review:** every PR is reviewed by someone other than its author against
   CONTRIBUTING.md's checklist before it is queued; the review is recorded in its
-  description.
+  description. A reviewed PR with CI green and no open blocking finding is queued by its
+  author.
 
 ## Testing
 

@@ -51,7 +51,7 @@ const EXPRESSION_DEFAULTS: [(NoteExpressionType, f64); 4] = [
 /// ([`groups_dropped`](Self::groups_dropped)), never folded onto another
 /// Group's channels (M2-104 section 2.1.2).
 #[derive(Debug)]
-pub struct MidiEncoder {
+pub(crate) struct MidiEncoder {
     notes: PerNoteState,
     /// The plugin's event input buses: a Group is the bus of its number.
     buses: usize,

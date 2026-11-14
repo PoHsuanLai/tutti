@@ -377,10 +377,11 @@ fn a_custom_dimension_stages_and_reads_back() {
         Payload::ExpressionValue(e) => assert_eq!(e.typeId, 100_042),
         other => panic!("expected NoteExpression, got {other:?}"),
     }
-    let back = staged.to_note_expression().expect("decodes back");
-    assert_eq!(back.expression_type, NoteExpressionType::Custom(100_042));
-    assert_eq!(back.value, 0.75);
-    assert_eq!(back.note_id, 3);
+    let Payload::ExpressionValue(e) = &staged.payload else {
+        unreachable!("matched above")
+    };
+    assert_eq!((e.value, e.noteId), (0.75, 3));
+    assert_eq!(staged.sample_offset(), 12);
 }
 
 /// `Expression` is a real VST3 dimension (id 4) and must survive staging
@@ -401,10 +402,11 @@ fn expression_dimension_stages_and_reads_back() {
         Payload::ExpressionValue(e) => assert_eq!(e.typeId, 4),
         other => panic!("expected NoteExpression, got {other:?}"),
     }
-    let back = ev.to_note_expression().expect("decodes");
-    assert_eq!(back.expression_type, NoteExpressionType::Expression);
-    assert_eq!(back.note_id, expr.note_id);
-    assert_eq!(back.sample_offset, 3);
+    let Payload::ExpressionValue(e) = &ev.payload else {
+        unreachable!("matched above")
+    };
+    assert_eq!(e.noteId, expr.note_id);
+    assert_eq!(ev.sample_offset(), 3);
 }
 
 /// A non-finite expression value is dropped, not passed through and not
@@ -443,8 +445,10 @@ fn an_out_of_range_expression_value_is_clamped_not_dropped() {
             value: input,
         };
         let staged = expr.to_event().expect("a finite value is always encodable");
-        let back = staged.to_note_expression().expect("decodes");
-        assert_eq!(back.value, want, "{input} must clamp to {want}");
+        let Payload::ExpressionValue(e) = &staged.payload else {
+            panic!("expected NoteExpression, got {:?}", staged.payload)
+        };
+        assert_eq!(e.value, want, "{input} must clamp to {want}");
     }
 }
 
@@ -463,8 +467,10 @@ fn an_in_range_expression_value_is_untouched() {
             value,
         };
         let staged = expr.to_event().expect("in-range is encodable");
-        let back = staged.to_note_expression().expect("decodes");
-        assert_eq!(back.value, value, "{value} is already normalized");
+        let Payload::ExpressionValue(e) = &staged.payload else {
+            panic!("expected NoteExpression, got {:?}", staged.payload)
+        };
+        assert_eq!(e.value, value, "{value} is already normalized");
     }
 }
 
@@ -551,10 +557,12 @@ fn per_note_pitch_bend_becomes_tuning_expression() {
     );
     let (id, vst3) = encode_live(&event);
     let vst3 = vst3.expect("per-note bend should map");
-    let expr = vst3.to_note_expression().expect("is a note expression");
-    assert_eq!(expr.expression_type, NoteExpressionType::Tuning);
-    assert_eq!(expr.note_id, id, "the tuning is the sounding note's");
-    assert_eq!(expr.sample_offset, 12);
+    let Payload::ExpressionValue(expr) = &vst3.payload else {
+        panic!("is a note expression, got {:?}", vst3.payload)
+    };
+    assert_eq!(expr.typeId, 2, "VST3 `kTuningTypeID`");
+    assert_eq!(expr.noteId, id, "the tuning is the sounding note's");
+    assert_eq!(vst3.sample_offset(), 12);
     assert!((expr.value - 0.5).abs() < 0.01, "center bend → 0.5");
     // It is NOT a MIDI channel-voice event.
     assert!(vst3.to_midi().is_none());
@@ -796,10 +804,8 @@ fn note_expression_int_round_trips_with_its_sign() {
         panic!("not an int expression");
     };
     assert_eq!(raw.value, (-1234i64).cast_unsigned(), "the same 64 bits");
-    let back = event.to_expression_int().expect("int expr");
-    assert_eq!(back.value, -1234);
-    assert_eq!(back.note_id, spec_note_id(1, 50));
-    assert_eq!((back.type_id, back.sample_offset), (3, 9));
+    assert_eq!(raw.noteId, spec_note_id(1, 50));
+    assert_eq!((raw.typeId, event.sample_offset()), (3, 9));
     assert!(event.to_midi().is_none(), "not a MIDI message");
 }
 
@@ -847,25 +853,27 @@ fn harmony_values_round_trip_through_a_list() {
                 .find(|e| f(&e.payload))
                 .expect("staged")
         };
-        let back = by_kind(|p| matches!(p, Payload::Chord(_)))
-            .to_chord(staged.text)
-            .expect("chord");
+        let chord_event = by_kind(|p| matches!(p, Payload::Chord(_)));
+        let Payload::Chord(back) = &chord_event.payload else {
+            unreachable!("found by kind")
+        };
         assert_eq!((back.root, back.bass_note, back.mask), (60, 48, chord.mask));
-        assert_eq!((back.sample_offset, &back.text), (12, &chord.text));
+        assert_eq!(chord_event.sample_offset(), 12);
+        assert_eq!(back.text.slice(staged.text), Some(chord.text.as_slice()));
 
-        let back = by_kind(|p| matches!(p, Payload::Scale(_)))
-            .to_scale(staged.text)
-            .expect("scale");
-        assert_eq!(
-            (back.root, back.mask, &back.text),
-            (62, 0x5ab5, &scale.text)
-        );
+        let Payload::Scale(back) = &by_kind(|p| matches!(p, Payload::Scale(_))).payload else {
+            unreachable!("found by kind")
+        };
+        assert_eq!((back.root, back.mask), (62, 0x5ab5));
+        assert_eq!(back.text.slice(staged.text), Some(scale.text.as_slice()));
 
-        let back = by_kind(|p| matches!(p, Payload::ExpressionText(_)))
-            .to_expression_text(staged.text)
-            .expect("text");
+        let Payload::ExpressionText(back) =
+            &by_kind(|p| matches!(p, Payload::ExpressionText(_))).payload
+        else {
+            unreachable!("found by kind")
+        };
         assert_eq!((back.note_id, back.type_id), (spec_note_id(2, 64), 7));
-        assert_eq!(back.text, text.text);
+        assert_eq!(back.text.slice(staged.text), Some(text.text.as_slice()));
         assert!(
             by_kind(|p| matches!(p, Payload::Chord(_)))
                 .to_midi()

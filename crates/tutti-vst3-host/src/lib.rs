@@ -303,12 +303,7 @@ pub mod host;
 pub mod types;
 
 pub use error::{LoadCause, LoadStage, Result, Vst3Error};
-pub use events::{
-    Chord, Data, Event, EventExt, EventHeader, EventKind, ExpressionInt, ExpressionText,
-    ExpressionValue, InputEvents, K_DATA_TYPE_MIDI_SYSEX, LegacyCcOut, MidiEncoder, NoteOff,
-    NoteOn, Payload, PolyPressure, Scale, Stager, TextRef, ToEvent, Utf16Chord, Utf16Scale,
-    Utf16Text, drain_midi, expression_type_from_id, expression_type_id,
-};
+pub use events::{Chord, Data, Event, EventHeader, EventKind, ExpressionInt, ExpressionText, ExpressionValue, InputEvents, K_DATA_TYPE_MIDI_SYSEX, LegacyCcOut, NoteOff, NoteOn, Payload, PolyPressure, Scale, Stager, TextRef, Utf16Chord, Utf16Scale, Utf16Text, drain_midi, expression_type_from_id, expression_type_id};
 pub use host::{
     ControllerMapping, FactoryFlags, FactoryInfo, Library, LoadOptions, ProcessFailed,
     ProcessorAny, RestartOutcome, Vst3Controller, Vst3Editor, Vst3Loaded, Vst3Processor, class_id,

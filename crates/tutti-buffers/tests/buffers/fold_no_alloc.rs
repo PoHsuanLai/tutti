@@ -4,7 +4,8 @@
 //! happens outside the gate.
 
 use assert_no_alloc::assert_no_alloc;
-use tutti_types::{ChannelLayout, ChannelTopology, Fold, InterleavedMut, Speaker};
+use tutti_buffers::{Fold, InterleavedMut};
+use tutti_types::{ChannelLayout, ChannelTopology, Speaker};
 
 fn smpte(n: u16) -> ChannelTopology {
     ChannelTopology::smpte(ChannelLayout::from(n)).unwrap()
@@ -52,7 +53,7 @@ fn applying_a_fold_is_allocation_free() {
                 }
                 fold.planar_to_interleaved(
                     |k| &planes[k][..],
-                    InterleavedMut::new(&mut block, dst.layout()),
+                    InterleavedMut::new(&mut block, dst.layout()).unwrap(),
                 );
             }
         });

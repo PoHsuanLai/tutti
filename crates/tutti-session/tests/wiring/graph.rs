@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use tutti_types::MaxBlock;
 
+use tutti_buffers::InterleavedMut;
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::MAX_ROOT_CHANNELS;
 use tutti_graph::Params;
@@ -18,7 +19,7 @@ use tutti_session::{
     Crossfade, CrossfadeRefused, EventInPort, Feeder, InPort, OutPort, RemoveError, Root, Session,
     SessionEvent, SessionNode, root_width,
 };
-use tutti_types::{ChannelLayout, Drive, Hz, InterleavedMut, SampleRate, Samples, Seconds};
+use tutti_types::{ChannelLayout, Drive, Hz, SampleRate, Samples, Seconds};
 use tutti_types::{Latency, Param, UnitParam};
 
 const RATE: SampleRate = SampleRate::SR_48K;
@@ -670,7 +671,7 @@ fn pull(s: &Session, layout: ChannelLayout, frames: usize, block: usize) -> Vec<
     let mut out = Vec::with_capacity(frames * width);
     let mut buf = vec![0.0f32; block * width];
     while out.len() < frames * width {
-        s.render(&mut InterleavedMut::new(&mut buf, layout));
+        s.render(&mut InterleavedMut::new(&mut buf, layout).unwrap());
         out.extend_from_slice(&buf);
     }
     out.truncate(frames * width);

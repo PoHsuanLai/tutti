@@ -10,6 +10,7 @@
 //!
 //! Run: `cargo run --example export -- <outdir>`
 
+use tutti_buffers::Interleaved;
 use tutti_codec::{FlacLevel, Format, IntDepth, Pcm, Quality};
 use tutti_export::{
     BufferTarget, Control, FileTarget, Job, Normalize, NormalizeSpec, Output, Produced,
@@ -20,8 +21,8 @@ use tutti_measure::{LoudnessConfig, measure_loudness};
 use tutti_nodes::testing::{Const, Osc};
 use tutti_transport::FrozenClock;
 use tutti_types::ChannelLayout;
+use tutti_types::Db;
 use tutti_types::{Amplitude, Hz, SampleRate, Samples, Seconds};
-use tutti_types::{Db, Interleaved};
 
 /// The rate every render below runs at.
 const RATE: SampleRate = SampleRate::SR_48K;
@@ -203,8 +204,11 @@ fn main() -> tutti_export::Result<()> {
     .expect("nothing cancels a control with no token");
     let cfg = LoudnessConfig::new(audio.sample_rate(), ChannelLayout::STEREO);
     let flat = audio.interleaved();
-    let before = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::STEREO))
-        .expect("stereo is meterable");
+    let before = measure_loudness(
+        &cfg,
+        Interleaved::new(&flat, ChannelLayout::STEREO).unwrap(),
+    )
+    .expect("stereo is meterable");
     println!("by hand: {:.2} LUFS", before.lufs.get());
 
     Ok(())

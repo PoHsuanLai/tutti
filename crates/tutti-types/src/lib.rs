@@ -17,17 +17,6 @@
 //!   subsystem shares instead of a bare integer. `ChannelTopology` + `Speaker`
 //!   answer the *different* question of which speaker each channel feeds; distinct
 //!   questions, so distinct types.
-//! - **Buffers** — `Interleaved` / `InterleavedMut`, a flat buffer that carries its
-//!   own frame width, so a frame index and a sample index stop being the same type.
-//!   `Fold::between(&src, &dst)` turns one `ChannelTopology` into another by
-//!   speaker (ITU-R BS.775 / Dolby coefficients, a pure permutation for the same
-//!   speakers in another order, unassigned channels one to one) and refuses a channel
-//!   it cannot place; the matrix is not normalised. `Fold::widths` / `Fold::to_width`
-//!   are the entry points for an edge that knows only a width (a device, an export
-//!   file, the graph root): the engine's order where the width has one, channels by
-//!   index (`Fold::by_index`, widening only; a narrowing is `FoldError::Unplaced`,
-//!   and `Fold::select` truncates on purpose) where it has none. The width-only folds (`fold_frame`, `fold_frame_to_mono`,
-//!   `fold_frame_to_stereo`, `fold_buffer_to_mono`, `fold_planar_to_mono`) are gone.
 //! - **`io`** — `Source`, `Sink` and `Pull`: the edge vocabulary, a stream on a clock
 //!   other than the graph's (mic, file, tap, file encoder). A `Pull` says whether an
 //!   empty read is late, finished or broken.
@@ -37,9 +26,9 @@
 //!
 //! **The root is the API.** The common names are re-exported there, so
 //! `tutti_types::Bpm` and `tutti_types::Source` resolve directly — import from the
-//! root. Three of the eight modules are
+//! root. Three of the modules are
 //! public (`value`, `io`, `meter`), because each holds items the root does not
-//! re-export; the others (`channels`, `downmix`, `fold`, `interleaved`, `topology`)
+//! re-export; the others (`bus`, `channels`, `topology`)
 //! are private and fully re-exported. The graph as a value (`Topology`), the
 //! latency pass and the tail fold are `tutti-graph`'s.
 //!
@@ -147,8 +136,6 @@ mod ranged;
 // module path would be a second name for a type that already has one.
 mod bus;
 mod channels;
-mod fold;
-mod interleaved;
 mod topology;
 
 // Public: `io` holds items the root does not re-export.
@@ -188,16 +175,6 @@ pub use channels::{ChannelCountOutOfRange, ChannelLayout};
 // Channel topology — which speaker each channel feeds. Distinct from the count
 // above, and additive to it: a width-only caller keeps using `ChannelLayout`.
 pub use topology::{ChannelTopology, Speaker};
-
-// How one topology becomes another: the one fold, built on the control side.
-// `M3DB` is the −3 dB centre/surround coefficient its ITU-R BS.775 / Dolby
-// matrices apply, and it comes along because a caller checking a fold's output
-// has to name the same constant.
-pub use fold::{Fold, FoldEnd, FoldError, M3DB};
-
-// A flat buffer that carries its own frame width, so a frame index and a sample
-// index stop being the same type.
-pub use interleaved::{Interleaved, InterleavedMut, StereoPlanes};
 
 // I/O edge.
 pub use io::{FiniteSource, Pull, Sink, SinkFailed, Source, Stop};

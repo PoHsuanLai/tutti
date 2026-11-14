@@ -31,6 +31,7 @@ tutti-midi-protocol = { version = "0.0.1", path = "../tutti-midi-protocol" }
 # `check_range_contract` for `OutputOffset`, whose serde shape the test writes
 # (`Seconds` serialises under `tutti-types`' `serde`).
 serde = "1"
+tutti-buffers = { path = "../tutti-buffers" }
 tutti-types = { path = "../tutti-types", default-features = false, features = ["serde"] }
 # The graph's by-hand node driver, `tutti_graph::contract::Direct`.
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }

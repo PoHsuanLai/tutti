@@ -11,7 +11,8 @@
 //!
 //! ```
 //! use tutti_types::MaxBlock;
-//! use tutti_types::{ChannelLayout, Hz, InterleavedMut, SampleRate, Samples};
+//! use tutti_types::{ChannelLayout, Hz, SampleRate, Samples};
+//! use tutti_buffers::InterleavedMut;
 //! use tutti_graph::ForkByClone;
 //! use tutti_nodes::testing::Osc;
 //! use tutti_session::{Root, Session};
@@ -25,7 +26,7 @@
 //! s.update(); // commits: the graph was edited
 //!
 //! let mut block = vec![0.0f32; 512];
-//! s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::MONO));
+//! s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::MONO).unwrap());
 //! assert!(block.iter().any(|&x| x > 0.9));
 //! ```
 //!

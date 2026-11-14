@@ -336,7 +336,7 @@ pub enum RootTopologyStatus {
     /// In force: the root is what was declared (or nothing was).
     Applied,
     /// Not in force, and why. The previous state stands.
-    Refused(tutti_types::FoldError),
+    Refused(tutti_buffers::FoldError),
 }
 
 /// The tutti engine: a [`Graph`], its transport, and the engine
@@ -360,7 +360,8 @@ pub enum RootTopologyStatus {
 ///
 /// ```
 /// use tutti_types::MaxBlock;
-/// use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+/// use tutti_types::{ChannelLayout, SampleRate, Samples};
+/// use tutti_buffers::InterleavedMut;
 /// use tutti_graph::ForkByClone;
 /// use tutti_session::{OutPort, Root, Session};
 /// use tutti_nodes::testing::Const;
@@ -375,7 +376,7 @@ pub enum RootTopologyStatus {
 /// session.update();
 ///
 /// let mut block = [0.0f32; 64];
-/// session.render(&mut InterleavedMut::new(&mut block, ChannelLayout::MONO));
+/// session.render(&mut InterleavedMut::new(&mut block, ChannelLayout::MONO).unwrap());
 /// assert!(block.iter().all(|&s| s == 0.5));
 /// ```
 #[derive(Debug)]
@@ -397,7 +398,7 @@ pub struct Session {
     /// ([`declare_root_topology`](Self::declare_root_topology)), applied or not.
     pub(crate) root_request: Option<ChannelTopology>,
     /// Why `root_request` is not in force, if it is not.
-    pub(crate) root_refusal: Option<tutti_types::FoldError>,
+    pub(crate) root_refusal: Option<tutti_buffers::FoldError>,
     pub(crate) click: Option<NodeKey>,
     pub(crate) click_settings: Arc<ClickSettings>,
     /// The per-channel pre-roll of the plan sent last, for sources outside
@@ -563,7 +564,7 @@ impl Session {
     /// never only a log line.
     ///
     /// - [`RootTopologyStatus::Refused`] with the declaration's own
-    ///   [`FoldError`](tutti_types::FoldError) when the last request could not
+    ///   [`FoldError`](tutti_buffers::FoldError) when the last request could not
     ///   be placed on the device. The previous declaration (the one
     ///   [`root_topology`](Self::root_topology) reads) stays in force, and a
     ///   **device restart re-attempts the request**: it is
@@ -571,9 +572,9 @@ impl Session {
     ///   places it.
     /// - Otherwise `Refused` with [`Graph::widen_outputs`]'s last refusal: a
     ///   widening the declared root could not take
-    ///   ([`FoldError::RootWidth`](tutti_types::FoldError::RootWidth)), or
+    ///   ([`FoldError::RootWidth`](tutti_buffers::FoldError::RootWidth)), or
     ///   channels past `MAX_ROOT_CHANNELS`
-    ///   ([`FoldError::Unplaced`](tutti_types::FoldError::Unplaced)); that
+    ///   ([`FoldError::Unplaced`](tutti_buffers::FoldError::Unplaced)); that
     ///   is what a host's `MasterSources` longer than the root comes to.
     /// - Otherwise `Applied`.
     pub fn root_topology_status(&self) -> RootTopologyStatus {
@@ -975,7 +976,7 @@ impl Session {
     /// On a session not built with
     /// [`build`](crate::SessionBuilder::build): its engine
     /// is a device's callback, or there is none.
-    pub fn render(&self, output: &mut tutti_types::InterleavedMut<'_>) {
+    pub fn render(&self, output: &mut tutti_buffers::InterleavedMut<'_>) {
         self.engine
             .as_ref()
             .expect("render needs an offline session (SessionBuilder::build)")

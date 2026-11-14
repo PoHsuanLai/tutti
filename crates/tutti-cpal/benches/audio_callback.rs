@@ -18,6 +18,7 @@ use std::sync::Arc;
 use tutti_types::MaxBlock;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use tutti_buffers::InterleavedMut;
 use tutti_cpal::{AudioCallbackState, OutputBlock, process_audio};
 use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare, TapReader};
@@ -26,7 +27,7 @@ use tutti_graph::{OutPort, Source};
 use tutti_nodes::testing::Osc;
 use tutti_transport::Transport;
 use tutti_types::SampleRate;
-use tutti_types::{ChannelLayout, Hz, InterleavedMut, Samples};
+use tutti_types::{ChannelLayout, Hz, Samples};
 
 const SR: f64 = 48_000.0;
 
@@ -98,7 +99,7 @@ fn bench_vs_render(c: &mut Criterion) {
         b.iter(|| {
             process_audio(
                 &st,
-                &mut InterleavedMut::new(black_box(&mut mix), ChannelLayout::STEREO),
+                &mut InterleavedMut::new(black_box(&mut mix), ChannelLayout::STEREO).unwrap(),
             )
         });
     });

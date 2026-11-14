@@ -1,6 +1,7 @@
 //! [`Fold`] — the one way a signal of one channel topology becomes another's.
 
-use crate::{ChannelLayout, ChannelTopology, InterleavedMut, Speaker};
+use crate::InterleavedMut;
+use tutti_types::{ChannelLayout, ChannelTopology, Speaker};
 
 /// The −3 dB attenuation (`1/√2 ≈ 0.7071`) of the ITU-R BS.775 / Dolby consumer
 /// downmix, applied by a [`Fold`] to the centre and surround channels it folds
@@ -313,7 +314,8 @@ impl Row {
 /// # Examples
 ///
 /// ```
-/// use tutti_types::{ChannelLayout, ChannelTopology, Fold, M3DB};
+/// use tutti_buffers::{Fold, M3DB};
+/// use tutti_types::{ChannelLayout, ChannelTopology};
 ///
 /// let five_one = ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap();
 /// let stereo = ChannelTopology::smpte(ChannelLayout::STEREO).unwrap();
@@ -845,7 +847,7 @@ impl Fold {
     ) {
         assert_eq!(dst.layout(), self.dst_layout(), "destination width");
         let dw = dst.stride();
-        let frames = dst.len();
+        let frames = dst.len().get();
         let samples = dst.samples_mut();
         let mut scratch = [0.0f32; CHUNK];
         for start in (0..frames).step_by(CHUNK) {
@@ -877,7 +879,8 @@ impl Fold {
     /// rounds differently, by a few ulps. Control side: it allocates.
     ///
     /// ```
-    /// use tutti_types::{ChannelLayout, ChannelTopology, Fold, M3DB};
+    /// use tutti_buffers::{Fold, M3DB};
+    /// use tutti_types::{ChannelLayout, ChannelTopology};
     ///
     /// let five_one = ChannelTopology::smpte(ChannelLayout::from(6u16)).unwrap();
     /// let stereo = ChannelTopology::smpte(ChannelLayout::STEREO).unwrap();

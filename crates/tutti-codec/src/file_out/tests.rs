@@ -361,23 +361,23 @@ fn a_dropped_sink_leaves_a_readable_take() {
     assert_eq!(hound::WavReader::open(&path).unwrap().len(), 20);
 }
 
-/// Only whole frames are written: a trailing part of a frame is ignored, so an
-/// odd slice cannot rotate the file's channels.
-///
-/// The whole-frame rule is `Interleaved`'s
-/// (it views `len / width` frames and ignores the remainder), which `FileOut`
-/// builds its block with; the test pins the contract through the sink for WAV
-/// and, in the FLAC round trip below, for a second format.
+/// A slice that ends mid-frame fails the sink instead of rotating the file's
+/// channels, and the failure is reported from `finalize`.
 #[test]
-fn a_trailing_partial_frame_is_ignored() {
+fn a_partial_frame_fails_the_sink() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("whole.wav");
     let mut sink = wav(&path, 48_000.0, 2u16, Pcm::Float32).unwrap();
+    sink.write(&[0.1, -0.1]).unwrap();
     // Two whole frames and the left sample of a third.
-    sink.write(&[0.1, -0.1, 0.2, -0.2, 0.3])
-        .expect("a partial frame is ignored, not a failure");
-    sink.finalize().unwrap();
-    assert_eq!(hound::WavReader::open(&path).unwrap().len(), 4);
+    assert_eq!(sink.write(&[0.1, -0.1, 0.2, -0.2, 0.3]), Err(SinkFailed));
+    assert_eq!(
+        sink.write(&[0.1, -0.1]),
+        Err(SinkFailed),
+        "the sink stays failed"
+    );
+    let err = sink.finalize().unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
 }
 
 /// The sink is generic over the format: a FLAC take round-trips through the
@@ -412,10 +412,6 @@ fn a_flac_take_round_trips_through_the_decoder() {
     for block in signal.chunks(300 * 2) {
         sink.write(block).unwrap();
     }
-    // The left sample of a frame that never completed: ignored, not a rotated
-    // file.
-    sink.write(&[0.9])
-        .expect("a partial frame is ignored, not a failure");
     sink.finalize().unwrap();
 
     let wave = Wave::read(&path).expect("the codec's own decoder reads the take");

@@ -196,7 +196,7 @@ mod measurer {
 
         let one_shot = measure_loudness(
             &LoudnessConfig::new(RATE, rendered.layout()),
-            Interleaved::new(&rendered.interleaved(), rendered.layout()),
+            Interleaved::new(&rendered.interleaved(), rendered.layout()).unwrap(),
         )
         .expect("meterable");
         assert!(
@@ -222,7 +222,7 @@ mod measurer {
         let mut at = 0;
         while at < frames {
             let end = (at + 777).min(frames);
-            fine.feed(rendered.planes(), at..end);
+            fine.feed(rendered.planes(), at..end).unwrap();
             at = end;
         }
         let fine = fine.finish();

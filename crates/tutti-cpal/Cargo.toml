@@ -49,6 +49,7 @@ tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 # `FileOut`, `Format` and `Spec`: the sink `MicIn::matching_sink` opens.
 tutti-codec = { version = "0.0.1", path = "../tutti-codec", optional = true }
 
+tutti-buffers = { version = "0.0.1", path = "../tutti-buffers" }
 tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
 tutti-rt = { version = "0.0.1", path = "../tutti-rt" }
 

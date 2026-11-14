@@ -9,7 +9,8 @@
 //! beside the correlation it is defined from and smoothed independently of it,
 //! so the smoothed pair contradicts the invariant the kernel guarantees.
 
-use tutti_types::{Amplitude, Correlation, Db, Seconds, StereoBalance, StereoPlanes, StereoWidth};
+use tutti_buffers::StereoPlanes;
+use tutti_types::{Amplitude, Correlation, Db, Seconds, StereoBalance, StereoWidth};
 
 /// Mid/side and per-channel levels.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -101,7 +102,7 @@ impl StereoReading {
 /// `left.len().min(right.len())` silently measures the shorter of two
 /// mismatched blocks; the pairing cannot be formed at all unless they agree.
 pub fn correlate(planes: StereoPlanes<'_>) -> StereoReading {
-    let n = planes.frames();
+    let n = planes.frames().get();
     if n == 0 {
         return StereoReading::default();
     }
@@ -475,7 +476,7 @@ mod tests {
     #[test]
     fn ragged_planes_cannot_be_paired() {
         assert!(
-            StereoPlanes::new(&[1.0, 1.0, 1.0], &[1.0]).is_none(),
+            StereoPlanes::new(&[1.0, 1.0, 1.0], &[1.0]).is_err(),
             "a mismatched pair must be rejected, not silently truncated to the shorter"
         );
     }

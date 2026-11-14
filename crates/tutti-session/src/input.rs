@@ -56,7 +56,7 @@ pub struct InputConfig {
     pub device: DeviceSelector,
     /// The device inputs to capture, counted from 0: channel `i` of the input
     /// is the device's input `channels[i]` (`&[2, 3]` is inputs 3 and 4 of 16,
-    /// chosen with [`Fold::select`](tutti_types::Fold::select)). `None`: the
+    /// chosen with [`Fold::select`](tutti_buffers::Fold::select)). `None`: the
     /// first two.
     pub channels: Option<Vec<usize>>,
     /// The depth of the ring into the graph, in frames: shallow on purpose, so a

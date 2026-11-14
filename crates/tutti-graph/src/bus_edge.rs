@@ -34,7 +34,8 @@
 
 use std::collections::BTreeMap;
 
-use tutti_types::{Amplitude, BusTopology, ChannelTopology, Fold, FoldError};
+use tutti_buffers::{Fold, FoldError};
+use tutti_types::{Amplitude, BusTopology, ChannelTopology};
 
 use crate::gain::{EdgeFade, EdgeGain};
 use crate::spec::GraphSpec;

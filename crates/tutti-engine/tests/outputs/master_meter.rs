@@ -4,13 +4,14 @@
 //! tests, where the callback fed a stereo-folded meter; the fold tests became
 //! per-channel ones (the meter does not fold).
 
+use tutti_buffers::InterleavedMut;
 use tutti_engine::Engine;
 use tutti_graph::{Editor, MeterReader, Prepare};
 use tutti_graph::{MeterId, MeterSpec, NodeKey};
 use tutti_graph::{OutPort, Source};
 use tutti_transport::Transport;
 use tutti_types::MaxBlock;
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 
@@ -79,10 +80,13 @@ fn levels(meter: &mut MeterReader) -> Vec<(f32, f32)> {
 
 fn render(engine: &Engine, frames: usize, width: usize) -> Vec<f32> {
     let mut out = vec![0.0f32; frames * width];
-    engine.process(&mut InterleavedMut::new(
-        &mut out,
-        ChannelLayout::try_from(width).expect("a test width is small"),
-    ));
+    engine.process(
+        &mut InterleavedMut::new(
+            &mut out,
+            ChannelLayout::try_from(width).expect("a test width is small"),
+        )
+        .unwrap(),
+    );
     out
 }
 
@@ -166,7 +170,7 @@ fn the_pure_render_feeds_the_meter() {
     let (engine, mut meter) = engine(0.25, None, 2, Samples(512));
     meter.enable();
     let mut out = vec![0.0f32; 64 * 2];
-    engine.process_segment(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+    engine.process_segment(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO).unwrap());
     assert_eq!(meter.read()[0].peak.get(), 0.25);
 }
 
@@ -301,7 +305,7 @@ fn a_block_longer_than_the_capacity_is_measured_whole() {
 fn a_stereo_root_folds_to_a_stereo_device_unchanged() {
     let mut folded = [0.0f32; 2];
     let stereo = tutti_types::ChannelLayout::STEREO;
-    let fold = tutti_types::Fold::widths(stereo, stereo).unwrap();
+    let fold = tutti_buffers::Fold::widths(stereo, stereo).unwrap();
     fold.frame(&[0.25, -0.75], &mut folded);
     assert!(fold.is_identity());
     assert_eq!(

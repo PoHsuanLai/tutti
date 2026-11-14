@@ -73,7 +73,7 @@ fn test_transport_advances_with_graph() {
     let mut output = vec![0.0f32; frames * 2];
     process_audio(
         &state,
-        &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
+        &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap(),
     );
 
     let expected_beat = Beat(256.0 * (120.0 / 60.0) / 44100.0);
@@ -106,7 +106,7 @@ fn test_transport_loop_wrapping() {
     let mut output = vec![0.0f32; frames * 2];
     process_audio(
         &state,
-        &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO),
+        &mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap(),
     );
 
     // Seeked to 3.99 at the first frame, rolling at 2 beats a second: one

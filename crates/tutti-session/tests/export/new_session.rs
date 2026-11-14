@@ -1,9 +1,10 @@
 //! `Session::new`: the full build, with the engine, bounces what it holds.
 
+use tutti_buffers::InterleavedMut;
 use tutti_graph::ForkByClone;
 use tutti_nodes::testing::Const;
 use tutti_session::{Bounce, BounceLatency, BounceTail, Range, Root, Session};
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Seconds};
+use tutti_types::{ChannelLayout, SampleRate, Seconds};
 
 /// **A session from `Session::new` is a full session.** A constant wired to
 /// the root bounces to buffers holding that constant on every frame, and
@@ -32,5 +33,5 @@ fn a_session_from_new_bounces_a_node_and_renders() {
     assert!(planes.iter().flatten().all(|&x| x == 0.25));
 
     let mut block = [0.0f32; 128];
-    session.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    session.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
 }

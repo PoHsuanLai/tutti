@@ -848,7 +848,7 @@ fn a_restart_onto_a_device_that_cannot_place_the_declared_root_is_refused() {
             &refused,
             Err(e) if matches!(
                 e.error(),
-                tutti_session::Error::Output(tutti_types::FoldError::Unplaced { channel: 2, .. })
+                tutti_session::Error::Output(tutti_buffers::FoldError::Unplaced { channel: 2, .. })
             )
         ),
         "{refused:?}"

@@ -34,7 +34,7 @@ fn one_import_renders_a_block() {
     let engine = Engine::new(&transport, &mut editor, executor).expect("within the limits");
 
     let mut out = vec![0.0f32; 256 * 2];
-    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+    engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO).unwrap());
 
     assert!(
         out.iter().any(|&s| s != 0.0),

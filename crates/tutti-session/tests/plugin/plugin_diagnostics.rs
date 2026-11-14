@@ -7,10 +7,11 @@
 //! the reference plugin in process (a count that is the same figure in both
 //! hostings: lost MIDI).
 
+use tutti_buffers::InterleavedMut;
 use tutti_plugin::catalog::PluginRef;
 use tutti_plugin_types::MainThread;
 use tutti_session::{PluginLoadRequest, Root, Session};
-use tutti_types::{ChannelLayout, InterleavedMut, MaxBlock, SampleRate, Samples};
+use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 const BLOCK: usize = 512;
@@ -29,7 +30,7 @@ fn offline() -> Session {
 
 fn render_block(s: &Session) {
     let mut out = vec![0.0f32; BLOCK * 2];
-    s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO).unwrap());
 }
 
 #[cfg(feature = "clap")]

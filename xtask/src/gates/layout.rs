@@ -109,7 +109,7 @@ const ONLY: &[(&str, &[&str])] = &[
     ("tutti-midi-protocol", &["tutti-ump", "tutti-types"]),
     ("tutti-midi-device", &["tutti-ump"]),
     ("tutti-metering", &["tutti-types"]),
-    ("tutti-codec", &["tutti-types"]),
+    ("tutti-codec", &["tutti-types", "tutti-buffers"]),
     ("tutti-tempo", &["tutti-types"]),
     (
         "tutti-voicing",
@@ -173,17 +173,26 @@ const ONLY: &[(&str, &[&str])] = &[
             "tutti-au-host",
         ],
     ),
-    ("tutti-dsp", &["tutti-types"]),
+    ("tutti-dsp", &["tutti-types", "tutti-buffers"]),
     ("tutti-curve", &["tutti-types"]),
     ("tutti-buffers", &["tutti-types"]),
     (
         "tutti-modulation",
         &["tutti-types", "tutti-curve", "tutti-ump"],
     ),
-    ("tutti-measure", &["tutti-types", "tutti-dsp"]),
+    (
+        "tutti-measure",
+        &["tutti-types", "tutti-buffers", "tutti-dsp"],
+    ),
     (
         "tutti-graph",
-        &["tutti-types", "tutti-rt", "tutti-ump", "tutti-curve"],
+        &[
+            "tutti-types",
+            "tutti-buffers",
+            "tutti-rt",
+            "tutti-ump",
+            "tutti-curve",
+        ],
     ),
 ];
 

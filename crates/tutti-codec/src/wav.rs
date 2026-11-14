@@ -24,7 +24,8 @@ use crate::spec::Spec;
 use crate::writer::FormatWriter;
 use mask::channel_mask;
 use std::io::{Seek, SeekFrom, Write};
-use tutti_types::{ChannelLayout, Interleaved};
+use tutti_buffers::Interleaved;
+use tutti_types::ChannelLayout;
 
 const KSDATAFORMAT_SUBTYPE_PCM: [u8; 16] = [
     0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
@@ -198,7 +199,7 @@ impl<W: Write + Seek> FormatWriter for WavWriter<W> {
 
     fn write(&mut self, block: Interleaved<'_>) -> Result<()> {
         let room = self.max_frames - self.frames;
-        let fits = (block.len() as u64).min(room) as usize;
+        let fits = (block.len().get() as u64).min(room) as usize;
         let samples = &block.samples()[..fits * block.stride()];
         self.bytes.clear();
         for &s in samples {
@@ -212,7 +213,7 @@ impl<W: Write + Seek> FormatWriter for WavWriter<W> {
             sink.write_all(&self.bytes)?;
         }
         self.frames += fits as u64;
-        if fits < block.len() {
+        if fits < block.len().get() {
             return Err(Error::WavTooLarge {
                 limit_frames: self.max_frames,
             });

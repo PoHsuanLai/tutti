@@ -121,10 +121,7 @@ fn the_topology_reaches_the_file() {
         let layout = ChannelLayout::from(channels);
         let mut chain = open_file(&cfg.target(&path), &cfg.plan(), cfg.rate).unwrap();
         chain
-            .block(Interleaved::new(
-                &vec![0.5f32; 8 * usize::from(channels)],
-                layout,
-            ))
+            .block(Interleaved::new(&vec![0.5f32; 8 * usize::from(channels)], layout).unwrap())
             .unwrap();
         chain.finalize().unwrap().commit().unwrap();
         let bytes = std::fs::read(&path).unwrap();

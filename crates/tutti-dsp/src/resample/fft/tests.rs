@@ -126,13 +126,13 @@ fn the_block_cap_admits_real_pairs_and_refuses_a_runaway_one() {
     assert!(err.to_string().contains("block"), "{err}");
 }
 
-/// The block size is computed with checked arithmetic. A product that wraps
-/// to 0 (`2^20` units of `2^44` frames is `2^64`) would slip under the cap if
-/// it were wrapping.
-#[cfg(target_pointer_width = "64")]
+/// The block size is computed with checked arithmetic. Two units of
+/// `2^(w - 1)` frames, `w` the pointer width, make `2^w`, which wraps to 0 and
+/// would slip under the cap if the product were wrapping.
 #[test]
 fn an_overflowing_block_size_is_an_error() {
-    assert!(FftResampler::new(1, 1 << 44, 1 << 20, 1, 1).is_err());
+    let half = usize::MAX / 2 + 1;
+    assert!(FftResampler::new(1, half, 2, 1, 1).is_err());
 }
 
 /// A zero rate is refused, not divided by.

@@ -691,9 +691,15 @@ impl ModState {
     }
 
     /// Writes `value` into `target`'s knob: a plugin parameter's lane knob,
-    /// or a native param's node cell the lane reads. `false` when `target`
-    /// has no lane with a knob.
-    pub fn set_knob(&self, target: TargetKey, value: f32) -> bool {
+    /// from the plugin's own edits. Crate-private: a native param, a mix and
+    /// an edge gain each have one public writer (`Graph::set_param`,
+    /// `Graph::set_mix`, `Edge::set_gain`), and the knob is that writer's cell.
+    /// `false` when `target` has no lane with a knob.
+    #[cfg_attr(
+        not(feature = "plugin"),
+        allow(dead_code, reason = "the plugin mirror is its one caller")
+    )]
+    pub(crate) fn set_knob(&self, target: TargetKey, value: f32) -> bool {
         self.lane(target)
             .is_some_and(|(_, controls)| controls.set_knob(value))
     }

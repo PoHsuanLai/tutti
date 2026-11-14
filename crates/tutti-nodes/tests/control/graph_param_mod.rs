@@ -916,11 +916,14 @@ fn mix_cases() -> Vec<MixCase> {
         .chain([MixCase {
             name: "convolver mix",
             make: |w| {
-                parts_of(tutti_nodes::ConvolverNode::shared_ir(
-                    ChannelLayout::try_from(w).expect("a test width is small"),
-                    &[0.0, 0.0, 1.0, -0.5],
-                    64,
-                ))
+                parts_of(
+                    tutti_nodes::ConvolverNode::shared_ir(
+                        ChannelLayout::try_from(w).expect("a test width is small"),
+                        &[0.0, 0.0, 1.0, -0.5],
+                        64,
+                    )
+                    .unwrap(),
+                )
             },
         }])
         .collect();

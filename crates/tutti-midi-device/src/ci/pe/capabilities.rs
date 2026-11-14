@@ -17,6 +17,9 @@ use super::limits::NotInRange;
 pub const SUB_ID2_PE_CAPABILITIES_INQUIRY: u8 = 0x30;
 /// Sub-ID#2: Reply to Property Exchange Capabilities (M2-101 §8.6).
 pub const SUB_ID2_PE_CAPABILITIES_REPLY: u8 = 0x31;
+/// Sub-ID#2: Notify (M2-101 §8.13, Table 39): superseded by ACK and NAK, and
+/// still read (M2-103 §12).
+pub const SUB_ID2_PE_NOTIFY: u8 = 0x3F;
 
 /// The Number of Simultaneous Property Exchange Requests Supported: 1 to 127.
 ///
@@ -165,11 +168,8 @@ impl PeCapabilities {
     }
 }
 
-/// A Property Exchange message of MIDI-CI: the Capabilities pair, or one chunk
-/// of an inquiry or a reply (M2-101 §8.1).
-///
-/// The Notify message, sub-ID#2 `0x3F`, is superseded by ACK and NAK (§8.13) and
-/// is not one of these.
+/// A Property Exchange message of MIDI-CI: the Capabilities pair, one chunk
+/// of an inquiry or a reply, or the superseded Notify (M2-101 §8.1, §8.13).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PeCiMessage {
     /// Inquiry: Property Exchange Capabilities, `0x30`.
@@ -183,6 +183,13 @@ pub enum PeCiMessage {
         /// The chunk.
         chunk: PeChunk,
     },
+    /// Notify, `0x3F`: the status of a transaction, by Request ID, in the
+    /// fields of a chunk (M2-101 Table 39). A device should not send one
+    /// (§8.13); one received is read as M2-103 §12 says
+    /// ([`PeInitiator`](crate::PeInitiator) does), with its status in the
+    /// Header Data ([`PeChunk::notify`] builds one, and
+    /// [`PeChunk::notified`] reads it).
+    Notify(PeChunk),
 }
 
 impl PeCiMessage {
@@ -193,6 +200,7 @@ impl PeCiMessage {
             Self::CapabilitiesInquiry(_) => SUB_ID2_PE_CAPABILITIES_INQUIRY,
             Self::CapabilitiesReply(_) => SUB_ID2_PE_CAPABILITIES_REPLY,
             Self::Chunk { kind, .. } => kind.sub_id2(),
+            Self::Notify(_) => SUB_ID2_PE_NOTIFY,
         }
     }
 
@@ -201,11 +209,11 @@ impl PeCiMessage {
             Self::CapabilitiesInquiry(caps) | Self::CapabilitiesReply(caps) => {
                 caps.encode_body(out);
             }
-            Self::Chunk { chunk, .. } => out.extend(chunk.encode_fields()),
+            Self::Chunk { chunk, .. } | Self::Notify(chunk) => out.extend(chunk.encode_fields()),
         }
     }
 
-    /// The message of sub-ID#2 `sub_id2` (`0x30`, `0x31` or `0x34` to `0x39`) with
+    /// The message of sub-ID#2 `sub_id2` (`0x30`, `0x31`, `0x34` to `0x39` or `0x3F`) with
     /// body `body`, or `None` when the body is malformed.
     pub(crate) fn decode(sub_id2: u8, body: &[u8]) -> Option<Self> {
         match sub_id2 {
@@ -215,6 +223,7 @@ impl PeCiMessage {
             SUB_ID2_PE_CAPABILITIES_REPLY => {
                 PeCapabilities::decode_body(body).map(Self::CapabilitiesReply)
             }
+            SUB_ID2_PE_NOTIFY => PeChunk::parse_fields(body).ok().map(Self::Notify),
             _ => Some(Self::Chunk {
                 kind: PeMessageKind::from_sub_id2(sub_id2)?,
                 chunk: PeChunk::parse_fields(body).ok()?,

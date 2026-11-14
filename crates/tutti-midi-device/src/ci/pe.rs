@@ -93,7 +93,7 @@ mod write;
 pub use body::{BodyLimit, PeBodyError, decode_body, encode_body};
 pub use capabilities::{
     PeCapabilities, PeCiMessage, PeVersion, SUB_ID2_PE_CAPABILITIES_INQUIRY,
-    SUB_ID2_PE_CAPABILITIES_REPLY, SimultaneousRequests,
+    SUB_ID2_PE_CAPABILITIES_REPLY, SUB_ID2_PE_NOTIFY, SimultaneousRequests,
 };
 pub use chunk::{
     ChunkNo, ChunkPosition, ChunkTotal, PE_MAX_CHUNK_DATA_LEN, PeChunk, PeChunkError, PeRequestId,

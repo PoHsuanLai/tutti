@@ -62,6 +62,11 @@ pub enum NotInstrument {
     /// strip. [`Session::remove_instrument`] takes them away.
     #[error("already an instrument, with a handle")]
     AlreadyInstrument,
+    /// A live input already plays it ([`Midi::input`](crate::Midi::input)
+    /// handed out its keys): a node has one owner of its keys, whichever was
+    /// asked first.
+    #[error("played by a live input, whose keys were handed out")]
+    LiveInput,
     /// No event input to play it by.
     #[error("no event input")]
     NoEventInput,
@@ -366,6 +371,9 @@ impl Session {
         }
         if !self.graph_ref().feed(node, Feeder::Instrument).is_empty() {
             return Err(why(NotInstrument::AlreadyInstrument));
+        }
+        if !self.graph_ref().feed(node, Feeder::LiveInput).is_empty() {
+            return Err(why(NotInstrument::LiveInput));
         }
         if self.graph_ref().node_event_inputs(node) == Ok(0) {
             return Err(why(NotInstrument::NoEventInput));

@@ -124,7 +124,7 @@ fn folded_six_channel_convolver_process_is_allocation_free() {
         })
         .collect();
     let refs: Vec<&[f32]> = irs.iter().map(Vec::as_slice).collect();
-    gate(ConvolverNode::folded(&refs, 256));
+    gate(ConvolverNode::folded(&refs, 256).unwrap());
 }
 
 /// Every curve of the shaper, unfed (the block-rate drive) and with its

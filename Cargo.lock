@@ -2756,6 +2756,8 @@ dependencies = [
  "assert_no_alloc",
  "criterion",
  "libm",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "tutti-curve",
  "tutti-dsp",

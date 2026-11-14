@@ -62,8 +62,8 @@ pub use pe::{
     PeSetScope, PeSettings, PeSignal, PeStatus, PeStatusClass, PeStep, PeSubscribed,
     PeSubscription, PeTerminator, PeTransaction, PeUnreadable, PeUpdateCommand, PeValue, PeVersion,
     PropertyName, ResourceId, ResourceName, SUB_ID2_PE_CAPABILITIES_INQUIRY,
-    SUB_ID2_PE_CAPABILITIES_REPLY, SimultaneousRequests, StreamLimit, SubscribeId, decode_body,
-    encode_body, mcoded7, split_message,
+    SUB_ID2_PE_CAPABILITIES_REPLY, SUB_ID2_PE_NOTIFY, SimultaneousRequests, StreamLimit,
+    SubscribeId, decode_body, encode_body, mcoded7, split_message,
 };
 pub use process::{
     ChannelControllers, DataControl, NotADataControl, NoteData, ProcessFeatures, ReportScope,
@@ -1085,13 +1085,12 @@ impl CiMessage {
                         }
                     })
                 }
-                (0x30 | 0x31 | 0x34..=0x39, Some(to)) => {
-                    PeCiMessage::decode(sub_id2, body).map(|message| CiMessage::PropertyExchange {
+                (0x30 | 0x31 | 0x34..=0x39 | 0x3F, Some(to)) => PeCiMessage::decode(sub_id2, body)
+                    .map(|message| CiMessage::PropertyExchange {
                         header,
                         to,
                         message,
-                    })
-                }
+                    }),
                 (SUB_ID2_ACK, Some(to)) => {
                     Ack::decode_body(body).map(|ack| CiMessage::Ack { header, to, ack })
                 }
@@ -1126,7 +1125,8 @@ impl CiMessage {
                     | SUB_ID2_PROFILE_DETAILS_REPLY
                     | 0x30
                     | 0x31
-                    | 0x34..=0x39,
+                    | 0x34..=0x39
+                    | 0x3F,
                     _,
                 ) => return unread(UnreadReason::WrongDestination),
                 _ => return unread(UnreadReason::UnsupportedMessage),

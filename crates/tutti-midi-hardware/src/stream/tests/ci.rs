@@ -3,7 +3,7 @@
 //! device says is the input's producer.
 
 use super::*;
-use crate::{CiChange, Polled};
+use crate::{CiChange, PeerId, Polled};
 use tutti_midi_device::{
     CI_VERSION, CiCategories, CiDeviceId, CiHeader, CiMessage, Decoded, Destination, DiscoveryData,
     INQUIRY_TIMEOUT, MaxSysexSize, Muid,
@@ -29,6 +29,14 @@ fn say(wire: &Wire, group: MidiGroup, message: &CiMessage, ms: u64) {
 }
 
 /// A peer of ours on the wire, and what it declares.
+/// The peer of the tests, on Group 0: the one every change names.
+fn peer_id() -> PeerId {
+    PeerId {
+        group: GROUP_0,
+        muid: peer(),
+    }
+}
+
 fn peer() -> Muid {
     Muid::of(0x0012_3456)
 }
@@ -265,16 +273,19 @@ fn a_reply_to_discovery_makes_the_peer_appear_and_is_reported_once() {
         40,
     );
     let found = polled(&mut wire, 50);
-    let [Polled::Ci(id, CiChange::Found(info))] = found.as_slice() else {
+    let [Polled::Ci(device, who, CiChange::Found(declared))] = found.as_slice() else {
         panic!("one peer found, got {found:?}");
     };
-    assert_eq!(*id, wire.id);
+    assert_eq!(*device, wire.id);
+    assert_eq!(*who, peer_id());
+    assert_eq!(declared.discovery(), &peer_data());
+    let listed = wire.session.ci_peers(&wire.id);
+    let [info] = &listed[..] else {
+        panic!("one peer listed, got {listed:?}");
+    };
+    assert_eq!(info.id(), *who);
     assert_eq!((info.group(), info.muid()), (GROUP_0, peer()));
-    assert_eq!(info.peer().discovery(), &peer_data());
-    assert_eq!(
-        &wire.session.ci_peers(&wire.id)[..],
-        std::slice::from_ref(info)
-    );
+    assert_eq!(info.peer(), declared);
     assert!(polled(&mut wire, 60).is_empty(), "reported once");
 }
 
@@ -341,7 +352,7 @@ fn an_invalidate_muid_of_a_found_peer_removes_it_and_is_reported() {
     assert!(
         matches!(
             lost.as_slice(),
-            [Polled::Ci(_, CiChange::Lost { group, muid })] if *group == GROUP_0 && *muid == peer()
+            [Polled::Ci(_, who, CiChange::Lost)] if *who == peer_id()
         ),
         "{lost:?}"
     );
@@ -399,7 +410,7 @@ fn nothing_midi_ci_reaches_the_sessions_output_and_the_graph_still_hears_sysex()
     let found = polled(&mut wire, 6);
     assert!(matches!(
         found.as_slice(),
-        [Polled::Ci(_, CiChange::Found(_))]
+        [Polled::Ci(_, _, CiChange::Found(_))]
     ));
     assert!(wire.counters.take_sent(other).is_empty());
 
@@ -563,7 +574,7 @@ fn disabling_ends_midi_ci_with_an_invalidate_muid_and_the_loss_of_its_peers() {
     assert!(
         matches!(
             ended.as_slice(),
-            [Polled::Ci(_, CiChange::Lost { group, muid })] if *group == GROUP_0 && *muid == peer()
+            [Polled::Ci(_, who, CiChange::Lost)] if *who == peer_id()
         ),
         "{ended:?}"
     );
@@ -627,7 +638,7 @@ fn enabling_again_with_another_identity_restarts_midi_ci_under_a_new_muid() {
     assert!(
         changes.iter().any(|c| matches!(
             c,
-            Polled::Ci(_, CiChange::Lost { muid, .. }) if *muid == peer()
+            Polled::Ci(_, who, CiChange::Lost) if *who == peer_id()
         )),
         "{changes:?}"
     );
@@ -738,7 +749,7 @@ fn a_gap_in_the_stream_ring_never_joins_a_midi_ci_message() {
     reply_at(&wire, reply(other), 80);
     let found = polled(&mut wire, 90);
     assert!(
-        matches!(found.as_slice(), [Polled::Ci(_, CiChange::Found(info))] if info.muid() == other),
+        matches!(found.as_slice(), [Polled::Ci(_, who, CiChange::Found(_))] if who.muid == other),
         "{found:?}"
     );
 }
@@ -793,7 +804,7 @@ fn peer_declaring(categories: CiCategories) -> (Wire, Muid) {
     );
     let found = polled(&mut wire, 50);
     assert!(
-        matches!(found.as_slice(), [Polled::Ci(_, CiChange::Found(_))]),
+        matches!(found.as_slice(), [Polled::Ci(_, _, CiChange::Found(_))]),
         "{found:?}"
     );
     let _ = received(&wire);
@@ -814,7 +825,7 @@ fn find_peer(wire: &mut Wire, group: MidiGroup, ours: Muid, ms: u64) {
     );
     let found = polled(wire, ms + 1);
     assert!(
-        matches!(found.as_slice(), [Polled::Ci(_, CiChange::Found(_))]),
+        matches!(found.as_slice(), [Polled::Ci(_, _, CiChange::Found(_))]),
         "{found:?}"
     );
 }
@@ -856,7 +867,7 @@ fn a_block_that_stops_declaring_midi_ci_ends_its_groups_device_and_no_other() {
     let lost: Vec<_> = all
         .iter()
         .filter_map(|p| match p {
-            Polled::Ci(_, CiChange::Lost { group, muid }) => Some((*group, *muid)),
+            Polled::Ci(_, who, CiChange::Lost) => Some((who.group, who.muid)),
             _ => None,
         })
         .collect();
@@ -976,7 +987,7 @@ fn a_ci_peers_product_instance_id_fills_what_the_device_left() {
     );
     assert!(matches!(
         polled(&mut wire, 50).as_slice(),
-        [Polled::Ci(_, CiChange::Found(_))]
+        [Polled::Ci(_, _, CiChange::Found(_))]
     ));
     let learned = wire.session.learned(&wire.id);
     assert_eq!(learned.identity(), Some(&identity()), "the device's own");
@@ -995,7 +1006,7 @@ fn a_ci_peers_product_instance_id_fills_what_the_device_left() {
     );
     assert!(matches!(
         polled(&mut wire, 70).as_slice(),
-        [Polled::Ci(_, CiChange::Updated(_))]
+        [Polled::Ci(_, _, CiChange::Updated(_))]
     ));
     let learned = wire.session.learned(&wire.id);
     assert_eq!(learned.identity(), Some(&identity()));
@@ -1068,7 +1079,7 @@ fn known_profiles(
     assert!(
         matches!(
             changes.as_slice(),
-            [Polled::Profile(_, ProfilesChange::Known { .. })]
+            [Polled::Profile(_, _, ProfilesChange::Known)]
         ),
         "{changes:?}"
     );
@@ -1078,7 +1089,10 @@ fn profile_events(polled: &[Polled]) -> Vec<&ProfilesChange> {
     polled
         .iter()
         .filter_map(|p| match p {
-            Polled::Profile(_, change) => Some(change),
+            Polled::Profile(_, who, change) => {
+                assert_eq!(*who, peer_id(), "every change names the peer");
+                Some(change)
+            }
             _ => None,
         })
         .collect()
@@ -1152,13 +1166,7 @@ fn the_replies_to_profile_inquiry_become_the_peers_profiles_once_the_final_one_a
     reply_at_address(&wire, ours, CiDeviceId::Group, vec![], vec![profile(3)], 70);
     reply_at_address(&wire, ours, CiDeviceId::FunctionBlock, vec![], vec![], 80);
     let changes = polled(&mut wire, 100);
-    assert_eq!(
-        profile_events(&changes),
-        [&ProfilesChange::Known {
-            group: GROUP_0,
-            muid: peer()
-        }]
-    );
+    assert_eq!(profile_events(&changes), [&ProfilesChange::Known]);
     let peers = wire.session.profiles(&wire.id);
     let [held] = &peers[..] else {
         panic!("one peer: {peers:?}");
@@ -1238,15 +1246,11 @@ fn a_set_profile_on_names_the_channel_and_its_enabled_report_updates_the_table()
         profile_events(&changes),
         [
             &ProfilesChange::Changed {
-                group: GROUP_0,
-                muid: peer(),
                 address: channel(0),
                 profile: profile(2),
                 change: ProfileChange::Enabled,
             },
             &ProfilesChange::Resolved {
-                group: GROUP_0,
-                muid: peer(),
                 request: Request::SetOn {
                     address: channel(0),
                     profile: profile(2)
@@ -1548,10 +1552,7 @@ fn an_invalidate_muid_drops_the_peers_profiles_and_refuses_its_handles() {
     );
     let changes = polled(&mut wire, 120);
     assert!(
-        profile_events(&changes).contains(&&ProfilesChange::Dropped {
-            group: GROUP_0,
-            muid: peer()
-        }),
+        profile_events(&changes).contains(&&ProfilesChange::Dropped),
         "{changes:?}"
     );
     assert!(wire.session.profiles(&wire.id).is_empty());
@@ -1574,10 +1575,7 @@ fn disabling_midi_ci_drops_the_profiles() {
     wire.session.disable_ci();
     let changes = polled(&mut wire, 110);
     assert!(
-        profile_events(&changes).contains(&&ProfilesChange::Dropped {
-            group: GROUP_0,
-            muid: peer()
-        }),
+        profile_events(&changes).contains(&&ProfilesChange::Dropped),
         "{changes:?}"
     );
     assert!(wire.session.profiles(&wire.id).is_empty());
@@ -1633,13 +1631,7 @@ fn an_inquiry_without_a_final_reply_times_out_keeping_what_was_heard() {
     let _ = polled(&mut wire, 70);
     let wait = PROFILE_TIMEOUT.as_millis() as u64;
     let ended = polled(&mut wire, 50 + wait);
-    assert_eq!(
-        profile_events(&ended),
-        [&ProfilesChange::InquiryTimedOut {
-            group: GROUP_0,
-            muid: peer()
-        }]
-    );
+    assert_eq!(profile_events(&ended), [&ProfilesChange::InquiryTimedOut]);
     let peers = wire.session.profiles(&wire.id);
     assert!(!peers[0].is_known());
     assert_eq!(peers[0].listed().count(), 1);
@@ -1694,7 +1686,10 @@ fn process_events(polled: &[Polled]) -> Vec<&ProcessChange> {
     polled
         .iter()
         .filter_map(|p| match p {
-            Polled::Process(_, change) => Some(change),
+            Polled::Process(_, who, change) => {
+                assert_eq!(*who, peer_id(), "every change names the peer");
+                Some(change)
+            }
             _ => None,
         })
         .collect()
@@ -1719,11 +1714,7 @@ fn answer_capabilities(wire: &mut Wire, ours: Muid, features: ProcessFeatures) {
     let changes = polled(wire, 70);
     assert_eq!(
         process_events(&changes),
-        [&ProcessChange::Capabilities {
-            group: GROUP_0,
-            muid: peer(),
-            features
-        }]
+        [&ProcessChange::Capabilities(features)]
     );
 }
 
@@ -1849,11 +1840,7 @@ fn a_report_asks_with_table_43_and_ends_with_the_peers_end() {
     let began = polled(&mut wire, 130);
     assert_eq!(
         process_events(&began),
-        [&ProcessChange::ReportBegan {
-            group: GROUP_0,
-            muid: peer(),
-            declared
-        }]
+        [&ProcessChange::ReportBegan(declared)]
     );
     say(
         &wire,
@@ -1868,13 +1855,7 @@ fn a_report_asks_with_table_43_and_ends_with_the_peers_end() {
         140,
     );
     let ended = polled(&mut wire, 150);
-    assert_eq!(
-        process_events(&ended),
-        [&ProcessChange::ReportEnded {
-            group: GROUP_0,
-            muid: peer()
-        }]
-    );
+    assert_eq!(process_events(&ended), [&ProcessChange::ReportEnded]);
     // The transaction is over: another may be asked for.
     wire.session
         .report(handle.ask(function_block_request()))
@@ -1912,14 +1893,7 @@ fn a_nak_of_a_report_ends_it_and_is_reported() {
         120,
     );
     let ended = polled(&mut wire, 130);
-    assert_eq!(
-        process_events(&ended),
-        [&ProcessChange::ReportRefused {
-            group: GROUP_0,
-            muid: peer(),
-            nak
-        }]
-    );
+    assert_eq!(process_events(&ended), [&ProcessChange::ReportRefused(nak)]);
 }
 
 /// A report whose Reply never comes ends once the process timeout has passed
@@ -1938,13 +1912,7 @@ fn a_report_nothing_answers_times_out_after_the_process_timeout() {
     let early = polled(&mut wire, sent_at + wait - 1);
     assert!(process_events(&early).is_empty(), "{early:?}");
     let ended = polled(&mut wire, sent_at + wait);
-    assert_eq!(
-        process_events(&ended),
-        [&ProcessChange::ReportTimedOut {
-            group: GROUP_0,
-            muid: peer()
-        }]
-    );
+    assert_eq!(process_events(&ended), [&ProcessChange::ReportTimedOut]);
 }
 
 /// A second request while one waits is not sent: it is reported, and only one
@@ -1963,11 +1931,7 @@ fn a_report_while_one_waits_is_not_sent() {
     let changes = polled(&mut wire, 110);
     assert_eq!(
         process_events(&changes),
-        [&ProcessChange::NotSent {
-            group: GROUP_0,
-            muid: peer(),
-            error: ProcessError::InFlight
-        }]
+        [&ProcessChange::NotSent(ProcessError::InFlight)]
     );
     assert_eq!(payloads(&received(&wire)).len(), 1);
 }
@@ -1989,10 +1953,7 @@ fn a_lost_peer_drops_its_process_inquiry_and_refuses_its_handles() {
     );
     let changes = polled(&mut wire, 90);
     assert!(
-        process_events(&changes).contains(&&ProcessChange::Dropped {
-            group: GROUP_0,
-            muid: peer()
-        }),
+        process_events(&changes).contains(&&ProcessChange::Dropped),
         "{changes:?}"
     );
     assert!(wire.session.report_peers(&wire.id).is_empty());
@@ -2010,10 +1971,7 @@ fn disabling_midi_ci_drops_process_inquiry() {
     wire.session.disable_ci();
     let changes = polled(&mut wire, 110);
     assert!(
-        process_events(&changes).contains(&&ProcessChange::Dropped {
-            group: GROUP_0,
-            muid: peer()
-        }),
+        process_events(&changes).contains(&&ProcessChange::Dropped),
         "{changes:?}"
     );
     assert!(wire.session.report_peers(&wire.id).is_empty());

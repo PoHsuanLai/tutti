@@ -291,14 +291,6 @@ pub enum HostMessage {
         /// reads from it.
         info: tutti_plugin_types::TrackInfo,
     },
-    /// What the host says of the track the plugin sits on, for the formats
-    /// that tell their plugin (CLAP `track-info`). Fire-and-forget; a format
-    /// without the extension drops it.
-    SetTrackInfo {
-        /// The format-neutral value; the server's format answers the plugin's
-        /// reads from it.
-        info: tutti_plugin_types::TrackInfo,
-    },
 }
 
 /// A reply or notification travelling subprocess → host.

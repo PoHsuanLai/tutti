@@ -142,7 +142,7 @@ impl Family for Echo {
         Network::new(rate)
     }
 
-    fn recurrence(&self) -> EchoRecurrence {
+    fn recurrence(&self, _: SampleRate) -> EchoRecurrence {
         EchoRecurrence { echo: *self }
     }
 }

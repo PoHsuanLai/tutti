@@ -237,7 +237,7 @@ impl Family for MultibandFamily {
         }
     }
 
-    fn recurrence(&self) -> MultibandRecurrence {
+    fn recurrence(&self, _: SampleRate) -> MultibandRecurrence {
         MultibandRecurrence {
             width: usize::from(self.input.layout().count()),
             bands: self.bands(),

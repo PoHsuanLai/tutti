@@ -535,7 +535,7 @@ impl Family for PhaserFamily {
         *out = PhaserMember::of(self, c, rate);
     }
 
-    fn recurrence(&self) -> PhaserRecurrence {
+    fn recurrence(&self, _: SampleRate) -> PhaserRecurrence {
         let mut offsets = [PhaseIncrement(0.0); MAX_PHASER_CHANNELS];
         for (c, o) in offsets.iter_mut().enumerate().take(self.width()) {
             *o = self.stagger.offset(c);

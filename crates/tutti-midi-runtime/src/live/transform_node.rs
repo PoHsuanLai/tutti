@@ -226,9 +226,13 @@ impl Node for MpeTransformNode {
         Status::Modified
     }
 
+    /// Forgets the notes and what each channel was told, and sends each Group
+    /// the mode's ranges again ahead of its next event: a reset receiver is
+    /// back at its own defaults.
     fn reset(&mut self) {
         self.translator.reset();
         self.mpe.reset();
+        self.told = 0;
     }
 }
 

@@ -563,6 +563,20 @@ fn message(address: Address, offset: Offset, voice: Voice2) -> UmpAt {
     (offset, Ump::from(Message::Midi2(address, voice)))
 }
 
+/// `voice` on each of `members` of `group`, at `offset`: a Manager Channel's
+/// message copied onto its zone.
+fn to_members(
+    group: MidiGroup,
+    members: impl Iterator<Item = MidiChannel>,
+    offset: Offset,
+    voice: Voice2,
+    out: &mut impl FnMut(UmpAt),
+) {
+    for channel in members {
+        out(message(Address { group, channel }, offset, voice));
+    }
+}
+
 impl MpeIngest {
     /// An ingest configured for `mode` on every Group, holding no notes.
     pub fn new(mode: MpeMode) -> Self {
@@ -914,16 +928,7 @@ impl MpeIngest {
             // and each member channel is told it too, so a receiver that reads
             // one channel at a time does the right thing.
             out(*event);
-            for member in zone.member_channels() {
-                out(message(
-                    Address {
-                        group,
-                        channel: member,
-                    },
-                    at,
-                    voice,
-                ));
-            }
+            to_members(group, zone.member_channels(), at, voice, out);
             if matches!(voice, Voice2::ControlChange { controller, .. } if controller == CCNumber::RESET_ALL)
             {
                 // The reset centres every wheel of the zone, the copies included.
@@ -995,16 +1000,13 @@ impl MpeIngest {
                 Role::Master => {
                     state.told[slot].bend = Some(value.get());
                     out(*event);
-                    for member in zone.member_channels() {
-                        out(message(
-                            Address {
-                                group,
-                                channel: member,
-                            },
-                            at,
-                            Voice2::PitchBend(value),
-                        ));
-                    }
+                    to_members(
+                        group,
+                        zone.member_channels(),
+                        at,
+                        Voice2::PitchBend(value),
+                        out,
+                    );
                     None
                 }
                 Role::Member => {

@@ -1388,3 +1388,37 @@ fn a_mode_set_through_the_transforms_controls_is_adopted_once() {
         .collect();
     assert_eq!(per_note, [1, 1], "{got:?}");
 }
+
+/// **A reset transform starts its Groups at the zone's ranges again**: a reset
+/// receiver is back at its own defaults (M1-100 section 2.2.5's ranges are the
+/// zone's, not the receiver's), so the transform's next event in a Group goes
+/// behind the seven ranges of a three-member lower zone again, as its first did;
+/// a second event with no reset between goes alone.
+#[test]
+fn a_reset_transform_sends_the_zones_ranges_again() {
+    use tutti_graph::{Event, Node as _, Offset, contract::Direct};
+    let pedal = Event::midi(
+        Offset::ZERO,
+        tutti_fixtures::midi::cc(MidiGroup::FIRST, MidiChannel::FIRST, CCNumber::SUSTAIN, 0),
+    );
+    let mut d = Direct::new(
+        tutti_midi_runtime::MpeTransformNode::new(tutti_fixtures::midi::lower_zone(3)),
+        SampleRate::SR_48K,
+        256,
+    );
+    let ranges = |d: &mut Direct<tutti_midi_runtime::MpeTransformNode>| {
+        d.events(0, &[pedal]);
+        let _ = d.block();
+        d.events_out(0)
+            .iter()
+            .filter(|e| {
+                matches!(e.kind, tutti_graph::EventKind::Midi(u)
+                    if matches!(u.decode(), Ok(Message::Midi2(_, Voice2::Registered { .. }))))
+            })
+            .count()
+    };
+    assert_eq!(ranges(&mut d), 7, "the first event");
+    assert_eq!(ranges(&mut d), 0, "told once");
+    d.node.reset();
+    assert_eq!(ranges(&mut d), 7, "after the reset");
+}

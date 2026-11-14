@@ -8,6 +8,8 @@
 /// Generator numbers, SF2 2.04 section 8.1.2: what a zone's generator list uses.
 pub mod generator {
 
+    pub const INITIAL_FILTER_FC: u16 = 8;
+    pub const INITIAL_FILTER_Q: u16 = 9;
     pub const PAN: u16 = 17;
     pub const RELEASE_VOL_ENV: u16 = 38;
     pub const INSTRUMENT: u16 = 41;

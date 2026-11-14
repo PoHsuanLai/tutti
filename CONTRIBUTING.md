@@ -69,7 +69,8 @@ The reviewer checks:
    queue is counted, never waited on; the area's `AllocDisabler` test covers the new
    path.
 4. **Public API.** The
-   [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/): naming (`as_`/`to_`/`into_` by cost, no `get_` prefix, `try_` for a fallible twin),
+   [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/):
+   naming (`as_`/`to_`/`into_` by cost, no `get_` prefix, `try_` for a fallible twin),
    the common traits (`Debug`, `Clone`, `PartialEq`, `Default` where they make sense;
    `From`/`TryFrom` over ad-hoc converters), `#[must_use]` where dropping loses
    something, `#[non_exhaustive]` on what will grow, `Send` and `Sync` stated. By

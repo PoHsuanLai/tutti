@@ -31,7 +31,7 @@ fn word(b: u8) -> bool {
 }
 
 /// The byte ranges of items behind `#[cfg(test)]`, in blanked text.
-fn test_ranges(code: &str) -> Vec<(usize, usize)> {
+pub(super) fn test_ranges(code: &str) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let mut from = 0;
     while let Some(p) = code[from..].find("#[cfg(test)]") {

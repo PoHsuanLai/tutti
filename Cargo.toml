@@ -155,7 +155,7 @@ missing_panics_doc = "warn"
 
 # Shared-dep pins the members inherit via `workspace = true`.
 [workspace.dependencies]
-thiserror = { version = "2", default-features = false }
+thiserror = "2"
 libloading = "0.9"
 # The W3C UI Events key vocabulary (`Key`, `Code`, `Modifiers`, `KeyState`) a plugin editor's
 # key events are written in, so a windowing frontend converts name for name.

@@ -45,6 +45,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::spec_text;
+
 /// The directory variable that points at the spec text.
 pub(super) const ENV: &str = "TUTTI_SF2_SPEC";
 /// The spec's file name starts with this (a `.txt` or a `.pdf`).
@@ -185,20 +187,23 @@ fn sections(lines: &[String]) -> Vec<Section> {
     out
 }
 
-/// The strongest conformance word in `text`.
-fn kind_of(text: &str) -> &'static str {
-    let words: BTreeSet<String> = text
-        .split(|c: char| !c.is_ascii_alphabetic())
-        .map(str::to_ascii_lowercase)
-        .collect();
-    if words.contains("must") || words.contains("shall") {
-        "required"
-    } else if words.contains("should") {
-        "recommended"
-    } else if words.contains("may") {
-        "permitted"
-    } else {
-        ""
+/// The SoundFont spec's conformance words, strongest first: it writes both
+/// `must` and `shall` for a requirement.
+const WORDS: [(&str, &str); 4] = [
+    ("must", "required"),
+    ("shall", "required"),
+    ("should", "recommended"),
+    ("may", "permitted"),
+];
+
+/// The `kind` of a passage, from its strongest conformance word, and the facts
+/// with `neg=1` added when that word is negated (`must not`).
+fn kind_and_facts(text: &str, facts: String) -> (&'static str, String) {
+    match spec_text::keyword(text, &WORDS) {
+        None => ("", facts),
+        Some((kind, false)) => (kind, facts),
+        Some((kind, true)) if facts.is_empty() => (kind, "neg=1".to_owned()),
+        Some((kind, true)) => (kind, format!("{facts} neg=1")),
     }
 }
 
@@ -211,8 +216,9 @@ fn int(s: &str) -> Option<i64> {
     s.strip_prefix('+').unwrap_or(s).parse().ok()
 }
 
-fn hex(s: &str) -> Option<i64> {
-    i64::from_str_radix(s.trim().strip_prefix("0x")?, 16).ok()
+/// A 16-bit word in hex, as the spec writes enumeration values.
+fn word(s: &str) -> Option<i64> {
+    spec_text::hex(s.trim(), 4).map(i64::from)
 }
 
 /// A cardinal in digits (commas allowed) or in words up to ninety-nine.
@@ -412,11 +418,12 @@ fn generators(secs: &[Section]) -> Result<Vec<Item>, String> {
             pairs.push(("inst_only", marks.contains('+').then_some(1)));
             pairs.push(("nonrt", marks.contains('@').then_some(1)));
         }
+        let (kind, facts) = kind_and_facts(&g.text, facts(&pairs));
         items.push(Item {
             id: format!("sf2.gen.{}", g.name),
-            kind: kind_of(&g.text),
+            kind,
             section: section_label("8.1.2"),
-            facts: facts(&pairs),
+            facts,
             text: g.text.clone(),
         });
     }
@@ -441,12 +448,15 @@ fn enumeration(
     }
     Ok(found
         .into_iter()
-        .map(|e| Item {
-            id: format!("{prefix}{}", camel(&e.name)),
-            kind: kind_of(&e.text),
-            section: section_label(label),
-            facts: facts(&[(fact, Some(e.num))]),
-            text: e.text,
+        .map(|e| {
+            let (kind, facts) = kind_and_facts(&e.text, facts(&[(fact, Some(e.num))]));
+            Item {
+                id: format!("{prefix}{}", camel(&e.name)),
+                kind,
+                section: section_label(label),
+                facts,
+                text: e.text,
+            }
         })
         .collect())
 }
@@ -469,7 +479,7 @@ fn default_modulators(secs: &[Section]) -> Result<Vec<Item>, String> {
         let (src_hex, fields) = src
             .split_once('(')
             .ok_or_else(|| missing("source bit fields"))?;
-        let src_value = hex(src_hex.split_whitespace().next().unwrap_or(""))
+        let src_value = word(src_hex.split_whitespace().next().unwrap_or(""))
             .ok_or_else(|| missing("hex source enumeration"))?;
         let squeezed: String = fields
             .trim_end_matches(')')
@@ -491,7 +501,7 @@ fn default_modulators(secs: &[Section]) -> Result<Vec<Item>, String> {
                 .and_then(|v| v.split_whitespace().next().map(str::to_owned))
         };
         let amount = lead(value("Amount")).and_then(|a| int(&a));
-        let amt_src = lead(value("Amount Source Enumeration")).and_then(|a| hex(&a));
+        let amt_src = lead(value("Amount Source Enumeration")).and_then(|a| word(&a));
         let transform = lead(value("Transform Enumeration")).and_then(|a| int(&a));
         let (Some(amount), Some(amt_src), Some(transform)) = (amount, amt_src, transform) else {
             return Err(missing("amount, amount source or transform"));
@@ -516,9 +526,10 @@ fn default_modulators(secs: &[Section]) -> Result<Vec<Item>, String> {
             ("transform", Some(transform)),
         ]);
         f = format!("src=0x{src_value:04x} amtsrc=0x{amt_src:04x} {f}");
+        let (kind, f) = kind_and_facts(&flat(&s.lines), f);
         items.push(Item {
             id: format!("sf2.mod.default.{}", parts[2]),
-            kind: kind_of(&flat(&s.lines)),
+            kind,
             section: section_label(&s.label),
             facts: f,
             text: s.title.clone(),
@@ -572,7 +583,12 @@ fn chunks(secs: &[Section]) -> Result<Vec<Item>, String> {
                     kind,
                 )
             }
-            _ => continue,
+            _ => {
+                return Err(format!(
+                    "the SF2 section {} titles the {name} sub-chunk outside sections 5 and 7",
+                    s.label
+                ));
+            }
         };
         items.push(Item {
             id,
@@ -608,7 +624,7 @@ fn sample_types(secs: &[Section]) -> Result<Vec<Item>, String> {
             continue;
         };
         let value = value.trim();
-        let v = hex(value).or_else(|| int(value));
+        let v = word(value).or_else(|| int(value));
         let (name, Some(v)) = (name.trim(), v) else {
             return Err(format!("the SF2 enumeration line `{t}` has no value"));
         };
@@ -857,7 +873,11 @@ mod tests {
         let s = extract(SAMPLE).unwrap();
         assert_eq!(
             row(&s, "sf2.mod.src.noController"),
-            ("recommended", "SF2 §8.2.1".to_owned(), "index=0".to_owned())
+            (
+                "recommended",
+                "SF2 §8.2.1".to_owned(),
+                "index=0 neg=1".to_owned()
+            )
         );
         assert_eq!(get(&s, "sf2.mod.src.noteOnVelocity").facts, "index=2");
         assert_eq!(get(&s, "sf2.mod.srctype.linear").facts, "value=0");

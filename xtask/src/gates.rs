@@ -26,6 +26,7 @@ mod prose;
 mod range_types;
 mod session;
 mod sf2_spec;
+mod spec_text;
 mod submodule_pins;
 mod test_paths;
 mod toml;

@@ -46,6 +46,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::spec_text;
+
 /// One extracted spec item. `text` is the sentence behind a keyword row (for
 /// the person writing its paraphrase) and is empty for a table row; it is
 /// never committed.
@@ -457,45 +459,6 @@ fn sentences(unit: &str) -> Vec<&str> {
     out
 }
 
-/// The strongest conformance word of a sentence: `(kind, negated)`.
-fn keyword(sentence: &str) -> Option<(&'static str, bool)> {
-    let chars: Vec<(usize, char)> = sentence.char_indices().collect();
-    let mut best: Option<(usize, &'static str, bool)> = None;
-    let mut i = 0;
-    while i < chars.len() {
-        if !chars[i].1.is_ascii_alphabetic() {
-            i += 1;
-            continue;
-        }
-        let mut j = i;
-        while j < chars.len() && chars[j].1.is_ascii_alphabetic() {
-            j += 1;
-        }
-        let from = chars[i].0;
-        let to = chars.get(j).map_or(sentence.len(), |c| c.0);
-        let word = sentence[from..to].to_ascii_lowercase();
-        if let Some(rank) = WORDS.iter().position(|(w, _)| *w == word) {
-            let quoted = i > 0
-                && "'\"\u{2018}\u{201c}".contains(chars[i - 1].1)
-                && chars
-                    .get(j)
-                    .is_some_and(|c| "'\"\u{2019}\u{201d}".contains(c.1));
-            if !quoted {
-                let tail = sentence[to..].trim_start();
-                let negated = tail.len() >= 3
-                    && tail.is_char_boundary(3)
-                    && tail[..3].eq_ignore_ascii_case("not")
-                    && !tail[3..].starts_with(|c: char| c.is_ascii_alphabetic());
-                if best.is_none_or(|(r, ..)| rank < r) {
-                    best = Some((rank, WORDS[rank].1, negated));
-                }
-            }
-        }
-        i = j;
-    }
-    best.map(|(_, k, n)| (k, n))
-}
-
 struct Unit {
     section: String,
     text: String,
@@ -583,7 +546,7 @@ fn keyword_items(lines: &[Line], doc: &Doc) -> Vec<Item> {
     let mut out = Vec::new();
     for unit in units(lines) {
         for s in sentences(&unit.text) {
-            let Some((kind, negated)) = keyword(s) else {
+            let Some((kind, negated)) = spec_text::keyword(s, &WORDS) else {
                 continue;
             };
             let n = count.entry(unit.section.clone()).or_default();
@@ -620,26 +583,13 @@ fn table_lines(lines: &[Line], n: u32) -> Result<Vec<&str>, String> {
         .collect())
 }
 
-fn hex(token: &str, max_digits: usize) -> Option<u32> {
-    let digits = token
-        .strip_prefix("0x")
-        .or_else(|| token.strip_prefix("0X"))?;
-    if digits.is_empty()
-        || digits.len() > max_digits
-        || !digits.bytes().all(|b| b.is_ascii_hexdigit())
-    {
-        return None;
-    }
-    u32::from_str_radix(digits, 16).ok()
-}
-
 /// The size in bytes of each Message Type, from the allocation table.
 fn mt_sizes(lines: &[Line], table: u32) -> Result<BTreeMap<u32, u32>, String> {
     let mut out = BTreeMap::new();
     for l in table_lines(lines, table)? {
         let t: Vec<&str> = l.split_whitespace().collect();
         if let [mt, bits, "bits", ..] = t[..]
-            && let (Some(mt), Ok(bits)) = (hex(mt, 1), bits.parse::<u32>())
+            && let (Some(mt), Ok(bits)) = (spec_text::hex(mt, 1), bits.parse::<u32>())
         {
             out.insert(mt, bits / 8);
         }
@@ -656,24 +606,27 @@ fn mt_sizes(lines: &[Line], table: u32) -> Result<BTreeMap<u32, u32>, String> {
 /// `mt` and `status` of a `Rows::Formats` line.
 fn format_row(line: &str) -> Option<(u32, u32, Option<u32>)> {
     let t: Vec<&str> = line.split_whitespace().collect();
-    let i = t.iter().position(|x| hex(x, 1).is_some())?;
-    let mt = hex(t[i], 1)?;
+    let i = t.iter().position(|x| spec_text::hex(x, 1).is_some())?;
+    let mt = spec_text::hex(t[i], 1)?;
     if mt == FLEX_MT {
-        let bank = hex(t.get(i + 5)?, 2)?;
-        let status = hex(t.get(i + 6)?, 2)?;
+        let bank = spec_text::hex(t.get(i + 5)?, 2)?;
+        let status = spec_text::hex(t.get(i + 6)?, 2)?;
         return Some((mt, status, Some(bank)));
     }
     let mut k = i + 2;
     if t.get(k) == Some(&"status") {
         k += 1;
     }
-    Some((mt, hex(t.get(k)?, 2)?, None))
+    Some((mt, spec_text::hex(t.get(k)?, 2)?, None))
 }
 
 /// `(bank, status)` of a `Rows::FlexStatus` line.
 fn flex_status_row(line: &str) -> Option<(u32, u32)> {
     let t: Vec<&str> = line.split_whitespace().collect();
-    Some((hex(t.first()?, 2)?, hex(t.get(1)?, 2)?))
+    Some((
+        spec_text::hex(t.first()?, 2)?,
+        spec_text::hex(t.get(1)?, 2)?,
+    ))
 }
 
 fn message_item(
@@ -754,7 +707,7 @@ fn header_items(lines: &[Line], doc: &Doc, table: u32) -> Result<Vec<Item>, Stri
             (t.first() == Some(&"Value")).then(|| {
                 t[1..]
                     .iter()
-                    .map(|x| hex(x, 2))
+                    .map(|x| spec_text::hex(x, 2))
                     .collect::<Option<Vec<u32>>>()
             })
         })

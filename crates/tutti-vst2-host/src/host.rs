@@ -66,7 +66,7 @@ use vst::host::Host;
 /// `audioMasterAutomate` (the value, as the `f32` the callback carries) and
 /// `audioMasterEndEdit`, each with the parameter's index.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ParameterChange {
+pub(crate) enum ParameterChange {
     /// `audioMasterBeginEdit`: the plugin took hold of the parameter.
     Begin(i32),
     /// `audioMasterAutomate`: the parameter now has this value.

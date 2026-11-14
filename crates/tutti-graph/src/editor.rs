@@ -88,26 +88,31 @@ use crate::wake::Wake;
 use tutti_types::{Amplitude, Mix, ParamCell};
 
 /// Why [`Editor::commit`] failed.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum CommitError {
     /// The spec is malformed.
+    #[error("graph is invalid ({} faults)", .0.len())]
     Invalid(Vec<GraphInvalid>),
     /// The spec did not compile against the units' shapes.
+    #[error("{0}")]
     Compile(CompileError),
     /// A node in the spec has no unit — it was added to the spec directly
     /// rather than through [`Editor::insert`].
+    #[error("node {} has no unit", .node.0)]
     MissingUnit {
         /// The node.
         node: NodeKey,
     },
     /// [`QUEUE_CAPACITY`] commits are out. Nothing was compiled or sent and
     /// the plan did not advance; retry once the executor has run a block.
+    #[error("{} commits in flight", QUEUE_CAPACITY)]
     Backpressure,
     /// A [`reprepare`](Editor::reprepare) is waiting for the executor to
     /// hand its units back. Nothing was compiled or sent; retry once the
     /// executor has run a block (the next [`collect`](Editor::collect) or
     /// `commit` finishes the re-prepare first).
+    #[error("a re-prepare is waiting for its units")]
     Repreparing,
     /// A re-prepare failed after the units had left the executor — a node
     /// panicked in [`Node::prepare`], or the re-prepared shapes no longer
@@ -115,6 +120,7 @@ pub enum CommitError {
     /// say). The units are gone and the executor is suspended: it renders
     /// silence, forever, and never panics. Every later call on this editor
     /// returns this error. **Recovery: build a new editor/executor pair.**
+    #[error("the editor is poisoned ({cause}); build a new pair")]
     Poisoned {
         /// What went wrong.
         cause: String,
@@ -128,6 +134,7 @@ pub enum CommitError {
     /// ([`Editor::set_mode`]), its mix to [`Mix::WET`] ([`Editor::set_mix`]),
     /// or take the lane off its mix, and commit again; or declare the node's
     /// buses so it has a pass.
+    #[error("node {} is bypassed or mixed with no pass: {error}", .node.0)]
     Unplaced {
         /// The node.
         node: NodeKey,
@@ -137,6 +144,7 @@ pub enum CommitError {
     /// The graph has more global outputs than the host running the executor
     /// can take ([`Limits::max_global_outputs`], set with
     /// [`Editor::set_limits`]). Nothing was compiled or sent.
+    #[error("{outputs} global outputs; the host takes {limit}")]
     TooManyOutputs {
         /// The graph's global outputs.
         outputs: usize,
@@ -146,6 +154,7 @@ pub enum CommitError {
     /// A re-prepare asked for a larger block than the host running the
     /// executor can take ([`Limits::max_block`]). Nothing was sent; the
     /// graph runs on at its current `Prepare`.
+    #[error("a {max_block}-frame MaxBlock; the host takes {limit}")]
     BlockTooLong {
         /// The `MaxBlock` asked for.
         max_block: usize,
@@ -156,12 +165,14 @@ pub enum CommitError {
     /// running one's in more than its tail — ports, latency, in-place
     /// acceptance, event resolution or event capacity. Nothing changed; swap it with
     /// [`Editor::insert`] instead.
+    #[error("node {} cannot crossfade to a unit of another shape", .node.0)]
     FadeShape {
         /// The node.
         node: NodeKey,
     },
     /// [`Editor::replace`] names a node with no running unit to fade from:
     /// not in the plan sent last, or removed since.
+    #[error("node {} has no running unit to fade from", .node.0)]
     NotRunning {
         /// The node.
         node: NodeKey,
@@ -169,11 +180,13 @@ pub enum CommitError {
     /// A delta handed to [`Editor::package`] carries a crossfade the
     /// verifier refuses ([`Plan::verify_fades`]). Nothing was
     /// sent.
+    #[error("{0}")]
     Fade(VerifyError),
     /// A tap's lanes in the spec no longer match the width it was opened
     /// with ([`Editor::open_tap`] fixed the reader's and the writer's width
     /// there): the spec's `TapSpec::Ports` sources were edited. Nothing was sent.
     /// Close the tap and open another to change its width.
+    #[error("tap {} names {sources} lanes but was opened with {opened}", .tap.0)]
     TapWidth {
         /// The tap.
         tap: TapId,
@@ -187,6 +200,7 @@ pub enum CommitError {
     /// `MeterSpec::Ports` was edited, or the outputs a master meter follows
     /// grew past [`MAX_ROOT_CHANNELS`]. Nothing was sent. Close the meter and
     /// open another to change its width.
+    #[error("meter {} names {sources} lanes but its cells hold {capacity}", .meter.0)]
     MeterWidth {
         /// The meter.
         meter: MeterId,
@@ -196,6 +210,7 @@ pub enum CommitError {
         capacity: usize,
     },
     /// No node at this key ([`Editor::set_latency`]).
+    #[error("no node {}", .node.0)]
     NoSuchNode {
         /// The key.
         node: NodeKey,
@@ -203,6 +218,7 @@ pub enum CommitError {
     /// A latency past what PDC compensates
     /// (`crate::MAX_NODE_LATENCY`), refused rather than
     /// silently clamped ([`Editor::set_latency`]).
+    #[error("node {}: latency {} frames; PDC compensates at most {}", .node.0, .latency.samples().get(), .limit.samples().get())]
     LatencyTooLong {
         /// The node.
         node: NodeKey,
@@ -214,6 +230,7 @@ pub enum CommitError {
     /// A finite tail past what the graph's tail figures bound
     /// (`crate::MAX_NODE_TAIL`), refused rather than silently clamped
     /// ([`Editor::set_tail`]).
+    #[error("node {}: tail {} frames; a finite tail is at most {}", .node.0, .tail.get(), .limit.get())]
     TailTooLong {
         /// The node.
         node: NodeKey,
@@ -278,106 +295,21 @@ impl Limits {
     }
 }
 
-impl std::fmt::Display for CommitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Invalid(errs) => write!(f, "graph is invalid ({} faults)", errs.len()),
-            Self::Compile(e) => write!(f, "{e}"),
-            Self::MissingUnit { node } => write!(f, "node {} has no unit", node.0),
-            Self::Backpressure => write!(f, "{QUEUE_CAPACITY} commits in flight"),
-            Self::Repreparing => write!(f, "a re-prepare is waiting for its units"),
-            Self::Poisoned { cause } => {
-                write!(f, "the editor is poisoned ({cause}); build a new pair")
-            }
-            Self::Unplaced { node, error } => {
-                write!(
-                    f,
-                    "node {} is bypassed or mixed with no pass: {error}",
-                    node.0
-                )
-            }
-            Self::TooManyOutputs { outputs, limit } => {
-                write!(f, "{outputs} global outputs; the host takes {limit}")
-            }
-            Self::BlockTooLong { max_block, limit } => {
-                write!(f, "a {max_block}-frame MaxBlock; the host takes {limit}")
-            }
-            Self::FadeShape { node } => write!(
-                f,
-                "node {} cannot crossfade to a unit of another shape",
-                node.0
-            ),
-            Self::NotRunning { node } => {
-                write!(f, "node {} has no running unit to fade from", node.0)
-            }
-            Self::Fade(e) => write!(f, "{e}"),
-            Self::TapWidth {
-                tap,
-                sources,
-                opened,
-            } => write!(
-                f,
-                "tap {} names {sources} lanes but was opened with {opened}",
-                tap.0
-            ),
-            Self::MeterWidth {
-                meter,
-                sources,
-                capacity,
-            } => write!(
-                f,
-                "meter {} names {sources} lanes but its cells hold {capacity}",
-                meter.0
-            ),
-            Self::NoSuchNode { node } => write!(f, "no node {}", node.0),
-            Self::LatencyTooLong {
-                node,
-                latency,
-                limit,
-            } => write!(
-                f,
-                "node {}: latency {} frames; PDC compensates at most {}",
-                node.0,
-                latency.samples().get(),
-                limit.samples().get()
-            ),
-            Self::TailTooLong { node, tail, limit } => write!(
-                f,
-                "node {}: tail {} frames; a finite tail is at most {}",
-                node.0,
-                tail.get(),
-                limit.get()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for CommitError {}
-
 /// What [`Editor::close_tap`], [`Editor::close_event_tap`] and
 /// [`Editor::close_meter`] found not open: the id that was asked for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum CloseError {
     /// No plan tap with this id is open.
+    #[error("no tap {} is open", .0.0)]
     Tap(TapId),
     /// No event tap with this id is open.
+    #[error("no event tap {} is open", .0.0)]
     EventTap(EventTapId),
     /// No meter with this id is open.
+    #[error("no meter {} is open", .0.0)]
     Meter(MeterId),
 }
-
-impl std::fmt::Display for CloseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Tap(id) => write!(f, "no tap {} is open", id.0),
-            Self::EventTap(id) => write!(f, "no event tap {} is open", id.0),
-            Self::Meter(id) => write!(f, "no meter {} is open", id.0),
-        }
-    }
-}
-
-impl std::error::Error for CloseError {}
 
 /// Why [`Editor::open_tap`], [`Editor::open_event_tap`] or
 /// [`Editor::open_meter`] refused: a source that
@@ -387,15 +319,17 @@ impl std::error::Error for CloseError {}
 /// Only the open is checked. A port that narrows or vanishes *later* (a node
 /// replaced by one with fewer outputs, a removed node) makes its lane read
 /// silence and the commit succeeds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum MissingSource {
     /// No node has this key.
+    #[error("no node {}", .node.0)]
     Node {
         /// The key.
         node: NodeKey,
     },
     /// The node has no such output port.
+    #[error("node {} has no output {port} (it has {width})", .node.0)]
     Port {
         /// The node.
         node: NodeKey,
@@ -405,6 +339,7 @@ pub enum MissingSource {
         width: usize,
     },
     /// The graph has no such global input channel.
+    #[error("no global input {channel} (the graph has {width})")]
     Global {
         /// The channel asked for.
         channel: u16,
@@ -412,6 +347,7 @@ pub enum MissingSource {
         width: usize,
     },
     /// The node has no such event input port.
+    #[error("node {} has no event input {port} (it has {width})", .node.0)]
     EventInPort {
         /// The node.
         node: NodeKey,
@@ -421,6 +357,7 @@ pub enum MissingSource {
         width: usize,
     },
     /// The node has no such event output port.
+    #[error("node {} has no event output {port} (it has {width})", .node.0)]
     EventPort {
         /// The node.
         node: NodeKey,
@@ -430,32 +367,6 @@ pub enum MissingSource {
         width: usize,
     },
 }
-
-impl std::fmt::Display for MissingSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
-            Self::Node { node } => write!(f, "no node {}", node.0),
-            Self::Port { node, port, width } => {
-                write!(f, "node {} has no output {port} (it has {width})", node.0)
-            }
-            Self::Global { channel, width } => {
-                write!(f, "no global input {channel} (the graph has {width})")
-            }
-            Self::EventInPort { node, port, width } => write!(
-                f,
-                "node {} has no event input {port} (it has {width})",
-                node.0
-            ),
-            Self::EventPort { node, port, width } => write!(
-                f,
-                "node {} has no event output {port} (it has {width})",
-                node.0
-            ),
-        }
-    }
-}
-
-impl std::error::Error for MissingSource {}
 
 /// The control-thread half of a graph: holds the [`GraphSpec`], prepares
 /// units, compiles, and sends each result to its paired [`Executor`].

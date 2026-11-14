@@ -7,7 +7,6 @@ use libloading::Library;
 use std::cell::{Cell, UnsafeCell};
 use std::collections::BTreeSet;
 use std::convert::TryFrom;
-use std::error::Error;
 use std::ffi::CString;
 use std::marker::PhantomData;
 use std::mem::{ManuallyDrop, MaybeUninit};
@@ -303,43 +302,32 @@ pub trait Host {
 }
 
 /// All possible errors that can occur when loading a VST plugin.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum PluginLoadError {
     /// Could not load given path.
+    #[error("could not open the requested path")]
     InvalidPath,
 
     /// Given path is not a VST plugin.
+    #[error("the given path does not contain a VST2.4 compatible library")]
     NotAPlugin,
 
     /// Failed to create an instance of this plugin.
     ///
     /// This can happen for many reasons, such as if the plugin requires a different version of
     /// the VST API to be used, or due to improper licensing.
+    #[error("failed to create a plugin instance")]
     InstanceFailed,
 
     /// The API version which the plugin used is not supported by this library.
+    #[error("the plugin API version is not compatible with this library")]
     InvalidApiVersion,
 
     /// The entry point returned an `AEffect` that is not one: its `magic` is not
     /// `VstP`, or it has no dispatcher. Nothing was called on it.
+    #[error("the plugin entry point returned an invalid AEffect")]
     InvalidEffect,
 }
-
-impl fmt::Display for PluginLoadError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use self::PluginLoadError::*;
-        let description = match self {
-            InvalidPath => "Could not open the requested path",
-            NotAPlugin => "The given path does not contain a VST2.4 compatible library",
-            InstanceFailed => "Failed to create a plugin instance",
-            InvalidApiVersion => "The plugin API version is not compatible with this library",
-            InvalidEffect => "The plugin entry point returned an invalid AEffect",
-        };
-        write!(f, "{}", description)
-    }
-}
-
-impl Error for PluginLoadError {}
 
 /// Wrapper for an externally loaded VST plugin.
 ///

@@ -12,16 +12,20 @@ mod alloc_binaries;
 mod canonical_paths;
 mod clap_sys;
 mod conformance;
+mod conformance_site;
 mod decode_boundary;
 mod doc_features;
 mod doc_refs;
+mod errors;
 mod ffi;
 mod guards;
 mod hosting;
+mod junit;
 mod layout;
 mod lex;
 mod lints;
 mod midi_spec;
+mod platform_seam;
 mod pointers;
 mod prose;
 mod range_types;
@@ -98,6 +102,8 @@ pub(crate) enum Gate {
     Layout,
     /// `unsafe` lives only in the crates that hold it.
     Ffi,
+    /// Every error type derives `thiserror::Error`.
+    Errors,
     /// Every host callback runs under the panic guard.
     Guards,
     /// Every hosting impl is listed in the plugin contract.
@@ -114,6 +120,8 @@ pub(crate) enum Gate {
     Pointers,
     /// An allocation test is a module of its area binary, not a binary of its own.
     AllocBinaries,
+    /// A platform cfg stands only on a `mod` declaration.
+    PlatformSeam,
     /// The spec inventories are well formed, tags name rows, CLAP matches `clap-sys`.
     Conformance,
 }
@@ -127,6 +135,7 @@ impl Gate {
             Gate::SubmodulePins => "gate check-submodule-pins".to_owned(),
             Gate::Layout => "gate check-layout".to_owned(),
             Gate::Ffi => "gate check-ffi".to_owned(),
+            Gate::Errors => "gate check-errors".to_owned(),
             Gate::Guards => "gate check-guards".to_owned(),
             Gate::Hosting => "gate check-hosting".to_owned(),
             Gate::Session => "gate check-session".to_owned(),
@@ -135,6 +144,7 @@ impl Gate {
             Gate::DocRefs => "gate check-doc-refs".to_owned(),
             Gate::Pointers => "gate check-pointers".to_owned(),
             Gate::AllocBinaries => "gate check-alloc-binaries".to_owned(),
+            Gate::PlatformSeam => "gate check-platform-seam".to_owned(),
             Gate::Conformance => "gate check-conformance".to_owned(),
         }
     }
@@ -151,6 +161,7 @@ impl Gate {
             }
             Gate::Layout => layout::check(&tree, &RealCargo(root.to_path_buf())),
             Gate::Ffi => ffi::check(&tree),
+            Gate::Errors => errors::check(&tree, errors::ALLOW),
             Gate::Guards => guards::check(&tree, guards::MIN_SEEN),
             Gate::Hosting => hosting::check(&tree),
             Gate::Session => session::check(&tree, &RealCargo(root.to_path_buf())),
@@ -161,6 +172,7 @@ impl Gate {
             Gate::DocRefs => doc_refs::check(&tree),
             Gate::Pointers => pointers::check(&tree),
             Gate::AllocBinaries => alloc_binaries::check(&tree, alloc_binaries::ALLOWED),
+            Gate::PlatformSeam => platform_seam::check(&tree, platform_seam::ALLOW),
             Gate::Conformance => {
                 let sys = clap_sys_tree(&tree);
                 let require =
@@ -239,6 +251,68 @@ fn midi_spec_text(doc: &midi_spec::Doc) -> Result<String, String> {
         return Err(format!("pdftotext failed on {pdf}"));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// `conformance --results <dir> --out <dir>`: the dashboard at `<out>/index.html`,
+/// the landing page beside it at `<out>/../index.html` and the badges at `<out>/../badges/<area>-<os>.json`, from the JUnit files
+/// `<dir>/<os>.xml` (an OS with no file has run nothing).
+pub(crate) fn conformance_site(root: &Path, results: &Path, out: &Path) -> Result<(), String> {
+    let mut texts = Vec::new();
+    let entries = fs::read_dir(results).map_err(|e| {
+        format!(
+            "cannot read the results directory {}: {e}",
+            results.display()
+        )
+    })?;
+    let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    files.sort();
+    for path in files {
+        if path.extension().is_some_and(|x| x == "xml")
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+        {
+            let os = conformance_site::Os::from_name(stem)
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            let xml =
+                fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            texts.push((os, String::from_utf8_lossy(&xml).into_owned()));
+        }
+    }
+    if texts.is_empty() {
+        return Err(format!("no <os>.xml JUnit file in {}", results.display()));
+    }
+    let tree = RealTree {
+        root: root.to_path_buf(),
+    };
+    let report = conformance_site::report(&tree, &texts)?;
+    let site = out.parent().unwrap_or(out);
+    let badges_dir = site.join("badges");
+    let mut files = vec![
+        (out.join("index.html"), conformance_site::dashboard(&report)),
+        (site.join("index.html"), conformance_site::landing()),
+    ];
+    for (name, json) in conformance_site::badges(&report) {
+        files.push((badges_dir.join(name), json));
+    }
+    for (path, contents) in files {
+        fs::create_dir_all(path.parent().expect("a file path has a parent"))
+            .and_then(|()| fs::write(&path, contents))
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    }
+    for f in &report {
+        for os in conformance_site::Os::ALL {
+            let name = os.name();
+            if !f.has_results(os) {
+                println!("{} {name}: no results", f.name);
+                continue;
+            }
+            let (covered, failing, applicable) = f.counts(os);
+            println!(
+                "{} {name}: {covered}/{applicable} covered, {failing} failing",
+                f.name
+            );
+        }
+    }
+    Ok(())
 }
 
 /// `conformance-inventory <format>`: rewrite the format's inventory file from

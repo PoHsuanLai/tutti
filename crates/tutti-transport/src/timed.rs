@@ -79,25 +79,14 @@ impl From<MotionEvent> for TransportCommand {
 
 /// [`SCHEDULE_CAPACITY`] commands were in flight, so this one was not sent.
 /// Handed back so a caller can retry it once the engine has applied some.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error("transport command queue full; {command:?} at {at:?} not sent")]
 pub struct ScheduleFull {
     /// When it was meant to happen.
     pub at: At,
     /// The command.
     pub command: TransportCommand,
 }
-
-impl core::fmt::Display for ScheduleFull {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "transport command queue full; {:?} at {:?} not sent",
-            self.command, self.at
-        )
-    }
-}
-
-impl std::error::Error for ScheduleFull {}
 
 /// One command in flight.
 #[derive(Debug, Clone, Copy, PartialEq)]

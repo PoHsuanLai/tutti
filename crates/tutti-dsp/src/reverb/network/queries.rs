@@ -260,7 +260,7 @@ impl Fdn {
     /// construction: the tolerances allow a growth of at most
     /// `(1 + 1e-6) sqrt(1 + n e)` per trip.
     #[must_use]
-    pub fn is_lossless(&self) -> bool {
+    pub(crate) fn is_lossless(&self) -> bool {
         !self.lines.is_empty()
             && self.lines_hold()
             && self.orthogonal()
@@ -409,7 +409,7 @@ impl Network {
     /// direct term, zero; a line, its length; a tap, its delay; a FIR, its
     /// onset). Infinity when a stage has no path.
     #[must_use]
-    pub fn min_delay(&self) -> f32 {
+    pub(crate) fn min_delay(&self) -> f32 {
         let mut frames = self.pre_delay.get() as f32;
         for stage in self.stages.iter() {
             frames += match stage {

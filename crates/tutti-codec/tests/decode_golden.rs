@@ -139,9 +139,13 @@ fn decoded_samples_match_the_golden_digests() {
 /// trig differently in the last ulp (see [`bit_portable`]), so the portable
 /// guard for these files is `decoded_levels_match_on_every_platform`.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-#[test]
-fn lossy_decodes_match_the_golden_digests_where_recorded() {
-    check_digests(GOLDEN.iter().filter(|r| !bit_portable(r.0)));
+mod recorded {
+    use super::*;
+
+    #[test]
+    fn lossy_decodes_match_the_golden_digests_where_recorded() {
+        check_digests(GOLDEN.iter().filter(|r| !bit_portable(r.0)));
+    }
 }
 
 /// `(file, channels, frames, per-channel (RMS, peak))` of `Wave::read`,

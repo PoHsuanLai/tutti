@@ -28,7 +28,8 @@
 //!
 //! [`read()`](fn@read) parses one whole System Exclusive message as a Universal one
 //! ([`Universal`]: Identity Request and Reply, General MIDI On and Off, Master
-//! Volume, Balance, Fine and Coarse Tuning), and [`UniversalReader`] is an
+//! Volume, Balance, Fine and Coarse Tuning, and MIDI Machine Control commands and
+//! responses, [`MmcCommand`] and [`MmcInfoField`]), and [`UniversalReader`] is an
 //! instrument's edge for it: a Group's UMPs in, the messages addressed to the
 //! instrument ([`SysexDeviceId`], or the all-call) out.
 //!
@@ -135,6 +136,7 @@ mod narrow;
 mod narrower;
 mod scale;
 mod sensitivity;
+mod smpte;
 mod translator;
 mod tuning;
 mod unit;
@@ -147,6 +149,7 @@ pub use mpe::{MpeMode, MpeZone, MpeZoneConfig, MpeZones};
 pub use narrow::{narrow_bend, narrow_value, narrow_velocity};
 pub use narrower::Narrower;
 pub use sensitivity::PitchBendSensitivity;
+pub use smpte::{MtcRate, SmpteFrameRate, SmpteTimecode, UnknownFrameRate};
 pub use translator::Translator;
 pub use tuning::{
     ChannelMask, KeyChange, KeyChanges, KeyTable, MAX_KEY_CHANGES, NotFrequencyData, OctaveOffsets,
@@ -156,10 +159,7 @@ pub use unit::{
     bend_to_signed_f32, bend_u14_to_signed_f32, signed_f32_to_bend, u7_to_unit_f32,
     unit_f32_to_value, unit_f32_to_velocity, value_to_unit_f32, velocity_to_unit_f32,
 };
-pub use universal::{
-    Addressed, Addressee, BadChecksum, GeneralMidi, Heard, NotSysexDeviceId, Read, Recipient,
-    SysexDeviceId, Universal, UniversalReader, read,
-};
+pub use universal::*;
 pub use voice::{
     channel_voice, widen, widen_bend, widen_bytes, widen_message, widen_value, widen_velocity,
 };

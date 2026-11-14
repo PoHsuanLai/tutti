@@ -2,7 +2,8 @@
 //! [`CiDevice`] (Discovery, Invalidate MUID, NAK)
 //! run on an open input, the peers it finds
 //! ([`CiPeerInfo`], reported as [`CiChange`]), and Profile Configuration
-//! with those that declare it (reported as [`ProfilesChange`]).
+//! with those that declare it (reported as [`ProfilesChange`]), and Process Inquiry with
+//! those that declare that (reported as [`ProcessChange`]).
 //!
 //! # Opt-in
 //!
@@ -60,7 +61,7 @@
 //! It runs while enabled and the input is open: the Discovery it sends when it
 //! starts is only the first round, and it answers a Discovery or an Invalidate
 //! MUID from anyone, at any time (M2-101 Appendix E: a Responder). It speaks
-//! Management and, as the Initiator, Profile Configuration; there is no Property
+//! Management and, as the Initiator, Profile Configuration and Process Inquiry; there is no Property
 //! Exchange, so every other message addressed to it is NAK'd by the core.
 //!
 //! # Profiles
@@ -79,6 +80,19 @@
 //! and [`ProfilesChange::Dropped`] says so; closing the input reports nothing, as
 //! for peers.
 //!
+//! # Process Inquiry
+//!
+//! A peer whose Discovery Reply declares Process Inquiry
+//! ([`CiCategories::PROCESS_INQUIRY`]) gets a [`ProcessInitiator`], made when it is
+//! found: it sends an Inquiry: Process Inquiry Capabilities to the Function Block,
+//! and a peer whose reply says it supports MIDI Message Report is listed
+//! ([`MidiSession::report_peers`](crate::MidiSession::report_peers)). An app's request
+//! for a report ([`MidiSession::report`](crate::MidiSession::report)) is queued and
+//! started by the next poll. The messages of a report are not CI: they are the peer's
+//! MIDI, and reach the graph with the rest of the input, between the
+//! [`ProcessChange::ReportBegan`] and the [`ProcessChange::ReportEnded`] the
+//! session reports. A lost peer's Initiator goes with it ([`ProcessChange::Dropped`]).
+//!
 //! The port copies the device's SysEx7 packets to the stream ring while any
 //! device is to run (`hears_sysex`); the graph still gets them all. They are
 //! reassembled per Group, decoded, and routed to that Group's device. **A gap
@@ -92,9 +106,13 @@
 //! # What it declares
 //!
 //! - **Identity**: the app's, as given to `enable_ci`.
-//! - **Categories**: Profile Configuration. The devices initiate it, and they
-//!   answer a Profile Inquiry with no Profiles (M2-101 §7.13 allows a device
-//!   that has none to reply) and NAK a Set Profile On or Off.
+//! - **Categories**: Profile Configuration and Process Inquiry. The devices initiate
+//!   both. They answer a Profile Inquiry with no Profiles (M2-101 §7.13 allows a device
+//!   that has none to reply) and NAK a Set Profile On or Off; they answer an Inquiry:
+//!   Process Inquiry Capabilities with MIDI Message Report supported, and a MIDI Message
+//!   Report of the Function Block or Group with an empty Reply and the End (§9.6, §9.8),
+//!   as a device with no MIDI state to report does, and one of a Channel with a NAK, since
+//!   none is in use (§9.5).
 //! - **Receivable Maximum SysEx Message Size**: [`MAX_SYSEX`], 512 bytes, the
 //!   floor of a device that will initiate Profile Configuration or Property
 //!   Exchange (§5.5.3); the reassembler is sized for it, delimiters included.
@@ -112,11 +130,12 @@ use std::time::Instant;
 use tutti_graph::Offset;
 use tutti_midi_device::{
     CiAction, CiCategories, CiDevice, CiHeader, CiMessage, CiPeer, Decoded, DeviceId, MaxSysexSize,
-    Muid, ProfileAction, ProfileInitiator,
+    Muid, ProcessAction, ProcessFeatures, ProcessInitiator, ProfileAction, ProfileInitiator,
 };
 use tutti_ump::{DeviceIdentity, MidiGroup, SysexAssembler, SysexStep, Ump};
 
 use crate::devices::OpenOutput;
+use crate::process::{self, ProcessChange, ReportAsk, ReportError, ReportPeer};
 use crate::profiles::{
     PeerProfiles, ProfileError, ProfileSwitch, ProfilesChange, Snapshot, Switch,
 };
@@ -126,11 +145,13 @@ use crate::stream::DeviceStream;
 /// (see the module).
 pub(crate) const MAX_SYSEX: MaxSysexSize = MaxSysexSize::of(MaxSysexSize::INITIATOR_MIN);
 
-/// What the devices declare: Management, and Profile Configuration, which the
-/// session initiates with every peer that declares it too (the module's "What it
-/// does"). They answer a Profile Inquiry with no Profiles, and NAK a Set Profile
-/// On or Off, since they have none to enable.
-const CATEGORIES: CiCategories = CiCategories::PROFILE_CONFIGURATION;
+/// What the devices declare: Management, Profile Configuration and Process
+/// Inquiry, which the session initiates with every peer that declares them too (the
+/// module's "What it does"). They answer a Profile Inquiry with no Profiles, and NAK a
+/// Set Profile On or Off, since they have none to enable; they answer a Process
+/// Inquiry with the report of a device with no MIDI state.
+const CATEGORIES: CiCategories =
+    CiCategories::PROFILE_CONFIGURATION.union(CiCategories::PROCESS_INQUIRY);
 
 /// What one step of an input's MIDI-CI changed, for the app.
 #[derive(Default)]
@@ -139,11 +160,13 @@ pub(crate) struct CiChanges {
     pub(crate) peers: Vec<CiChange>,
     /// Peers' Profiles.
     pub(crate) profiles: Vec<ProfilesChange>,
+    /// Peers' Process Inquiry.
+    pub(crate) process: Vec<ProcessChange>,
 }
 
 impl CiChanges {
     fn is_empty(&self) -> bool {
-        self.peers.is_empty() && self.profiles.is_empty()
+        self.peers.is_empty() && self.profiles.is_empty() && self.process.is_empty()
     }
 }
 
@@ -251,6 +274,8 @@ struct Member {
     device: CiDevice<Entropy>,
     /// The Initiator of Profile Configuration with each peer that declared it.
     initiators: BTreeMap<Muid, ProfileInitiator>,
+    /// The Initiator of Process Inquiry with each peer that declared it.
+    process: BTreeMap<Muid, ProcessInitiator>,
 }
 
 impl Member {
@@ -259,6 +284,7 @@ impl Member {
             group,
             device,
             initiators: BTreeMap::new(),
+            process: BTreeMap::new(),
         }
     }
 }
@@ -285,6 +311,11 @@ pub(crate) struct Ci {
     profiles: Snapshot,
     /// Switches asked for, started by the next poll (it has the time).
     queue: Vec<ProfileSwitch>,
+    /// The peers that can be asked for a MIDI Message Report, rebuilt with
+    /// `peers`.
+    reporters: process::Snapshot,
+    /// Reports asked for, started by the next poll.
+    reports: Vec<ReportAsk>,
 }
 
 /// Group 0, the Group of a MIDI 1.0 port and of an Endpoint that says nothing
@@ -323,6 +354,8 @@ impl Ci {
             peers: Arc::default(),
             profiles: Arc::default(),
             queue: Vec::new(),
+            reporters: Arc::default(),
+            reports: Vec::new(),
         }
     }
 
@@ -363,22 +396,26 @@ impl Ci {
                 running.reconcile(&self.groups, now, out, &mut changes);
                 running.step(now, heard, out, &mut changes);
                 running.start_switches(&mut self.queue, now, out, &mut changes);
+                running.start_reports(&mut self.reports, now, out, &mut changes);
             }
             (None, Some(identity)) if !self.groups.is_empty() => {
                 let (running, started) = Running::start(&self.groups, identity, now, out);
                 self.running = Some(Box::new(running));
                 changes.peers.extend(started.peers);
                 changes.profiles.extend(started.profiles);
+                changes.process.extend(started.process);
             }
             _ => {}
         }
         self.queue.clear();
+        self.reports.clear();
         if self.running.as_ref().is_some_and(|r| r.members.is_empty()) {
             self.running = None;
         }
         if !changes.is_empty() {
             self.peers = self.collect_peers();
             self.profiles = self.collect_profiles();
+            self.reporters = self.collect_reporters();
         }
         changes
     }
@@ -392,7 +429,9 @@ impl Ci {
         }
         self.peers = Arc::default();
         self.profiles = Arc::default();
+        self.reporters = Arc::default();
         self.queue.clear();
+        self.reports.clear();
     }
 
     /// Every peer's Profiles, by Group then MUID: only the peers that declared
@@ -420,6 +459,21 @@ impl Ci {
         Ok(())
     }
 
+    /// The peers that can be asked for a MIDI Message Report, by Group then MUID.
+    pub(crate) fn report_peers(&self) -> process::Snapshot {
+        Arc::clone(&self.reporters)
+    }
+
+    /// Asks that the peer of `ask` be sent its request at the next poll, after
+    /// checking it is still one that supports MIDI Message Report.
+    pub(crate) fn report(&mut self, ask: ReportAsk) -> Result<(), ReportError> {
+        if !self.reporters.contains(&ask.peer) {
+            return Err(ReportError::NoSuchPeer);
+        }
+        self.reports.push(ask);
+        Ok(())
+    }
+
     /// Every peer found, by Group then MUID.
     pub(crate) fn peers(&self) -> Arc<[CiPeerInfo]> {
         Arc::clone(&self.peers)
@@ -442,6 +496,31 @@ impl Ci {
                         muid,
                         known: initiator.is_known(),
                         table: initiator.table().clone(),
+                    })
+            })
+            .collect()
+    }
+
+    fn collect_reporters(&self) -> process::Snapshot {
+        let Some(running) = &self.running else {
+            return Arc::default();
+        };
+        running
+            .members
+            .iter()
+            .flat_map(|member| {
+                member
+                    .process
+                    .iter()
+                    .filter(|(_, initiator)| {
+                        initiator
+                            .features()
+                            .is_some_and(|f| f.contains(ProcessFeatures::MIDI_MESSAGE_REPORT))
+                    })
+                    .map(|(&muid, _)| ReportPeer {
+                        device: self.device.clone(),
+                        group: member.group,
+                        muid,
                     })
             })
             .collect()
@@ -583,6 +662,12 @@ fn stop_members(members: &[Member], out: &mut OpenOutput, changes: &mut CiChange
                     muid: peer,
                 }),
         );
+        changes
+            .process
+            .extend(member.process.keys().map(|&peer| ProcessChange::Dropped {
+                group: member.group,
+                muid: peer,
+            }));
     }
     send(out, &sends);
 }
@@ -615,6 +700,7 @@ impl Running {
                 let actions = member.device.on_message(&decoded, now);
                 member.apply(actions, now, &mut sends, changes);
                 member.route(&decoded, now, &mut sends, changes);
+                member.route_process(&decoded, now, &mut sends, changes);
             }
         }
         if heard.gap() {
@@ -627,6 +713,7 @@ impl Running {
                 member.apply(actions, now, &mut sends, changes);
             }
             member.expire(now, &mut sends, changes);
+            member.expire_process(now, &mut sends, changes);
         }
         send(out, &sends);
     }
@@ -651,6 +738,27 @@ impl Running {
     }
 }
 
+impl Running {
+    /// Sends the reports the app asked for (see [`Ci::report`]): each goes to the
+    /// Initiator of its peer, which refuses one while another is waiting.
+    fn start_reports(
+        &mut self,
+        asks: &mut Vec<ReportAsk>,
+        now: Instant,
+        out: &mut OpenOutput,
+        changes: &mut CiChanges,
+    ) {
+        let mut sends = Vec::new();
+        for ask in asks.drain(..) {
+            let Some(member) = self.members.iter_mut().find(|m| m.group == ask.peer.group) else {
+                continue;
+            };
+            member.start_report(&ask, now, &mut sends, changes);
+        }
+        send(out, &sends);
+    }
+}
+
 impl Member {
     /// Carries out `actions`: what is to be sent goes in `sends`, what changed
     /// for the app in `changes`. A peer that declared Profile Configuration
@@ -668,6 +776,7 @@ impl Member {
                 CiAction::Found(muid) => {
                     changes.peers.extend(self.info(muid).map(CiChange::Found));
                     self.initiate(muid, now, sends, changes);
+                    self.initiate_process(muid, now, sends, changes);
                 }
                 CiAction::Updated(muid) => {
                     changes.peers.extend(self.info(muid).map(CiChange::Updated));
@@ -679,6 +788,12 @@ impl Member {
                     });
                     if self.initiators.remove(&muid).is_some() {
                         changes.profiles.push(ProfilesChange::Dropped {
+                            group: self.group,
+                            muid,
+                        });
+                    }
+                    if self.process.remove(&muid).is_some() {
+                        changes.process.push(ProcessChange::Dropped {
                             group: self.group,
                             muid,
                         });
@@ -727,6 +842,133 @@ impl Member {
             }
         };
         self.carry_out(muid, actions, sends, changes);
+    }
+
+    /// A found peer that declared Process Inquiry is asked for its capabilities
+    /// (M2-101 §9.2): by a new Initiator, or, for one that answered Discovery
+    /// again, by the old one asking again.
+    fn initiate_process(
+        &mut self,
+        muid: Muid,
+        now: Instant,
+        sends: &mut Vec<(MidiGroup, CiMessage)>,
+        changes: &mut CiChanges,
+    ) {
+        let declares = self.device.peer(muid).is_some_and(|peer| {
+            peer.discovery()
+                .categories
+                .contains(CiCategories::PROCESS_INQUIRY)
+        });
+        if !declares {
+            return;
+        }
+        let actions = match self.process.get_mut(&muid) {
+            Some(initiator) => initiator.inquire(now),
+            None => {
+                let (initiator, first) = ProcessInitiator::new(self.device.muid(), muid, now);
+                self.process.insert(muid, initiator);
+                first
+            }
+        };
+        self.carry_out_process(muid, actions, sends, changes);
+    }
+
+    /// Hands every Process Inquiry Initiator the message, which is theirs to keep
+    /// or ignore.
+    fn route_process(
+        &mut self,
+        decoded: &Decoded,
+        now: Instant,
+        sends: &mut Vec<(MidiGroup, CiMessage)>,
+        changes: &mut CiChanges,
+    ) {
+        let heard: Vec<_> = self
+            .process
+            .iter_mut()
+            .map(|(&muid, initiator)| (muid, initiator.on_message(decoded, now)))
+            .collect();
+        for (muid, actions) in heard {
+            self.carry_out_process(muid, actions, sends, changes);
+        }
+    }
+
+    /// Ends every wait of the Process Inquiry Initiators that has run out.
+    fn expire_process(
+        &mut self,
+        now: Instant,
+        sends: &mut Vec<(MidiGroup, CiMessage)>,
+        changes: &mut CiChanges,
+    ) {
+        let ended: Vec<_> = self
+            .process
+            .iter_mut()
+            .filter(|(_, initiator)| initiator.deadline().is_some_and(|at| now >= at))
+            .map(|(&muid, initiator)| (muid, initiator.on_timeout(now)))
+            .collect();
+        for (muid, actions) in ended {
+            self.carry_out_process(muid, actions, sends, changes);
+        }
+    }
+
+    fn start_report(
+        &mut self,
+        ask: &ReportAsk,
+        now: Instant,
+        sends: &mut Vec<(MidiGroup, CiMessage)>,
+        changes: &mut CiChanges,
+    ) {
+        let Some(initiator) = self.process.get_mut(&ask.peer.muid) else {
+            return;
+        };
+        match initiator.report(ask.request, now) {
+            Ok(actions) => self.carry_out_process(ask.peer.muid, actions, sends, changes),
+            Err(error) => changes.process.push(ProcessChange::NotSent {
+                group: self.group,
+                muid: ask.peer.muid,
+                error,
+            }),
+        }
+    }
+
+    /// What a Process Inquiry Initiator asks for: messages to send, changes to tell.
+    fn carry_out_process(
+        &self,
+        muid: Muid,
+        actions: Vec<ProcessAction>,
+        sends: &mut Vec<(MidiGroup, CiMessage)>,
+        changes: &mut CiChanges,
+    ) {
+        let group = self.group;
+        for action in actions {
+            changes.process.push(match action {
+                ProcessAction::Send(message) => {
+                    sends.push((group, message));
+                    continue;
+                }
+                ProcessAction::Capabilities(features) => ProcessChange::Capabilities {
+                    group,
+                    muid,
+                    features,
+                },
+                ProcessAction::CapabilitiesTimedOut => {
+                    ProcessChange::CapabilitiesTimedOut { group, muid }
+                }
+                ProcessAction::CapabilitiesRefused(_) => {
+                    ProcessChange::CapabilitiesRefused { group, muid }
+                }
+                ProcessAction::ReportBegan { declared } => ProcessChange::ReportBegan {
+                    group,
+                    muid,
+                    declared,
+                },
+                ProcessAction::ReportEnded => ProcessChange::ReportEnded { group, muid },
+                ProcessAction::ReportRefused(nak) => {
+                    ProcessChange::ReportRefused { group, muid, nak }
+                }
+                ProcessAction::ReportTimedOut => ProcessChange::ReportTimedOut { group, muid },
+                _ => continue,
+            });
+        }
     }
 
     /// Hands every Initiator the message, which is theirs to keep or ignore.

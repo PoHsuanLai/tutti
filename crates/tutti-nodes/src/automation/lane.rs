@@ -46,8 +46,9 @@ use super::Curve;
 /// respawn. A fork reads
 /// the curve's [`frozen`](Curve::frozen) copy when it has one (a curve that
 /// reads state written after it was built), and shares the `Arc` otherwise
-/// (an trajectory, read-only once shared). It is a generator
-/// ([`Tail::Unbounded`]), so the executor never skips it.
+/// (an trajectory, read-only once shared). It is a source with no ring-out
+/// ([`Tail::None`]): its output is a function of the beat, so a render's end
+/// ends it.
 ///
 /// [`Trajectory`]: tutti_curve::Trajectory
 ///
@@ -103,16 +104,6 @@ impl AutomationLaneNode {
         }
     }
 
-    /// Most recent value the lane emitted: after a block, the value at its
-    /// last frame — the end-of-block value, not the average (for an event
-    /// lane, the value its last segment gives that frame; unchanged by a
-    /// block it sent nothing in). A node reset
-    /// clears it to zero. (A lane inside a graph belongs to the executor;
-    /// this is for a lane driven by hand.)
-    pub fn last_value(&self) -> f32 {
-        self.last_value
-    }
-
     /// Evaluates the curve at `beat`.
     ///
     /// Returns `0.0` where the curve has no value — before its first point, or
@@ -141,7 +132,7 @@ impl Node for AutomationLaneNode {
     fn shape(&self) -> Shape {
         Shape::source_unassigned(ChannelLayout::MONO)
             .with_cost(tutti_graph::Cost::Moderate)
-            .with_tail(Tail::Unbounded)
+            .with_tail(Tail::None)
     }
 
     /// Nothing is derived from the rate: the beat arrives in each block's
@@ -239,7 +230,11 @@ mod tests {
         let shape = AutomationLaneNode::new(ramp_trajectory()).shape();
         assert_eq!(shape.audio_in().count(), 0);
         assert_eq!(shape.audio_out().count(), 1);
-        assert_eq!(shape.tail, Tail::Unbounded, "a generator is never skipped");
+        assert_eq!(
+            shape.tail,
+            Tail::None,
+            "a beat-driven source has no ring-out"
+        );
     }
 
     #[test]
@@ -291,10 +286,10 @@ mod tests {
             64,
         );
         d.block();
-        assert!((d.node.last_value() - 0.5).abs() < 0.01);
+        assert!((d.node.last_value - 0.5).abs() < 0.01);
 
         Node::reset(&mut *d.node);
-        assert_eq!(d.node.last_value(), 0.0);
+        assert_eq!(d.node.last_value, 0.0);
     }
 
     #[test]
@@ -334,12 +329,12 @@ mod tests {
             SampleRate::SR_48K,
             64,
         );
-        assert_eq!(d.node.last_value(), 0.0);
+        assert_eq!(d.node.last_value, 0.0);
         d.block();
         assert!(
-            (d.node.last_value() - 0.5).abs() < 0.01,
+            (d.node.last_value - 0.5).abs() < 0.01,
             "Expected ~0.5, got {}",
-            d.node.last_value()
+            d.node.last_value
         );
     }
 

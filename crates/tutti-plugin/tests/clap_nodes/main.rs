@@ -15,6 +15,7 @@ static A: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
 mod clap_automation;
 mod clap_crash_recovery;
+mod clap_editor_transport;
 mod clap_fork;
 mod clap_live;
 mod clap_node_no_alloc;

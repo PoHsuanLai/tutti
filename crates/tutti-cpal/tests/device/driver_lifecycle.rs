@@ -166,11 +166,7 @@ fn a_backend_fault_reaches_the_handle_taken_before_it() {
     engine.start_with(state, driver).unwrap();
 
     assert!(!faults.is_faulted());
-    stream.fail(cpal::StreamError::BackendSpecific {
-        err: cpal::BackendSpecificError {
-            description: "xrun".into(),
-        },
-    });
+    stream.fail(cpal::Error::with_message(cpal::ErrorKind::Xrun, "xrun"));
 
     assert_eq!(faults.count(), 1);
     let fault = faults.last().expect("a recorded fault");
@@ -199,7 +195,7 @@ fn a_disconnect_stops_the_engine_reporting_healthy() {
     engine.start_with(state, driver).unwrap();
     assert!(engine.is_running());
 
-    stream.fail(cpal::StreamError::DeviceNotAvailable);
+    stream.fail(cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
 
     assert!(faults.is_disconnected());
     assert_eq!(
@@ -222,7 +218,7 @@ fn a_restart_clears_the_fault_state() {
     let faults = engine.faults();
     let (driver, stream) = ManualStreamDriver::new();
     engine.start_with(Arc::clone(&state), driver).unwrap();
-    stream.fail(cpal::StreamError::DeviceNotAvailable);
+    stream.fail(cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
     assert!(!engine.is_running());
 
     engine.stop();
@@ -255,7 +251,7 @@ fn the_fault_handle_survives_a_restart() {
 
     let (d2, s2) = ManualStreamDriver::new();
     engine.start_with(state, d2).unwrap();
-    s2.fail(cpal::StreamError::DeviceNotAvailable);
+    s2.fail(cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
 
     assert!(
         faults.is_disconnected(),

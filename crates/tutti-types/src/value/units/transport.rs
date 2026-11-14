@@ -95,15 +95,30 @@ impl Bpm {
         Bpm(self.0.clamp(lo.0, hi.0))
     }
 
-    /// Whether this tempo differs from `other` by more than `epsilon` BPM.
+    /// The tempo of a beat that lasts `period`: 60 over its seconds. `None`
+    /// when `period` is zero, negative or not finite (no tempo has such a beat).
+    ///
+    /// ```
+    /// use tutti_types::{Bpm, Seconds};
+    /// assert_eq!(Bpm::from_beat_period(Seconds::new(0.5)), Some(Bpm::of(120.0)));
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn from_beat_period(period: Seconds) -> Option<Bpm> {
+        Bpm::new(60.0 / period.get())
+    }
+
+    /// Whether this tempo differs from `other` by more than `epsilon`, a
+    /// tolerance in beats per minute (the unit is the tolerance's, not a tempo
+    /// that is played).
     ///
     /// The transport clock re-derives its per-sample beat increment only when
     /// the tempo actually moved; comparing floats for equality would re-derive
     /// on every buffer from ULP noise.
     #[inline]
     #[must_use]
-    pub fn differs_from(self, other: Bpm, epsilon: f64) -> bool {
-        (self.0 - other.0).abs() > epsilon
+    pub fn differs_from(self, other: Bpm, epsilon: Bpm) -> bool {
+        (self.0 - other.0).abs() > epsilon.0
     }
 }
 
@@ -140,16 +155,9 @@ impl From<Bpm> for f64 {
 
 /// A raw number that is not a tempo: NaN, infinite, zero or negative (see
 /// [`Bpm::new`]).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+#[error("a tempo is finite and above zero, got {0}")]
 pub struct BpmOutOfRange(pub f64);
-
-impl core::fmt::Display for BpmOutOfRange {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "a tempo is finite and above zero, got {}", self.0)
-    }
-}
-
-impl core::error::Error for BpmOutOfRange {}
 
 unit! {
     /// A position on the musical timeline, in beats.
@@ -634,20 +642,9 @@ impl TryFrom<BeatDuration> for BeatsPerCycle {
 }
 
 /// The span [`BeatsPerCycle`] refused: not finite and above zero.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+#[error("a cycle's span is finite and above zero beats, got {0}")]
 pub struct BeatsPerCycleOutOfRange(pub f64);
-
-impl core::fmt::Display for BeatsPerCycleOutOfRange {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "a cycle's span is finite and above zero beats, got {}",
-            self.0
-        )
-    }
-}
-
-impl core::error::Error for BeatsPerCycleOutOfRange {}
 
 #[cfg(test)]
 mod tests;

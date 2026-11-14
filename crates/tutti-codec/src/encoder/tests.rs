@@ -352,20 +352,24 @@ fn a_plain_sink_keeps_its_prefix_after_a_failed_write() {
 /// The device is the kernel's `/dev/full`, which refuses every write with
 /// `ENOSPC`; the take fits the buffer, so only the final flush meets it.
 #[cfg(target_os = "linux")]
-#[test]
-fn a_buffered_full_device_fails_every_format() {
-    for (ext, format) in formats() {
-        let s = spec(format, 2);
-        let device = std::fs::OpenOptions::new()
-            .write(true)
-            .open("/dev/full")
-            .unwrap();
-        let mut encoder = Encoder::create(&s, std::io::BufWriter::new(device)).unwrap();
-        let mut failed = encoder
-            .write(Interleaved::new(&saw(2, 100), s.layout()))
-            .is_err();
-        failed |= encoder.finish().is_err();
-        assert!(failed, "{ext}: the take reported success on a full device");
+mod full_device {
+    use super::*;
+
+    #[test]
+    fn a_buffered_full_device_fails_every_format() {
+        for (ext, format) in formats() {
+            let s = spec(format, 2);
+            let device = std::fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .unwrap();
+            let mut encoder = Encoder::create(&s, std::io::BufWriter::new(device)).unwrap();
+            let mut failed = encoder
+                .write(Interleaved::new(&saw(2, 100), s.layout()))
+                .is_err();
+            failed |= encoder.finish().is_err();
+            assert!(failed, "{ext}: the take reported success on a full device");
+        }
     }
 }
 

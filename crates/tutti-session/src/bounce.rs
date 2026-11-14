@@ -90,6 +90,9 @@ pub enum Range {
     /// The transport's loop region, when one is set and armed
     /// ([`BounceConfigError::NoRange`] otherwise).
     Loop,
+    /// From beat 0 to this beat: the end of a project whose clips end there,
+    /// for a host that knows it.
+    Until(Beat),
     /// From one beat to another.
     Beats(Beat, Beat),
     /// From one time to another, on the project's tempo map.
@@ -275,7 +278,6 @@ pub struct Bounce<N = NodeKey, M = NoMaster> {
     master: M,
     stems: Vec<AnyStem<N>>,
     range: Option<Range>,
-    until: Option<Beat>,
     clock: Option<ExportClock>,
     sample_rate: Option<SampleRate>,
     resample: Option<Resample>,
@@ -302,7 +304,6 @@ impl<N> Bounce<N, NoMaster> {
             master: NoMaster,
             stems: Vec::new(),
             range: None,
-            until: None,
             clock: None,
             sample_rate: None,
             resample: None,
@@ -358,7 +359,6 @@ impl<N, M> Bounce<N, M> {
             master: _,
             stems,
             range,
-            until,
             clock,
             sample_rate,
             resample,
@@ -377,7 +377,6 @@ impl<N, M> Bounce<N, M> {
             master,
             stems,
             range,
-            until,
             clock,
             sample_rate,
             resample,
@@ -414,7 +413,6 @@ impl<N, M> Bounce<N, M> {
             master,
             stems,
             range,
-            until,
             clock,
             sample_rate,
             resample,
@@ -437,7 +435,6 @@ impl<N, M> Bounce<N, M> {
             master,
             stems,
             range,
-            until,
             clock,
             sample_rate,
             resample,
@@ -454,19 +451,12 @@ impl<N, M> Bounce<N, M> {
         })
     }
 
-    /// The span to render. Without it the transport's loop is rendered, and
-    /// without that [`until`](Self::until).
+    /// The span to render ([`Range`]). Without it the transport's loop is
+    /// rendered, and a project with no loop set is
+    /// [`BounceConfigError::NoRange`]: nothing is guessed. A host that knows
+    /// where its clips end names it with [`Range::Until`].
     pub fn range(mut self, range: impl Into<Range>) -> Self {
         self.range = Some(range.into());
-        self
-    }
-
-    /// Where the project ends, for a project with no loop set: the span is
-    /// from beat 0 to `end`. Nothing is guessed (a bounce with neither a loop,
-    /// a range nor this is [`BounceConfigError::NoRange`]); a host that knows
-    /// its clips' end names it here.
-    pub fn until(mut self, end: Beat) -> Self {
-        self.until = Some(end);
         self
     }
 
@@ -567,9 +557,17 @@ impl<N> Bounce<N, FileMaster> {
     }
 
     /// The dither applied when quantizing to an integer width: triangular
-    /// without it. `None` adds none. A float width and Ogg Vorbis ignore it.
-    pub fn dither(mut self, dither: Option<DitherShape>) -> Self {
-        self.dither = dither;
+    /// unless this or [`no_dither`](Self::no_dither) says otherwise. A float
+    /// width and Ogg Vorbis ignore it.
+    pub fn dither(mut self, shape: DitherShape) -> Self {
+        self.dither = Some(shape);
+        self
+    }
+
+    /// No dither when quantizing to an integer width: the rounding error is
+    /// left as it falls. A float width and Ogg Vorbis ignore it.
+    pub fn no_dither(mut self) -> Self {
+        self.dither = None;
         self
     }
 
@@ -587,7 +585,6 @@ impl<N: std::fmt::Debug, M: std::fmt::Debug> std::fmt::Debug for Bounce<N, M> {
             .field("master", &self.master)
             .field("stems", &self.stems)
             .field("range", &self.range)
-            .field("until", &self.until)
             .field("clock", &self.clock)
             .field("sample_rate", &self.sample_rate)
             .field("resample", &self.resample)
@@ -841,7 +838,7 @@ impl<M: Master> Bounced<M> {
     /// # fn go(session: &mut Session, drums: NodeKey) -> Result<(), tutti_session::BounceError> {
     /// let done = session.bounce(
     ///     Bounce::project()
-    ///         .until(tutti_types::Beat(4.0))
+    ///         .range(tutti_session::Range::Until(tutti_types::Beat(4.0)))
     ///         .master_buffers()
     ///         .stem_with(Stem::buffers(drums)),
     /// )?;
@@ -1013,9 +1010,8 @@ pub enum BounceConfigError {
     #[error("the stems take the master's gain, and the master is not normalized")]
     SharedGainWithoutMaster,
     /// There is no span to render: no loop is set and the bounce names neither
-    /// a range nor an end ([`Bounce::range`], [`Bounce::until`]). Nothing is
-    /// guessed.
-    #[error("no range: the transport has no loop and the bounce names no range or end")]
+    /// a range ([`Bounce::range`]). Nothing is guessed.
+    #[error("no range: the transport has no loop and the bounce names no range")]
     NoRange,
     /// The range keeps no frame: it ends where it begins or before, or is
     /// shorter than a frame at the render's rate.
@@ -1640,16 +1636,14 @@ impl<M: Master> std::fmt::Debug for BounceRendered<M> {
     }
 }
 
-/// The range a bounce renders: the one it names, else the transport's loop,
-/// else from beat 0 to the end it names; never a guess.
+/// The range a bounce renders: the one it names, else the transport's loop;
+/// never a guess.
 fn chosen(
     range: Option<Range>,
     looped: Option<tutti_types::LoopRange>,
-    until: Option<Beat>,
 ) -> Result<Range, BounceConfigError> {
     range
         .or_else(|| looped.map(|_| Range::Loop))
-        .or_else(|| until.map(|end| Range::Beats(Beat(0.0), end)))
         .ok_or(BounceConfigError::NoRange)
 }
 
@@ -1665,25 +1659,23 @@ fn span(
     map: &TempoMap,
     rate: SampleRate,
 ) -> Result<(Beat, Samples), BounceConfigError> {
-    let range = match range {
-        Range::Loop => {
-            let looped = loop_range.ok_or(BounceConfigError::NoRange)?;
-            Range::Beats(looped.start(), looped.end())
+    let beats = |a: Beat, b: Beat| {
+        if !a.get().is_finite() || !b.get().is_finite() || a.get() < 0.0 || b.get() < 0.0 {
+            return Err(BounceConfigError::InvalidRange);
         }
-        other => other,
+        let (from, to) = (
+            map.view(rate).frame_at_or_after(a),
+            map.view(rate).frame_at_or_after(b),
+        );
+        Ok((a, to.get().saturating_sub(from.get())))
     };
     let (start, frames) = match range {
-        Range::Loop => unreachable!("replaced by the loop's beats above"),
-        Range::Beats(a, b) => {
-            if !a.get().is_finite() || !b.get().is_finite() || a.get() < 0.0 || b.get() < 0.0 {
-                return Err(BounceConfigError::InvalidRange);
-            }
-            let (from, to) = (
-                map.view(rate).frame_at_or_after(a),
-                map.view(rate).frame_at_or_after(b),
-            );
-            (a, to.get().saturating_sub(from.get()))
+        Range::Loop => {
+            let looped = loop_range.ok_or(BounceConfigError::NoRange)?;
+            beats(looped.start(), looped.end())?
         }
+        Range::Until(end) => beats(Beat(0.0), end)?,
+        Range::Beats(a, b) => beats(a, b)?,
         Range::Seconds(a, b) => {
             if !a.get().is_finite() || !b.get().is_finite() || a.get() < 0.0 || b.get() < 0.0 {
                 return Err(BounceConfigError::InvalidRange);
@@ -1711,6 +1703,15 @@ impl Session {
     /// Offline to every hosted plugin before it returns.
     /// [`run`](BounceJob::run) the job on any thread, then
     /// [`finish_bounce`](Self::finish_bounce) what it returns.
+    ///
+    /// **What a fork keeps of the live inputs.** A live audio input (an inlet,
+    /// `add_input`) cannot be copied: its frames come
+    /// from a thread of its own, so a bounce whose outputs hear one is refused,
+    /// naming its node ([`BounceError::NotForkable`]). Live keys, hardware MIDI
+    /// and the clock out fork silent: the render is driven from its clock, which
+    /// has no events waiting. A `VoicePool` forks
+    /// only while its handle has queued nothing, and is refused otherwise
+    /// ([`BounceError::Fork`], naming its node).
     ///
     /// **No `update` is needed first.** The fork is the graph's spec as it
     /// stands at this call, so an insert, a wire or a mode set since the last
@@ -1743,7 +1744,6 @@ impl Session {
             master,
             stems,
             range,
-            until,
             clock,
             sample_rate,
             resample,
@@ -1769,7 +1769,7 @@ impl Session {
         // the bounce names; never a guess.
         let map = self.transport.settings().tempo_map();
         let looped = self.transport.motion().loop_region().active();
-        let range = chosen(range, looped, until)?;
+        let range = chosen(range, looped)?;
         let (start, length) = span(range, looped, &map, rate)?;
 
         let channels = channels.unwrap_or_else(|| ChannelLayout::clamped(outputs));
@@ -2220,24 +2220,21 @@ mod tests {
         assert!(!session.bounce_in_flight());
     }
 
-    /// **The range is the one named, else the loop, else beat 0 to the end
-    /// named, else none.** An explicit range wins over a set loop, which wins
-    /// over `until`; and a bounce that names an end renders from beat 0 to it
-    /// (two beats at 120 BPM and 48 kHz are 48 000 frames).
+    /// **The range is the one named, else the loop, else none.** An explicit
+    /// range wins over a set loop; `Range::Until` is the span from beat 0 to
+    /// its end (two beats at 120 BPM and 48 kHz are 48 000 frames).
     #[test]
-    fn the_range_is_named_then_the_loop_then_the_end() {
+    fn the_range_is_named_then_the_loop() {
         let looped = tutti_types::LoopRange::new(Beat(1.0), Beat(2.0));
         let named = Range::Seconds(Seconds(0.0), Seconds(1.0));
-        assert_eq!(chosen(Some(named), looped, Some(Beat(9.0))), Ok(named));
-        assert_eq!(chosen(None, looped, Some(Beat(9.0))), Ok(Range::Loop));
-        assert_eq!(
-            chosen(None, None, Some(Beat(9.0))),
-            Ok(Range::Beats(Beat(0.0), Beat(9.0)))
-        );
-        assert_eq!(chosen(None, None, None), Err(BounceConfigError::NoRange));
+        assert_eq!(chosen(Some(named), looped), Ok(named));
+        assert_eq!(chosen(None, looped), Ok(Range::Loop));
+        assert_eq!(chosen(None, None), Err(BounceConfigError::NoRange));
 
         let mut session = session();
-        let until = Bounce::project().master_buffers().until(Beat(2.0));
+        let until = Bounce::project()
+            .master_buffers()
+            .range(Range::Until(Beat(2.0)));
         assert_eq!(planes(session.bounce(until))[0].len(), 48_000);
     }
 

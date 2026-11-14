@@ -46,8 +46,9 @@ use super::Curve;
 /// respawn. A fork reads
 /// the curve's [`frozen`](Curve::frozen) copy when it has one (a curve that
 /// reads state written after it was built), and shares the `Arc` otherwise
-/// (an trajectory, read-only once shared). It is a generator
-/// ([`Tail::Unbounded`]), so the executor never skips it.
+/// (an trajectory, read-only once shared). It is a source with no ring-out
+/// ([`Tail::None`]): its output is a function of the beat, so a render's end
+/// ends it.
 ///
 /// [`Trajectory`]: tutti_curve::Trajectory
 ///
@@ -141,7 +142,7 @@ impl Node for AutomationLaneNode {
     fn shape(&self) -> Shape {
         Shape::source_unassigned(ChannelLayout::MONO)
             .with_cost(tutti_graph::Cost::Moderate)
-            .with_tail(Tail::Unbounded)
+            .with_tail(Tail::None)
     }
 
     /// Nothing is derived from the rate: the beat arrives in each block's
@@ -239,7 +240,11 @@ mod tests {
         let shape = AutomationLaneNode::new(ramp_trajectory()).shape();
         assert_eq!(shape.audio_in().count(), 0);
         assert_eq!(shape.audio_out().count(), 1);
-        assert_eq!(shape.tail, Tail::Unbounded, "a generator is never skipped");
+        assert_eq!(
+            shape.tail,
+            Tail::None,
+            "a beat-driven source has no ring-out"
+        );
     }
 
     #[test]

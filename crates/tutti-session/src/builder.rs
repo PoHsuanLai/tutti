@@ -27,10 +27,9 @@ use crate::{Result, Session};
 ///   48 kHz), the [`outputs`](SessionBuilder::outputs) (default stereo) and the
 ///   [`max_block`](SessionBuilder::max_block) (default
 ///   [`LIVE_MAX_BLOCK`], 1024 frames), and `build` returns a [`Session`].
-/// - [`OnDevice`] (after [`device`](SessionBuilder::device), feature
-///   `device`): the sound card sets the rate, the width and the callback, so
-///   none of those is a setter, and `build` returns a [`LiveSession`](crate::LiveSession)
-///   with the stream running.
+/// - `OnDevice` (after `device`, feature `device`): the sound card sets the
+///   rate, the width and the callback, so none of those is a setter, and
+///   `build` returns a `LiveSession` with the stream running.
 ///
 /// Everything else (workers, MIDI, plugins, the root topology, the spawner) is
 /// set the same way in both states.

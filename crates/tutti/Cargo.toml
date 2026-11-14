@@ -154,9 +154,8 @@ dsp = ["dep:tutti-dsp", "dep:tutti-measure"]
 
 # --- plugin hosting ---------------------------------------------------------
 #
-# No `tutti-plugin-server`: that is a BINARY the host spawns, and naming it here
-# would put a `tutti-plugin -> tutti-plugin-server -> tutti-plugin` cycle one edit
-# away. Build it with
+# No `tutti-plugin-server`: that is a BINARY the host spawns, not a library to
+# link. Build it with
 # `cargo build -p tutti-plugin-server`.
 plugin = ["dep:tutti-plugin", "dep:tutti-plugin-host", "midi", "tutti-session?/plugin"]
 vst2 = ["plugin", "tutti-plugin/vst2", "tutti-session?/vst2"]

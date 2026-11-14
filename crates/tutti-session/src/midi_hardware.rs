@@ -312,6 +312,8 @@ impl Midi<'_> {
     ///
     /// [`MidiError::NoHardware`] on a session with no OS MIDI layer;
     /// [`MidiError::Hardware`] when the device was found and refused to open.
+    /// It is all or nothing: when the output refuses, the input this call
+    /// opened is closed again (one that was already open stays open).
     pub fn reconnect_saved(&mut self, saved: &DeviceInfo) -> Result<Resolution> {
         let resolved = self.hardware()?.devices().resolve(saved);
         // The one arm that binds is `BindPolicy::ExactOnly`'s, spelled out so
@@ -322,11 +324,20 @@ impl Midi<'_> {
             Resolved::Ambiguous(candidates) => return Ok(Resolution::Ambiguous(candidates)),
             Resolved::Missing => return Ok(Resolution::Missing),
         };
+        let mut opened_input = false;
         if saved.direction.is_input() && found.direction.is_input() {
+            let was_open = self.hardware()?.is_input_connected(&found.id);
             self.connect_input(&found.id)?;
+            opened_input = !was_open;
         }
-        if saved.direction.is_output() && found.direction.is_output() {
-            self.connect_output(&found.id)?;
+        if saved.direction.is_output()
+            && found.direction.is_output()
+            && let Err(refused) = self.connect_output(&found.id)
+        {
+            if opened_input {
+                self.hardware_mut()?.disconnect_input(&found.id);
+            }
+            return Err(refused);
         }
         Ok(Resolution::Connected(found.id))
     }

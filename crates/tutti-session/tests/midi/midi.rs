@@ -2012,3 +2012,32 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
     assert!(!sent.iter().any(|u| u.is_jr()), "{sent:?}");
     assert_eq!(sent.len(), 2);
 }
+
+/// **`reconnect_saved` is all or nothing**: a duplex device whose output
+/// refuses to open leaves the input it would have opened closed; an input
+/// that was open before the call stays open.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_refused_output_leaves_no_input_opened_by_reconnect_saved() {
+    let (mut s, fake) = hot_plug_session();
+    let mut dev = tutti_midi_hardware::test_support::endpoint(7, "Dev");
+    dev.identity = tutti_midi_hardware::Identity::Product("unit".into());
+    fake.plug(dev, PortDirection::Duplex);
+    let _ = s.update();
+    let saved = s.midi().devices().remove(0);
+    fake.refuse_output_opens(true);
+
+    assert!(matches!(
+        s.midi().reconnect_saved(&saved),
+        Err(MidiError::Hardware(_))
+    ));
+    assert!(hw(&s).connected_input_names().is_empty(), "rolled back");
+
+    s.midi().connect_input("dev").expect("connects");
+    assert!(s.midi().reconnect_saved(&saved).is_err());
+    assert_eq!(
+        hw(&s).connected_input_names(),
+        ["Dev"],
+        "it was open before"
+    );
+}

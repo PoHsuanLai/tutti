@@ -69,6 +69,13 @@
 //!   plugin's snapshot token until it lands, whether the job ran, panicked or
 //!   was dropped.
 //!
+//! # Hang
+//!
+//! With or without recovery, `PluginHandle::block_counts` is observed each
+//! phase against the session's [`HangPolicy`](crate::HangPolicy); a verdict
+//! ends the server (`PluginHandle::terminate`), so a hung plugin dies like a
+//! crashed one: [`PluginChange::Died`] with recovery off, a reload with it on.
+//!
 //! # Recovery
 //!
 //! With a [`RecoveryPolicy`](crate::RecoveryPolicy) (the default; `SessionBuilder::plugin_recovery`),
@@ -76,9 +83,6 @@
 //! reloaded at its own node instead of removed. The policy is the pure
 //! [`Recovery`]; this module carries out what it decides:
 //!
-//! - **Hang.** `PluginHandle::block_counts` is observed each phase; a
-//!   verdict ends the server (`PluginHandle::terminate`), so a hung plugin
-//!   dies like a crashed one, and the load below never races a live server.
 //! - **Death.** The node stays in the graph, silent, with its wiring and
 //!   every lane fed to it; [`PluginChange::Reloading`].
 //! - **Load.** When the backoff passes, the existing [`PluginLoad`] (with
@@ -127,8 +131,8 @@ use tutti_types::{SampleRate, Samples, Seconds};
 
 use crate::plugin_diagnostics::Figures;
 use crate::{
-    Diagnostics, GiveUp, JobFailed, Key, Params, PluginBuses, PortCounts, Recovery, RecoveryAction,
-    RecoveryEvent, RecoveryFailure, ReloadCause, Session, SessionEvent,
+    Diagnostics, GiveUp, HangDetector, JobFailed, Key, Params, PluginBuses, PortCounts, Recovery,
+    RecoveryAction, RecoveryEvent, RecoveryFailure, ReloadCause, Session, SessionEvent,
 };
 
 /// How often a healthy plugin's state is captured, by default: 8 s (design 015 §4.4).
@@ -493,8 +497,8 @@ pub enum PluginHealth {
     /// Answering normally.
     Running,
     /// Alive, but its blocks go unanswered: the bridge is abandoning them and
-    /// has not yet declared a hang. With recovery off the session does not
-    /// watch for this, and it is never read.
+    /// has not yet declared a hang ([`HangPolicy`](crate::HangPolicy)), with
+    /// recovery on or off.
     Stalled,
     /// The engine reports it dead, and the session has not yet written it off
     /// (it waits out a debounce first). It then becomes
@@ -748,6 +752,7 @@ pub(crate) struct HostedPlugin {
     /// every plugin the session added; `None` for one the host inserted itself.
     pub(crate) node: Option<NodeControls>,
     liveness: Liveness,
+    hang: HangDetector,
     status: PluginLiveness,
     /// Told a render mode since it was added (or crossfaded in).
     pub(crate) told: bool,
@@ -886,6 +891,7 @@ impl HostedPlugin {
             controls: None,
             node: None,
             liveness: Liveness::new(),
+            hang: HangDetector::default(),
             status: PluginLiveness::Healthy,
             told: false,
             snapshot: None,
@@ -957,6 +963,7 @@ impl HostedPlugin {
         let outgoing = std::mem::replace(&mut self.handle, handle);
         self.editor_open = false;
         self.liveness = Liveness::new();
+        self.hang = HangDetector::default();
         self.status = PluginLiveness::Healthy;
         self.told = false;
         self.snapshot = None;
@@ -1128,9 +1135,7 @@ impl<'a> Plugin<'a> {
             },
             PluginLiveness::Healthy | PluginLiveness::Failing => match hosted.handle.status() {
                 PluginStatus::Dead { cause } => PluginHealth::Died { cause },
-                _ if hosted.recovery.as_ref().is_some_and(Recovery::is_stalled) => {
-                    PluginHealth::Stalled
-                }
+                _ if hosted.hang.is_stalled() => PluginHealth::Stalled,
                 _ => PluginHealth::Running,
             },
         }
@@ -1727,7 +1732,7 @@ impl Session {
                 tracing::error!("plugin {node:?}: reload failed ({reason}); giving up: {why}");
                 gave_up.push((node, why));
             }
-            RecoveryAction::Wait | RecoveryAction::Terminate { .. } => {}
+            RecoveryAction::Wait => {}
         }
     }
 
@@ -1845,6 +1850,7 @@ impl Session {
         let now = cx.now;
         self.plugins_now = now;
         let interval = self.snapshot_interval;
+        let hang_policy = self.hang;
         let mut dead = Vec::new();
         let mut gave_up = Vec::new();
         let nodes: Vec<NodeKey> = self.graph.plugins.keys().copied().collect();
@@ -1954,17 +1960,11 @@ impl Session {
             // A plugin that is alive but never returns from `process()` is
             // ended here, and dies by the path above.
             if cause.is_none()
-                && let Some(recovery) = hosted.recovery.as_mut()
-                && let RecoveryAction::Terminate { reason } = recovery.step(
-                    {
-                        let counts = hosted.handle.block_counts();
-                        RecoveryEvent::Starved {
-                            abandoned: counts.abandoned,
-                            replies: counts.replies,
-                        }
-                    },
-                    now,
-                )
+                && let counts = hosted.handle.block_counts()
+                && let Some(reason) =
+                    hosted
+                        .hang
+                        .observe(hang_policy, counts.abandoned, counts.replies, now)
             {
                 tracing::error!(
                     "plugin '{}' ({node:?}): {reason}; ending its server",

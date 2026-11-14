@@ -59,6 +59,8 @@ pub struct SessionBuilder {
     snapshot_interval: std::time::Duration,
     #[cfg(feature = "plugin")]
     recovery: Option<crate::RecoveryPolicy>,
+    #[cfg(feature = "plugin")]
+    hang: crate::HangPolicy,
     spawner: crate::jobs::Spawner,
 }
 
@@ -101,6 +103,8 @@ impl Default for SessionBuilder {
             snapshot_interval: crate::SNAPSHOT_INTERVAL,
             #[cfg(feature = "plugin")]
             recovery: Some(crate::RecoveryPolicy::default()),
+            #[cfg(feature = "plugin")]
+            hang: crate::HangPolicy::default(),
             spawner: crate::jobs::Spawner::default(),
         }
     }
@@ -368,7 +372,9 @@ impl SessionBuilder {
     /// `Some(RecoveryPolicy::default())`: the plugin reloads at its node with
     /// its last snapshot. `None`: its node is removed
     /// ([`PluginChange::Died`](crate::PluginChange::Died)) and the
-    /// host decides, a prompt to the user for instance.
+    /// host decides, a prompt to the user for instance. A hang is detected
+    /// either way ([`plugin_hang`](Self::plugin_hang)): the hung server is
+    /// ended and its death is what this decides.
     ///
     /// It covers out-of-process plugins loaded through the session's load
     /// path ([`Session::add_plugin`](crate::Session::add_plugin)). It does not
@@ -380,6 +386,17 @@ impl SessionBuilder {
     #[must_use]
     pub fn plugin_recovery(mut self, policy: Option<crate::RecoveryPolicy>) -> Self {
         self.recovery = policy;
+        self
+    }
+
+    /// When a hosted plugin's unanswered blocks are a hang. Default
+    /// [`HangPolicy::default`](crate::HangPolicy). The session watches every
+    /// hosted plugin for it, whether or not
+    /// [`plugin_recovery`](Self::plugin_recovery) is set.
+    #[cfg(feature = "plugin")]
+    #[must_use]
+    pub fn plugin_hang(mut self, policy: crate::HangPolicy) -> Self {
+        self.hang = policy;
         self
     }
 
@@ -579,6 +596,8 @@ impl SessionBuilder {
             snapshot_interval: self.snapshot_interval,
             #[cfg(feature = "plugin")]
             recovery: self.recovery,
+            #[cfg(feature = "plugin")]
+            hang: self.hang,
             #[cfg(feature = "plugin")]
             plugins_now: std::time::Instant::now(),
             #[cfg(feature = "plugin")]

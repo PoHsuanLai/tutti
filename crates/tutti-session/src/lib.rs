@@ -67,6 +67,8 @@ mod fork;
 #[cfg(feature = "soundfont")]
 mod general_midi;
 mod graph;
+#[cfg(feature = "plugin")]
+mod hang;
 #[cfg(all(feature = "device", feature = "audio-io"))]
 mod input;
 #[cfg(feature = "midi")]
@@ -177,6 +179,10 @@ pub use plugin::{
     PluginNode, SNAPSHOT_INTERVAL, StateRestore, StateView,
 };
 
+#[cfg(feature = "plugin")]
+use hang::HangDetector;
+#[cfg(feature = "plugin")]
+pub use hang::HangPolicy;
 #[cfg(feature = "plugin")]
 pub use plugin_diagnostics::{Diagnostics, PluginBuses};
 #[cfg(feature = "plugin")]

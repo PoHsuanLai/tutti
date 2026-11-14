@@ -569,7 +569,7 @@ impl ProfileInitiator {
     }
 
     /// A CI message of the connection's Group arrived.
-    pub fn on_message(&mut self, decoded: &Decoded, now: Instant) -> Vec<ProfileAction> {
+    pub fn on_message(&mut self, decoded: &Decoded) -> Vec<ProfileAction> {
         let mut actions = Vec::new();
         let Decoded::Message(message) = decoded else {
             return actions;
@@ -663,7 +663,7 @@ impl ProfileInitiator {
             }
             CiMessage::Ack { ack, .. } if from_peer && to_us => {
                 if let Some(wait) = TimeoutWait::from_ack(ack) {
-                    self.on_wait(address, ack, wait, now);
+                    self.on_wait(address, ack, wait);
                 }
             }
             CiMessage::Nak { nak, .. } if from_peer && to_us => {
@@ -734,13 +734,13 @@ impl ProfileInitiator {
 
     /// A Timeout Wait: the transaction it names waits until `now` plus the time asked,
     /// when that is later than it already would.
-    fn on_wait(&mut self, address: CiDeviceId, ack: &Ack, wait: TimeoutWait, now: Instant) {
+    fn on_wait(&mut self, address: CiDeviceId, ack: &Ack, wait: TimeoutWait) {
         let original = ack.ack_sub_id2.get();
         if original == SUB_ID2_PROFILE_INQUIRY {
             if address == CiDeviceId::FunctionBlock
                 && let Some(inquiry) = self.inquiry.as_mut()
             {
-                wait.extend(&mut inquiry.deadline, now);
+                wait.extend(&mut inquiry.deadline);
             }
             return;
         }
@@ -750,7 +750,7 @@ impl ProfileInitiator {
                 && p.request.address() == address
                 && details_name(details, p.request.profile())
         }) {
-            wait.extend(&mut pending.deadline, now);
+            wait.extend(&mut pending.deadline);
         }
     }
 

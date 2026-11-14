@@ -287,7 +287,7 @@ fn a_discovery_a_peer_sends_is_answered_long_after_the_window_closed() {
     let (mut wire, ours) = midi1_running();
     let _ = polled(&mut wire, 10_000);
     let mut data = peer_data();
-    data.output_path_id = U7::of(5);
+    data.output_path_id = Some(U7::of(5));
     say(
         &wire,
         GROUP_0,
@@ -305,7 +305,7 @@ fn a_discovery_a_peer_sends_is_answered_long_after_the_window_closed() {
     };
     assert_eq!(*group, GROUP_0);
     assert_eq!((header.source, *to), (ours, peer()));
-    assert_eq!(data.output_path_id, U7::of(5));
+    assert_eq!(data.output_path_id, Some(U7::of(5)));
     assert_eq!(data.function_block, None);
     assert_eq!(data.identity, identity());
     assert!(wire.session.ci_peers(&wire.id).is_empty());

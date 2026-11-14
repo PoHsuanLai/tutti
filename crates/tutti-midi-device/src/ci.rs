@@ -1,8 +1,9 @@
 //! The MIDI-CI message codec (M2-101): the header, the MUID, and Discovery,
 //! Invalidate MUID, Inquiry: Endpoint, ACK and NAK, the Profile Configuration
-//! messages and the Process Inquiry messages; [`CiDevice`], the Management core over
-//! it; [`ProfileInitiator`], the Initiator's side of Profile Configuration; and
-//! [`ProcessInitiator`], the Initiator's side of Process Inquiry.
+//! messages, the Process Inquiry messages and the Property Exchange messages;
+//! [`CiDevice`], the Management core over it; [`ProfileInitiator`], the
+//! Initiator's side of Profile Configuration; [`ProcessInitiator`], that of
+//! Process Inquiry; and [`PeInitiator`], that of Property Exchange.
 //!
 //! MIDI-CI lets two MIDI devices discover each other before either knows what the
 //! other speaks. It is **not** a UMP message type: a CI message is a byte payload
@@ -52,13 +53,17 @@ pub use initiator::{
 };
 pub use pe::{
     BodyLimit, BufferLimit, ChunkNo, ChunkPosition, ChunkTotal, MediaType, NotInRange, NotValid,
-    PE_MAX_CHUNK_DATA_LEN, PE_MAX_HEADER_LEN, PE_TIMEOUT, PeAnswer, PeBodyError, PeBuffered,
-    PeChunk, PeChunkError, PeDecimal, PeEncoding, PeEndedBy, PeExpired, PeExtra, PeFlowControl,
-    PeHeader, PeHeaderError, PeHeaderTooLong, PeMessage, PeMessageKind, PePage, PeReassembler,
-    PeReassemblyError, PeReassemblyLimits, PeReceived, PeRefused, PeReply, PeRequest, PeRequestId,
-    PeReservedProperty, PeSignal, PeStatus, PeStep, PeSubscription, PeTerminator, PeTransaction,
-    PeUpdateCommand, PeValue, PropertyName, ResourceId, ResourceName, StreamLimit, SubscribeId,
-    decode_body, encode_body, mcoded7, split_message,
+    PE_MAX_CHUNK_DATA_LEN, PE_MAX_HEADER_LEN, PE_TIMEOUT, PeAction, PeAnswer, PeBodyError,
+    PeBuffered, PeCall, PeCapabilities, PeCapabilitiesFailure, PeChange, PeChunk, PeChunkError,
+    PeCiMessage, PeDecimal, PeEncoding, PeEndedBy, PeError, PeExpired, PeExtra, PeFlowControl,
+    PeGet, PeHeader, PeHeaderError, PeHeaderTooLong, PeInitiator, PeKind, PeMessage, PeMessageKind,
+    PeNotification, PeOutcome, PePage, PeReassembler, PeReassemblyError, PeReassemblyLimits,
+    PeReceived, PeRefused, PeReply, PeRequest, PeRequestId, PeReservedProperty, PeResponse, PeSet,
+    PeSetScope, PeSettings, PeSignal, PeStatus, PeStatusClass, PeStep, PeSubscribed,
+    PeSubscription, PeTerminator, PeTransaction, PeUnreadable, PeUpdateCommand, PeValue, PeVersion,
+    PropertyName, ResourceId, ResourceName, SUB_ID2_PE_CAPABILITIES_INQUIRY,
+    SUB_ID2_PE_CAPABILITIES_REPLY, SimultaneousRequests, StreamLimit, SubscribeId, decode_body,
+    encode_body, mcoded7, split_message,
 };
 pub use process::{
     ChannelControllers, DataControl, NotADataControl, NoteData, ProcessFeatures, ReportScope,
@@ -653,6 +658,16 @@ pub enum CiMessage {
         /// The data of that target.
         data: DetailsData,
     },
+    /// A Property Exchange message (M2-101 §8): the Capabilities pair, or a chunk
+    /// of Get, Set or Subscription or of its reply. To one device.
+    PropertyExchange {
+        /// Addressing preamble; its Device ID is the Function Block (§8.2).
+        header: CiHeader,
+        /// The device it is for.
+        to: Muid,
+        /// The message.
+        message: PeCiMessage,
+    },
     /// Profile Specific Data (§7.12): data the Profile's specification defines.
     /// To one device or, when the Profile says so, to the Broadcast MUID.
     ProfileSpecificData {
@@ -694,6 +709,7 @@ impl CiMessage {
             | CiMessage::ProfileRemoved { header, .. }
             | CiMessage::ProfileDetailsInquiry { header, .. }
             | CiMessage::ProfileDetailsReply { header, .. }
+            | CiMessage::PropertyExchange { header, .. }
             | CiMessage::ProfileSpecificData { header, .. } => header,
         }
     }
@@ -726,7 +742,8 @@ impl CiMessage {
             | CiMessage::SetProfileOn { to, .. }
             | CiMessage::SetProfileOff { to, .. }
             | CiMessage::ProfileDetailsInquiry { to, .. }
-            | CiMessage::ProfileDetailsReply { to, .. } => Destination::Muid(*to),
+            | CiMessage::ProfileDetailsReply { to, .. }
+            | CiMessage::PropertyExchange { to, .. } => Destination::Muid(*to),
         }
     }
 
@@ -756,6 +773,7 @@ impl CiMessage {
             CiMessage::ProfileRemoved { .. } => SUB_ID2_PROFILE_REMOVED,
             CiMessage::ProfileDetailsInquiry { .. } => SUB_ID2_PROFILE_DETAILS_INQUIRY,
             CiMessage::ProfileDetailsReply { .. } => SUB_ID2_PROFILE_DETAILS_REPLY,
+            CiMessage::PropertyExchange { message, .. } => message.sub_id2(),
             CiMessage::ProfileSpecificData { .. } => SUB_ID2_PROFILE_SPECIFIC_DATA,
         }
     }
@@ -847,6 +865,7 @@ impl CiMessage {
                 out.extend(wire_u14(data.as_bytes().len() as u16));
                 out.extend(data.as_bytes().iter().copied());
             }
+            CiMessage::PropertyExchange { message, .. } => message.encode_body(out),
             CiMessage::ProfileSpecificData { profile, data, .. } => {
                 out.extend(profile.to_bytes());
                 // Table 28: a 4-byte length of the Profile Specific Data that follows, LSB first.
@@ -1066,6 +1085,13 @@ impl CiMessage {
                         }
                     })
                 }
+                (0x30 | 0x31 | 0x34..=0x39, Some(to)) => {
+                    PeCiMessage::decode(sub_id2, body).map(|message| CiMessage::PropertyExchange {
+                        header,
+                        to,
+                        message,
+                    })
+                }
                 (SUB_ID2_ACK, Some(to)) => {
                     Ack::decode_body(body).map(|ack| CiMessage::Ack { header, to, ack })
                 }
@@ -1097,7 +1123,10 @@ impl CiMessage {
                     | SUB_ID2_PROFILE_ADDED
                     | SUB_ID2_PROFILE_REMOVED
                     | SUB_ID2_PROFILE_DETAILS_INQUIRY
-                    | SUB_ID2_PROFILE_DETAILS_REPLY,
+                    | SUB_ID2_PROFILE_DETAILS_REPLY
+                    | 0x30
+                    | 0x31
+                    | 0x34..=0x39,
                     _,
                 ) => return unread(UnreadReason::WrongDestination),
                 _ => return unread(UnreadReason::UnsupportedMessage),

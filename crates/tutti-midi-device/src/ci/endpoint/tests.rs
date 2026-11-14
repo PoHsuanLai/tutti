@@ -1,26 +1,22 @@
 use super::super::*;
 use crate::ProductInstanceId;
 
-fn muid(raw: u32) -> Muid {
-    Muid::new(raw).unwrap()
-}
-
 fn id(text: &str) -> CiInstanceId {
     CiInstanceId::new(ProductInstanceId::new(text).unwrap()).unwrap()
 }
 
 fn inquiry() -> CiMessage {
     CiMessage::EndpointInquiry {
-        header: CiHeader::new(muid(0x0123_4567)),
-        to: muid(0x0007_7777),
+        header: CiHeader::new(Muid::of(0x0123_4567)),
+        to: Muid::of(0x0007_7777),
         status: EndpointStatus::ProductInstanceId,
     }
 }
 
 fn reply(text: &str) -> CiMessage {
     CiMessage::EndpointReply {
-        header: CiHeader::new(muid(0x0007_7777)),
-        to: muid(0x0123_4567),
+        header: CiHeader::new(Muid::of(0x0007_7777)),
+        to: Muid::of(0x0123_4567),
         info: EndpointInfo::ProductInstanceId(id(text)),
     }
 }
@@ -29,8 +25,8 @@ fn reply(text: &str) -> CiMessage {
 fn the_inquiry_is_table_9_byte_for_byte() {
     // 7E 7F 0D 72 ver src dst status.
     let mut want = vec![0x7E, 0x7F, 0x0D, 0x72, 0x02];
-    want.extend(muid(0x0123_4567).to_bytes());
-    want.extend(muid(0x0007_7777).to_bytes());
+    want.extend(Muid::of(0x0123_4567).to_bytes());
+    want.extend(Muid::of(0x0007_7777).to_bytes());
     want.push(0x00);
     assert_eq!(inquiry().encode(), want);
     assert_eq!(CiMessage::decode(&want), Decoded::Message(inquiry()));
@@ -41,8 +37,8 @@ fn the_inquiry_is_table_9_byte_for_byte() {
 fn the_reply_is_table_11_byte_for_byte() {
     // ... status, lid LSB first, data.
     let mut want = vec![0x7E, 0x7F, 0x0D, 0x73, 0x02];
-    want.extend(muid(0x0007_7777).to_bytes());
-    want.extend(muid(0x0123_4567).to_bytes());
+    want.extend(Muid::of(0x0007_7777).to_bytes());
+    want.extend(Muid::of(0x0123_4567).to_bytes());
     want.extend([0x00, 0x03, 0x00]);
     want.extend(*b"A-7");
     assert_eq!(reply("A-7").encode(), want);
@@ -72,7 +68,7 @@ fn an_id_over_sixteen_bytes_is_not_a_ci_id_and_is_refused_on_the_wire() {
     };
     assert_eq!(unread.reason, UnreadReason::Malformed);
     assert!(
-        unread.nak(muid(1)).is_some(),
+        unread.nak(Muid::of(1)).is_some(),
         "a NAK can still be addressed"
     );
 }
@@ -105,7 +101,7 @@ fn a_reserved_status_is_unread_in_both_messages_and_nakked_generic() {
             panic!("unread");
         };
         assert_eq!(unread.reason, UnreadReason::ReservedStatus);
-        let Some(CiMessage::Nak { nak, .. }) = unread.nak(muid(9)) else {
+        let Some(CiMessage::Nak { nak, .. }) = unread.nak(Muid::of(9)) else {
             panic!("a NAK");
         };
         assert_eq!(nak.status_code, Nak::STATUS_NAK);
@@ -138,9 +134,9 @@ fn an_inquiry_with_no_status_is_malformed() {
 
 #[test]
 fn an_entropy_word_is_a_muid_by_its_low_28_bits_or_none_in_the_reserved_range() {
-    assert_eq!(Muid::from_entropy(0xF123_4567), Some(muid(0x0123_4567)));
-    assert_eq!(Muid::from_entropy(0), Some(muid(0)));
+    assert_eq!(Muid::from_entropy(0xF123_4567), Some(Muid::of(0x0123_4567)));
+    assert_eq!(Muid::from_entropy(0), Some(Muid::of(0)));
     assert_eq!(Muid::from_entropy(0x0FFF_FF00), None);
     assert_eq!(Muid::from_entropy(0xFFFF_FFFF), None, "the broadcast value");
-    assert_eq!(Muid::from_entropy(0x0FFF_FEFF), Some(muid(0x0FFF_FEFF)));
+    assert_eq!(Muid::from_entropy(0x0FFF_FEFF), Some(Muid::of(0x0FFF_FEFF)));
 }

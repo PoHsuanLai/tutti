@@ -84,6 +84,21 @@ pub enum MidiEvent {
         /// What happened.
         change: tutti_midi_hardware::ProfilesChange,
     },
+    /// A MIDI-CI peer answered Process Inquiry, a MIDI Message Report it was asked
+    /// for began, ended, was refused or timed out, or the peer's Process Inquiry was
+    /// dropped with it (M2-101 section 9): the session is the Initiator with every
+    /// peer that declares Process Inquiry, and reports each change once, from
+    /// `Phase::Poll`. The messages of a report are not events of this kind: they
+    /// reach the graph as the input's MIDI, between the began and the ended. The
+    /// peers that can be asked are
+    /// [`Midi::report_peers`](crate::Midi::report_peers).
+    #[cfg(feature = "midi-hardware")]
+    CiProcess {
+        /// The device.
+        device: tutti_midi_hardware::DeviceId,
+        /// What happened.
+        change: tutti_midi_hardware::ProcessChange,
+    },
     /// The hardware devices' event inlets dropped events because they were
     /// full: the total over every input so far, reported when it rises, at
     /// most once per [`MIDI_INPUT_DROP_REPORT`](crate::MIDI_INPUT_DROP_REPORT)

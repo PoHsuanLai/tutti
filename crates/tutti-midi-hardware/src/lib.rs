@@ -212,6 +212,7 @@ mod error;
 )]
 mod guard;
 mod port;
+mod process;
 mod profiles;
 mod session;
 mod stamp;
@@ -234,6 +235,7 @@ pub use devices::{
 pub use endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 pub use error::{Error, Result};
 pub use port::{HardwareMidiInputs, InputProducerHandle, PortInfo, Pushed, StreamDrain};
+pub use process::{ProcessChange, ReportAsk, ReportError, ReportPeer};
 pub use profiles::{
     ChannelCount, ChannelProfile, ListedProfile, PeerProfiles, ProfileError, ProfileSwitch,
     ProfilesChange, Whole, WholeProfile,

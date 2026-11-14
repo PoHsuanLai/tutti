@@ -833,8 +833,9 @@ impl MidiState {
 
     /// `Phase::Poll`: steps the UMP Stream negotiation and the MIDI-CI of each
     /// held input and reports those that settled ([`MidiEvent::StreamSettled`])
-    /// the peers found, changed or lost ([`MidiEvent::CiPeer`]) and their Profiles
-    /// ([`MidiEvent::CiProfiles`]), reports the
+    /// the peers found, changed or lost ([`MidiEvent::CiPeer`]), their Profiles
+    /// ([`MidiEvent::CiProfiles`]) and their Process Inquiry
+    /// ([`MidiEvent::CiProcess`]), reports the
     /// devices that came and went, retires a held
     /// input or output whose device vanished, wires the event inlets of the
     /// devices that connected to their slots of the ingest node (and takes out
@@ -898,6 +899,9 @@ impl MidiState {
                     }
                     tutti_midi_hardware::Polled::Profile(device, change) => {
                         MidiEvent::CiProfiles { device, change }
+                    }
+                    tutti_midi_hardware::Polled::Process(device, change) => {
+                        MidiEvent::CiProcess { device, change }
                     }
                     // A kind of report this session does not know is not one.
                     _ => continue,

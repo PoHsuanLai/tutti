@@ -207,6 +207,11 @@ pub enum MidiError {
     #[error("MIDI-CI Profile: {0}")]
     Profile(#[from] tutti_midi_hardware::ProfileError),
 
+    /// A MIDI Message Report request was refused ([`Midi::report`](crate::Midi::report)).
+    #[cfg(feature = "midi-hardware")]
+    #[error("MIDI-CI Process Inquiry: {0}")]
+    Report(#[from] tutti_midi_hardware::ReportError),
+
     /// A MIDI file could not be read, built or written.
     #[error("MIDI file: {0}")]
     File(#[from] tutti_midi_file::Error),

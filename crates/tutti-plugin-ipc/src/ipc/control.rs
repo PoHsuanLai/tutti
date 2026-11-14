@@ -262,10 +262,11 @@ macro_rules! served_control {
             }
 
             /// Sent to the server, whose format answers the plugin's reads
-            /// from it. Fire-and-forget: a plugin that is gone has nobody to
-            /// tell.
-            fn set_track_info(&mut self, _main: &MainThread, info: &TrackInfo) {
-                let _ = self.link.bridge.set_track_info(info);
+            /// from it: queued ([`Yes`](Delivered::Yes)), refused because the
+            /// queue is full ([`Dropped`](Delivered::Dropped)) or because the
+            /// plugin is gone ([`PluginDead`](Delivered::PluginDead)).
+            fn set_track_info(&mut self, _main: &MainThread, info: &TrackInfo) -> Delivered {
+                self.link.bridge.set_track_info(info)
             }
 
             /// What the server's `ProcessRequested` raises, from the bridge's

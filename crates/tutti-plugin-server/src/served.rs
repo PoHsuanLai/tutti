@@ -813,9 +813,11 @@ impl<F: ServerSide> ServedPlugin for Served<F> {
         }
     }
 
+    /// The wire has no reply to this, so what the plugin's `Control` answers
+    /// is not sent back; the host's own queue already said whether it went.
     fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) {
         if let Some(control) = self.lifecycle.control() {
-            control.set_track_info(main, info);
+            let _ = control.set_track_info(main, info);
         }
     }
 

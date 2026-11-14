@@ -16,8 +16,8 @@ use std::time::Instant;
 
 use crate::{
     AutomationMode, ContentScale, EditorCapabilities, EditorError, EditorSize, KeyEvent, KeyUse,
-    Loaded, MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult, Ready,
-    TransportRequest, Wakeups, WindowHandle,
+    Loaded, MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult, Ready, Request,
+    Wakeups, WindowHandle,
 };
 
 /// What to load from a plugin file: which plugin, when the file exports
@@ -344,12 +344,16 @@ pub trait Editor: EditorWindow + Send {
         false
     }
 
-    /// What the plugin asked the host's transport to do through the editor
-    /// instance since the last call, oldest first, appended to `out` (CLAP
-    /// `transport-control`: a plugin's own buttons call the host of the
-    /// instance that shows them). A format without the extension keeps the
-    /// default and appends nothing.
-    fn take_transport_requests(&mut self, main: &MainThread, out: &mut Vec<TransportRequest>) {
+    /// What the editor instance asked of the host since the last call, oldest
+    /// first, appended to `out`: the same meaning as
+    /// [`Control::take_requests`](crate::Control::take_requests), for the
+    /// requests the host must answer. The editor instance serves its own
+    /// callbacks, timers and descriptors in
+    /// [`editor_idle`](EditorWindow::editor_idle) and is never active, so what
+    /// it yields is a [`Request::Transport`] (CLAP `transport-control`: a
+    /// plugin's own buttons call the host of the instance that shows them). A
+    /// format with nothing to ask keeps the default and appends nothing.
+    fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
         let _ = (main, out);
     }
 

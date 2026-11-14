@@ -336,13 +336,14 @@ impl AudioBridge {
         }
     }
 
-    /// Queues what the host says of the plugin's track. Main thread: the value
-    /// is boxed here, off the audio thread; `false` when it was not queued.
-    pub fn set_track_info(&self, info: &tutti_plugin_types::TrackInfo) -> bool {
-        !self.lifecycle.is_crashed()
-            && self.channels.push_command(Command::SetTrackInfo {
+    /// Queues what the host says of the plugin's track, saying **why** if it
+    /// did not go. Main thread: the value is boxed here, off the audio thread.
+    pub fn set_track_info(&self, info: &tutti_plugin_types::TrackInfo) -> Delivered {
+        delivery(self.lifecycle.is_crashed(), || {
+            self.channels.push_command(Command::SetTrackInfo {
                 info: Box::new(info.clone()),
             })
+        })
     }
 
     /// Queues a rate change. Realtime-safe; `false` when it was not queued.
@@ -918,5 +919,35 @@ mod tests {
 
         channels.set_sample_rate(SampleRate::SR_192K);
         assert_eq!(channels.sample_rate(), SampleRate::SR_192K);
+    }
+}
+
+/// What a push of a command comes to: nothing is queued for a plugin that is
+/// gone, and a full queue refuses it. `push` runs only for a live plugin.
+fn delivery(crashed: bool, push: impl FnOnce() -> bool) -> Delivered {
+    if crashed {
+        Delivered::PluginDead
+    } else if push() {
+        Delivered::Yes
+    } else {
+        Delivered::Dropped
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+
+    /// A command that was queued is `Yes`; one the full queue refused is
+    /// `Dropped`, which a later call may cure; a dead plugin is `PluginDead`,
+    /// and its queue is not even tried.
+    #[test]
+    fn a_push_is_delivered_dropped_or_to_a_dead_plugin_each_by_itself() {
+        assert_eq!(delivery(false, || true), Delivered::Yes);
+        assert_eq!(delivery(false, || false), Delivered::Dropped);
+        assert_eq!(
+            delivery(true, || panic!("a dead plugin's queue is not tried")),
+            Delivered::PluginDead
+        );
     }
 }

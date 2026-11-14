@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use tutti_plugin_types::{
-    BridgeResult, Delivered, EditorError, PluginError, PluginFailure, StateError,
+    BridgeResult, Delivered, EditorError, PluginError, PluginFailure, Request, StateError,
 };
 use tutti_plugin_types::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
 use tutti_plugin_types::{Edit, EditDrain, EditSink, MainThread, ParamEdit, edits};
@@ -320,7 +320,7 @@ impl PluginBridge {
 
     /// See [`AudioBridge::set_track_info`]. The audio instance only: the
     /// editor's instance has no track.
-    pub fn set_track_info(&self, info: &tutti_plugin_types::TrackInfo) -> bool {
+    pub fn set_track_info(&self, info: &tutti_plugin_types::TrackInfo) -> Delivered {
         self.audio.set_track_info(info)
     }
 
@@ -576,6 +576,34 @@ impl PluginBridge {
         }
     }
 
+    /// Where a request the editor instance made goes. The editor instance is
+    /// never active and its audio is the server's, so the requests an `Editor`
+    /// yields (`Editor::take_requests`) are the ones the application answers:
+    /// a transport request reaches the listener as the server's own do. The
+    /// others are the audio instance's to raise, and the server raises them
+    /// there; an editor that yielded one would be asking for a restart, a
+    /// re-read or a timer of an instance that has none.
+    fn route_editor_request(&self, request: Request) {
+        match request {
+            Request::Transport(asked) => self.audio.report_transport(asked),
+            Request::Restart
+            | Request::IoChanged
+            | Request::RescanParams(_)
+            | Request::LatencyChanged
+            | Request::TailChanged
+            | Request::Reload
+            | Request::Callback
+            | Request::MidiCcAssignmentChanged
+            | Request::NoteExpressionChanged
+            | Request::Timer(_)
+            | Request::Fd(_) => {
+                tracing::warn!(
+                    "[bridge] the editor instance asked for {request:?}, which is not its to ask"
+                );
+            }
+        }
+    }
+
     /// Closes the editor, after sending the audio instance what the user changed
     /// in it. `false` when no editor was open.
     pub fn close_editor(&self, main: &MainThread) -> bool {
@@ -667,12 +695,12 @@ impl PluginBridge {
             }
             // Forward GUI-originated parameter changes to the audio bridge.
             self.forward_edits(gui.poll_edits(main));
-            // What the editor's own buttons asked of the transport goes where
-            // the server's requests go.
-            let mut transport = Vec::new();
-            gui.take_transport_requests(main, &mut transport);
-            for request in transport {
-                self.audio.report_transport(request);
+            // What the editor instance asked of the host. A transport request
+            // goes where the server's own go.
+            let mut asked = Vec::new();
+            gui.take_requests(main, &mut asked);
+            for request in asked {
+                self.route_editor_request(request);
             }
             // The plugin said its state changed: give the audio instance the
             // editor's state now rather than at close.

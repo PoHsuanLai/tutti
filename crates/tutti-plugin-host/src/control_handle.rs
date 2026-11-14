@@ -10,12 +10,12 @@ use crate::{
 use std::sync::Arc;
 use tutti_plugin_types::BlockCounts;
 use tutti_plugin_types::MainThread;
-use tutti_plugin_types::TrackInfo;
 use tutti_plugin_types::{
     AnyThread, AutomationMode, AutomationModeError, Control, EditorCapabilities, EditorError,
     Health, PluginError, PluginFailure, StateError, TerminationReason, WindowHandle,
 };
 use tutti_plugin_types::{ContentScale, EditorSize, KeyEvent, KeyUse};
+use tutti_plugin_types::{Delivered, TrackInfo};
 use tutti_plugin_types::{
     LayoutSupport, LoadedPlugin, PluginBus, PluginDescriptor, Preset, PresetError, PresetId,
     PresetSupport,
@@ -747,13 +747,15 @@ impl PluginHandle {
 
     /// Tells the plugin what the host says of the track it sits on (its name,
     /// colour and width). The plugin is told when it differs from the last
-    /// call. `false` when the handle has no route to the plugin or the plugin
-    /// is lost; a format with no place for it takes it and drops it.
-    pub fn set_track_info(&self, main: &MainThread, info: &TrackInfo) -> bool {
+    /// call. [`PluginDead`](Delivered::PluginDead) when the handle has no
+    /// route to the plugin or the plugin is lost, [`Dropped`](Delivered::Dropped)
+    /// when a served plugin's queue was full; a format with no place for it
+    /// takes it and drops it, which is [`Yes`](Delivered::Yes).
+    pub fn set_track_info(&self, main: &MainThread, info: &TrackInfo) -> Delivered {
         let Some(control) = self.control.as_deref() else {
-            return false;
+            return Delivered::PluginDead;
         };
-        lent(control, |c| c.set_track_info(main, info)).is_some()
+        lent(control, |c| c.set_track_info(main, info)).unwrap_or(Delivered::PluginDead)
     }
 
     // ---- Notices (plugin -> host) -------------------------------------------
@@ -795,6 +797,8 @@ mod tests {
     struct FakePresets {
         listed: Vec<Preset>,
         accepts: bool,
+        /// What `set_track_info` answers.
+        track: Delivered,
     }
 
     impl EditorWindow for FakePresets {
@@ -848,6 +852,9 @@ mod tests {
         }
         fn render_mode_support(&self, _main: &MainThread) -> tutti_plugin_types::RenderModeSupport {
             unreachable!("the preset tests never ask")
+        }
+        fn set_track_info(&mut self, _main: &MainThread, _info: &TrackInfo) -> Delivered {
+            self.track
         }
         fn wiring(&self, _main: &MainThread) -> LoadedPlugin {
             LoadedPlugin::default()
@@ -906,6 +913,17 @@ mod tests {
     }
 
     fn handle_with_loaded(presets: Option<FakePresets>, loaded: LoadedPlugin) -> PluginHandle {
+        handle_over(
+            presets.map(|p| Arc::new(p) as Arc<dyn MainThreadControl>),
+            loaded,
+        )
+    }
+
+    /// A handle whose main-thread route is `control`.
+    fn handle_over(
+        control: Option<Arc<dyn MainThreadControl>>,
+        loaded: LoadedPlugin,
+    ) -> PluginHandle {
         // Only the preset route is under test; the rest of the handle is built
         // from the same fake so no subprocess is needed.
         struct Inert;
@@ -963,7 +981,7 @@ mod tests {
 
         PluginHandle::from_backend(
             Arc::new(Inert),
-            presets.map(|p| Arc::new(p) as Arc<dyn MainThreadControl>),
+            control,
             PluginDescriptor::default(),
             loaded,
             ParameterChangeSink::default(),
@@ -1000,6 +1018,7 @@ mod tests {
             Some(FakePresets {
                 listed: Vec::new(),
                 accepts: true,
+                track: Delivered::Yes,
             }),
             loaded,
         );
@@ -1024,6 +1043,7 @@ mod tests {
         let empty = handle_with(Some(FakePresets {
             listed: Vec::new(),
             accepts: false,
+            track: Delivered::Yes,
         }));
         assert_eq!(
             empty.presets(&MainThread::claim().unwrap()),
@@ -1049,6 +1069,7 @@ mod tests {
         let refusing = handle_with(Some(FakePresets {
             listed: Vec::new(),
             accepts: false,
+            track: Delivered::Yes,
         }));
         assert_eq!(
             refusing.load_preset(&MainThread::claim().unwrap(), &id),
@@ -1059,6 +1080,7 @@ mod tests {
         let accepting = handle_with(Some(FakePresets {
             listed: Vec::new(),
             accepts: true,
+            track: Delivered::Yes,
         }));
         assert_eq!(
             accepting.load_preset(&MainThread::claim().unwrap(), &id),
@@ -1082,11 +1104,59 @@ mod tests {
         let handle = handle_with(Some(FakePresets {
             listed: listed.clone(),
             accepts: true,
+            track: Delivered::Yes,
         }));
         assert_eq!(
             handle.presets(&MainThread::claim().unwrap()),
             Ok(listed),
             "the handle must not reorder or renumber what the plugin listed"
+        );
+    }
+
+    /// A control that is lent to nothing: the plugin is lost.
+    struct Lost;
+
+    impl MainThreadControl for Lost {
+        fn lend(&self, _f: &mut dyn FnMut(&mut dyn Control)) {}
+        fn editor_idle(&self, _main: &MainThread) {}
+    }
+
+    /// What a track the host tells the plugin comes to is told by the handle:
+    /// what the plugin's own control answered (`Yes` and `Dropped` each by
+    /// itself), and `PluginDead` both for a handle with no route and for a
+    /// route to a plugin that is lost.
+    #[test]
+    fn set_track_info_says_yes_dropped_or_plugin_dead_each_by_itself() {
+        let main = MainThread::claim().unwrap();
+        let info = TrackInfo::default();
+        let with = |track| {
+            handle_with(Some(FakePresets {
+                listed: Vec::new(),
+                accepts: true,
+                track,
+            }))
+        };
+        assert_eq!(
+            with(Delivered::Yes).set_track_info(&main, &info),
+            Delivered::Yes
+        );
+        assert_eq!(
+            with(Delivered::Dropped).set_track_info(&main, &info),
+            Delivered::Dropped
+        );
+        assert_eq!(
+            handle_with(None).set_track_info(&main, &info),
+            Delivered::PluginDead,
+            "no route"
+        );
+        let lost = handle_over(
+            Some(Arc::new(Lost) as Arc<dyn MainThreadControl>),
+            LoadedPlugin::default(),
+        );
+        assert_eq!(
+            lost.set_track_info(&main, &info),
+            Delivered::PluginDead,
+            "a route to a plugin that is lost"
         );
     }
 }

@@ -20,7 +20,9 @@ use tutti_clap_test_plugin::{
     HOSTEXT_CMD_STOP, HOSTEXT_CMD_TOGGLE_LOOP, HOSTEXT_CMD_TOGGLE_PLAY, HOSTEXT_CMD_TOGGLE_RECORD,
     HOSTEXT_CMD_TRACK_GET, HostExtCapture,
 };
-use tutti_plugin_types::{ChannelLayout, Control, Request, TrackInfo, TrackKind, TransportRequest};
+use tutti_plugin_types::{
+    ChannelLayout, Control, Delivered, Request, TrackInfo, TrackKind, TransportRequest,
+};
 use tutti_types::{Beat, BeatDuration};
 
 /// `clap_beattime` is 2^31 units to the beat (`fixedpoint.h`); pinned here so a
@@ -107,6 +109,15 @@ fn call<F: Copy>(name: &[u8], f: impl FnOnce(F)) {
     }
 }
 
+/// Tells the plugin its track, which an in-process plugin always takes.
+fn set_track(inst: &mut ClapLoaded, info: &TrackInfo) {
+    assert_eq!(
+        inst.set_track_info(&main_thread(), info),
+        Delivered::Yes,
+        "an in-process plugin takes the track"
+    );
+}
+
 fn requests(inst: &mut ClapLoaded) -> Vec<Request> {
     let mut out = Vec::new();
     inst.take_requests(&main_thread(), &mut out);
@@ -147,7 +158,7 @@ fn track_info_get_answers_false_until_the_host_says_something() {
 fn track_info_get_answers_what_the_host_set() {
     let probe = Probe::acquire();
     let mut inst = probe.load();
-    inst.set_track_info(&main_thread(), &stereo_track());
+    set_track(&mut inst, &stereo_track());
 
     probe.command(&mut inst, HOSTEXT_CMD_TRACK_GET, 0, 0);
 
@@ -174,7 +185,7 @@ fn track_info_flags_only_the_fields_the_host_knows() {
         audio: Some(ChannelLayout::MONO),
         ..TrackInfo::default()
     };
-    inst.set_track_info(&main_thread(), &info);
+    set_track(&mut inst, &info);
 
     probe.command(&mut inst, HOSTEXT_CMD_TRACK_GET, 0, 0);
 
@@ -194,7 +205,7 @@ fn track_info_gives_no_port_type_for_a_width_clap_has_no_word_for() {
         audio: Some(ChannelLayout::from(6u16)),
         ..TrackInfo::default()
     };
-    inst.set_track_info(&main_thread(), &info);
+    set_track(&mut inst, &info);
 
     probe.command(&mut inst, HOSTEXT_CMD_TRACK_GET, 0, 0);
 
@@ -219,7 +230,7 @@ fn track_info_kind_sets_exactly_one_flag() {
             kind,
             ..TrackInfo::default()
         };
-        inst.set_track_info(&main_thread(), &info);
+        set_track(&mut inst, &info);
 
         probe.command(&mut inst, HOSTEXT_CMD_TRACK_GET, 0, 0);
 
@@ -239,7 +250,7 @@ fn track_info_cuts_a_long_name_on_a_character_boundary() {
         name: Some("é".repeat(300)),
         ..TrackInfo::default()
     };
-    inst.set_track_info(&main_thread(), &info);
+    set_track(&mut inst, &info);
 
     probe.command(&mut inst, HOSTEXT_CMD_TRACK_GET, 0, 0);
 
@@ -254,7 +265,7 @@ fn the_plugin_is_told_when_the_track_changes_and_get_then_answers_the_new_value(
     let probe = Probe::acquire();
     let mut inst = probe.load();
 
-    inst.set_track_info(&main_thread(), &stereo_track());
+    set_track(&mut inst, &stereo_track());
 
     let cap = probe.capture();
     assert_eq!(cap.track_changed_calls, 1);
@@ -267,16 +278,16 @@ fn the_plugin_is_told_when_the_track_changes_and_get_then_answers_the_new_value(
 fn an_unchanged_track_does_not_tell_the_plugin() {
     let probe = Probe::acquire();
     let mut inst = probe.load();
-    inst.set_track_info(&main_thread(), &stereo_track());
+    set_track(&mut inst, &stereo_track());
 
-    inst.set_track_info(&main_thread(), &stereo_track());
+    set_track(&mut inst, &stereo_track());
     assert_eq!(probe.capture().track_changed_calls, 1);
 
     let renamed = TrackInfo {
         name: Some("Bass".to_owned()),
         ..stereo_track()
     };
-    inst.set_track_info(&main_thread(), &renamed);
+    set_track(&mut inst, &renamed);
     let cap = probe.capture();
     assert_eq!(cap.track_changed_calls, 2);
     assert_eq!(cap.track_at_changed.name_str(), "Bass");
@@ -457,16 +468,15 @@ fn a_transport_request_from_the_audio_thread_is_refused() {
     );
 }
 
-/// A plugin that asks faster than the host takes is counted, not queued
-/// without bound: the first requests are kept and the rest counted.
+/// A plugin that asks faster than the host takes is not queued without bound:
+/// the first requests are kept and the rest refused.
 /// Spec: clap.ext.transport_control.host.request_start
 #[test]
-fn a_flood_of_transport_requests_is_bounded_and_counted() {
+fn a_flood_of_transport_requests_is_bounded() {
     let probe = Probe::acquire();
     let mut inst = probe.load();
 
     probe.command(&mut inst, HOSTEXT_CMD_START_BURST, 100, 0);
 
     assert_eq!(requests(&mut inst).len(), 64);
-    assert_eq!(inst.transport_requests_dropped(), 36);
 }

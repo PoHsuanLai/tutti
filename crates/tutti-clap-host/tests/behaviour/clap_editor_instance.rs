@@ -92,7 +92,7 @@ fn an_editors_state_is_the_plugins_state() {
 #[test]
 fn a_transport_request_the_editor_instance_makes_is_taken_from_it() {
     use tutti_clap_test_plugin::HOSTEXT_CMD_START;
-    use tutti_plugin_types::TransportRequest;
+    use tutti_plugin_types::{Request, TransportRequest};
 
     let path = tutti_fixtures::clap_probe();
     let main = main_thread();
@@ -109,8 +109,12 @@ fn a_transport_request_the_editor_instance_makes_is_taken_from_it() {
     editor.editor_idle(&main);
 
     let mut asked = Vec::new();
-    editor.take_transport_requests(&main, &mut asked);
-    assert_eq!(asked, [TransportRequest::Start]);
-    editor.take_transport_requests(&main, &mut asked);
-    assert_eq!(asked, [TransportRequest::Start], "taken once");
+    editor.take_requests(&main, &mut asked);
+    assert_eq!(asked, [Request::Transport(TransportRequest::Start)]);
+    editor.take_requests(&main, &mut asked);
+    assert_eq!(
+        asked,
+        [Request::Transport(TransportRequest::Start)],
+        "taken once"
+    );
 }

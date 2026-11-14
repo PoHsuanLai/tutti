@@ -315,7 +315,8 @@ impl PosixFdState {
 
 /// How many transport requests wait between two takes. A plugin asks from the
 /// main thread, one request per user action, so a take every pass leaves the
-/// queue near empty; past this the newest are counted, not kept.
+/// queue near empty; past this the newest are refused, which keeps the
+/// queue's memory fixed against a plugin that asks in a loop.
 pub(crate) const TRANSPORT_QUEUE: usize = 64;
 
 /// What the plugin asked the transport to do (`CLAP_EXT_TRANSPORT_CONTROL`),
@@ -326,26 +327,22 @@ pub(crate) const TRANSPORT_QUEUE: usize = 64;
 #[derive(Debug)]
 pub struct TransportState {
     queue: Mutex<Vec<TransportRequest>>,
-    dropped: AtomicU32,
 }
 
 impl TransportState {
     fn new() -> Self {
         Self {
             queue: Mutex::new(Vec::with_capacity(TRANSPORT_QUEUE)),
-            dropped: AtomicU32::new(0),
         }
     }
 
-    /// Queues `request`, or counts it when [`TRANSPORT_QUEUE`] are waiting.
+    /// Queues `request`, or refuses it when [`TRANSPORT_QUEUE`] are waiting.
     pub(crate) fn push(&self, request: TransportRequest) {
         let Ok(mut queue) = self.queue.lock() else {
             return;
         };
         if queue.len() < TRANSPORT_QUEUE {
             queue.push(request);
-        } else {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -354,11 +351,6 @@ impl TransportState {
         if let Ok(mut queue) = self.queue.lock() {
             out.append(&mut queue);
         }
-    }
-
-    /// How many requests were dropped because the queue was full.
-    pub(crate) fn dropped(&self) -> u32 {
-        self.dropped.load(Ordering::Relaxed)
     }
 }
 

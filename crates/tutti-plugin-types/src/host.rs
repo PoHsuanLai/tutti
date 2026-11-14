@@ -25,13 +25,13 @@
 use std::num::NonZeroUsize;
 use std::time::Instant;
 
-use crate::ParamEdit;
 use crate::{
     AudioBufferMut, AutomationMode, ContentScale, EditorCapabilities, EditorSize, EditorWindow,
     KeyEvent, KeyUse, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor,
     PluginError, PluginResult, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput,
     ProcessWake, SampleRate, Samples, WindowHandle,
 };
+use crate::{Delivered, ParamEdit};
 use crate::{
     FdId, MainThread, Prepare, Ready, RenderMode, RenderModeSupport, Request, RescanScope,
     RestartRules, StateUse, TimerId, TrackInfo, Wakeups,
@@ -153,9 +153,15 @@ pub trait Control: EditorWindow {
     /// Tells the plugin's host what the host says of the track the plugin sits
     /// on. A format that can answer the plugin's reads (CLAP `track-info`)
     /// keeps it and tells the plugin when it differs from the last; a format
-    /// without one keeps this default and drops it.
-    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) {
+    /// without one keeps this default, which takes it and drops it, and
+    /// answers [`Yes`](Delivered::Yes): there is nowhere it should have gone.
+    ///
+    /// [`PluginDead`](Delivered::PluginDead) when the plugin is gone,
+    /// [`Dropped`](Delivered::Dropped) when a served plugin's queue was full
+    /// and a later call may succeed.
+    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) -> Delivered {
         let _ = (main, info);
+        Delivered::Yes
     }
 
     /// Reads parameters again after a rescan the plugin asked for.
@@ -583,8 +589,8 @@ impl<W: Wraps> Control for W {
         }
     }
 
-    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) {
-        self.plugin_mut().set_track_info(main, info);
+    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) -> Delivered {
+        self.plugin_mut().set_track_info(main, info)
     }
 
     fn rebuild_midi_mapping(&mut self, main: &MainThread) {

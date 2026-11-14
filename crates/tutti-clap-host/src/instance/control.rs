@@ -8,12 +8,12 @@ use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    AutomationMode, BusRole, ChannelLayout, ClapFeature, ContentScale, Control, EditorPresence,
-    EditorSize, EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamEdit,
-    ParamFlags, ParamId, ParamMapping, ParameterInfo, PluginBus, PluginBuses, PluginClass,
-    PluginDescriptor, PluginError, PluginResult, PluginTail, PresetId, ProcessWake, RenderMode,
-    RenderModeSupport, Request, RescanScope, Samples, StateUse, TimerId, TrackInfo, WindowHandle,
-    Wraps,
+    AutomationMode, BusRole, ChannelLayout, ClapFeature, ContentScale, Control, Delivered,
+    EditorPresence, EditorSize, EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized,
+    ParamEdit, ParamFlags, ParamId, ParamMapping, ParameterInfo, PluginBus, PluginBuses,
+    PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail, PresetId, ProcessWake,
+    RenderMode, RenderModeSupport, Request, RescanScope, Samples, StateUse, TimerId, TrackInfo,
+    WindowHandle, Wraps,
 };
 
 use super::ClapLoaded;
@@ -210,13 +210,6 @@ impl ClapLoaded {
         self.take_transport(out);
     }
 
-    /// How many transport requests the plugin made that were dropped because
-    /// the host did not take them in time.
-    #[must_use]
-    pub fn transport_requests_dropped(&self) -> u32 {
-        self.host_state.transport.dropped()
-    }
-
     /// The transport requests the plugin made since the last take, oldest
     /// first.
     fn take_transport(&self, out: &mut Vec<Request>) {
@@ -314,17 +307,20 @@ impl Control for ClapLoaded {
     /// told (`track-info.changed`) when it differs from the last. A plugin
     /// without `clap.track-info` is told nothing, and its host callback still
     /// answers.
-    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) {
+    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) -> Delivered {
         {
+            // A poisoned lock means a thread died holding the value: the
+            // instance's host state is lost, which is the plugin's death here.
             let Ok(mut held) = self.host_state.track.info.lock() else {
-                return;
+                return Delivered::PluginDead;
             };
             if held.as_ref() == Some(info) {
-                return;
+                return Delivered::Yes;
             }
             *held = Some(info.clone());
         }
         self.plugin.track_info_changed(main);
+        Delivered::Yes
     }
 
     /// Normalized `0..=1`; CLAP has no normalization concept, so the plugin

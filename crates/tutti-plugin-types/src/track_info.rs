@@ -25,9 +25,10 @@ pub enum TrackKind {
     Master,
 }
 
-/// What the host says of the track a plugin is on. Every field is optional
-/// information: a field the host leaves unset is one the plugin is told is
-/// unknown.
+/// What the host says of the track a plugin is on. The name, colour and audio
+/// width are optional: a field the host leaves unset is one the plugin is told
+/// is unknown. `kind` is always said, and defaults to an ordinary track, which
+/// is what a format's flags express when none is set.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TrackInfo {

@@ -10,7 +10,7 @@ use std::path::Path;
 use tutti_plugin_types::{
     AutomationMode, ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize,
     EditorWindow, InProcess, Load, MainThread, Normalized, ParamEdit, ParamId, PluginError,
-    PluginResult, Request, RescanScope, TransportRequest, WindowHandle,
+    PluginResult, Request, RescanScope, WindowHandle,
 };
 
 use super::ClapLoaded;
@@ -50,9 +50,9 @@ pub struct ClapEditor {
     /// FFI call per parameter to find one id — acceptable once at load, not on
     /// every knob movement.
     param_ranges: Vec<ParamBounds>,
-    /// What the plugin asked of the transport since the last
-    /// [`take_transport_requests`](Editor::take_transport_requests).
-    transport: Vec<TransportRequest>,
+    /// What the plugin asked of the host that the instance does not serve
+    /// itself, since the last [`take_requests`](Editor::take_requests).
+    asked: Vec<Request>,
 }
 
 impl ClapEditor {
@@ -68,7 +68,7 @@ impl ClapEditor {
         Ok(Self {
             inner,
             param_ranges,
-            transport: Vec::new(),
+            asked: Vec::new(),
         })
     }
 
@@ -159,8 +159,8 @@ impl Editor for ClapEditor {
         Control::set_automation_state(&mut self.inner, main, mode);
     }
 
-    fn take_transport_requests(&mut self, _main: &MainThread, out: &mut Vec<TransportRequest>) {
-        out.append(&mut self.transport);
+    fn take_requests(&mut self, _main: &MainThread, out: &mut Vec<Request>) {
+        out.append(&mut self.asked);
     }
 
     fn take_dirty(&mut self, _main: &MainThread) -> bool {
@@ -236,10 +236,21 @@ impl EditorWindow for ClapEditor {
                 Request::RescanParams(RescanScope::Info | RescanScope::All) => reread = true,
                 // The plugin's own buttons ask the host of the instance that
                 // shows them; the host of the session answers.
-                Request::Transport(asked) => self.transport.push(asked),
-                // Nothing else is this instance's to serve: it never activates,
-                // so a restart or a latency change has nothing to restart.
-                _ => {}
+                Request::Transport(asked) => self.asked.push(Request::Transport(asked)),
+                // Nothing else is this instance's to serve or to hand on: it
+                // never activates, so a restart, a latency or tail change or a
+                // port change has nothing to restart (the audio instance is
+                // the server's), and a rescan of values or text reads on
+                // demand. The editor's own `Editor::poll_edits` collects the
+                // parameter edits.
+                Request::Restart
+                | Request::IoChanged
+                | Request::LatencyChanged
+                | Request::TailChanged
+                | Request::Reload
+                | Request::MidiCcAssignmentChanged
+                | Request::NoteExpressionChanged
+                | Request::RescanParams(RescanScope::Values | RescanScope::Text) => {}
             }
         }
         if reread {

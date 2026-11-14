@@ -303,6 +303,14 @@ pub enum MidiError {
     #[error("the session is not following a MIDI clock")]
     NotFollowingClock,
 
+    /// `Midi::unfollow_machine_control` with no Machine Control being followed.
+    #[error("the session is not following MIDI Machine Control")]
+    NotFollowingMachineControl,
+
+    /// `Midi::stop_sending_machine_control` with no Machine Control being sent.
+    #[error("the session is not sending MIDI Machine Control")]
+    NotSendingMachineControl,
+
     /// A tempo has one source: `Midi::follow_tempo` and a Beat Clock
     /// `Midi::follow_clock` each publish the tempo map, so one is refused while
     /// the other is followed.

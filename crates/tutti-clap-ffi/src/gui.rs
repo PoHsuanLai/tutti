@@ -112,21 +112,16 @@ fn platform_window_handle(parent: *mut std::ffi::c_void) -> (*const c_char, clap
     )
 }
 
-/// Whether `api` names a window API whose sizes are in logical pixels, where
-/// the plugin scales itself (`gui.h`: Cocoa and UIKit).
-fn api_uses_logical_pixels(api: *const c_char) -> bool {
+/// The unit `api`'s sizes are in: logical points where the plugin scales itself
+/// (`gui.h`: Cocoa and UIKit), physical pixels for every other api.
+fn unit_of(api: *const c_char) -> EditorUnit {
     if api.is_null() {
-        return false;
+        return EditorUnit::Physical;
     }
     // SAFETY: `api` is one of this module's `CLAP_WINDOW_API_*` constants, a
     // `'static` nul-terminated string.
     let api = unsafe { CStr::from_ptr(api) };
-    api == CLAP_WINDOW_API_COCOA || api.to_bytes() == b"uikit"
-}
-
-/// The unit `api`'s sizes are in.
-fn unit_of(api: *const c_char) -> EditorUnit {
-    if api_uses_logical_pixels(api) {
+    if api == CLAP_WINDOW_API_COCOA || api.to_bytes() == b"uikit" {
         EditorUnit::Logical
     } else {
         EditorUnit::Physical
@@ -298,7 +293,7 @@ unsafe fn embed_editor_sequence(
     };
     // A logical-pixel API (Cocoa, UIKit) scales itself; `set_scale` there
     // would double-scale (`ext/gui.h`).
-    if !api_uses_logical_pixels(api) {
+    if unit_of(api) != EditorUnit::Logical {
         call.set_scale(scale.get());
     }
     let (width, height) = call.get_size().unwrap_or((800, 600));
@@ -537,7 +532,7 @@ impl Plugin {
         let (api, _) = platform_window_handle(std::ptr::null_mut());
         // The scale is kept on every api: a logical-pixel editor is not told, but
         // a request in device pixels is still converted at the window's scale.
-        let taken = if api_uses_logical_pixels(api) {
+        let taken = if unit_of(api) == EditorUnit::Logical {
             false
         } else {
             // SAFETY: as `resize_gui`.

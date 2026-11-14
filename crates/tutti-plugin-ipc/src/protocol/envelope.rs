@@ -277,10 +277,10 @@ pub enum HostMessage {
     SetEditorSize {
         /// The size the host's window has, in either unit: the server's format
         /// converts it at the scale the editor opened with. A `dpi::Size` crosses
-        /// the wire as it is, serialized through `dpi`'s `serde` feature: the
-        /// unit is part of the value, and every extent is valid (a pixel count
-        /// is any `u32`; a logical extent past what `u32` holds saturates where
-        /// it is read, see `EditorUnit::native`).
+        /// the wire serialized through `dpi`'s `serde` feature, the unit part of
+        /// the value; a logical one that is not finite and non-negative is
+        /// refused on decode (see `wire::size`).
+        #[serde(with = "super::wire::size")]
         size: Size,
     },
     /// What the host says of the track the plugin sits on, for the formats
@@ -539,12 +539,14 @@ pub enum BridgeMessage {
     /// embedded, `None` for a floating one, or why it did not open.
     EditorOpened {
         /// The size, or the refusal as the server formatted it.
+        #[serde(with = "super::wire::size_opt_result")]
         result: Result<Option<Size>, String>,
     },
     /// Answers a [`HostMessage::SetEditorSize`]: the size the editor took, or
     /// why it did not.
     EditorSized {
         /// The size taken, or the refusal as the server formatted it.
+        #[serde(with = "super::wire::size_result")]
         result: Result<Size, String>,
     },
     /// The plugin asked its window to take `size` (CLAP's
@@ -552,6 +554,7 @@ pub enum BridgeMessage {
     /// and answers with [`HostMessage::SetEditorSize`].
     EditorWantsSize {
         /// The size the plugin asked for, in its format's unit.
+        #[serde(with = "super::wire::size")]
         size: Size,
     },
     /// The server closed the editor on its own account: the plugin it belongs

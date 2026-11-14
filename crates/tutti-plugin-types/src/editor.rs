@@ -114,7 +114,9 @@ impl EditorUnit {
 
     /// `size` as the `(width, height)` an ABI in this unit takes, converted at
     /// `scale` when `size` is in the other unit. A logical extent rounds to the
-    /// nearest pixel, and one that is negative or past `u32::MAX` saturates.
+    /// nearest pixel, and one that is negative, NaN or past `u32::MAX` saturates (a size
+    /// the caller built by hand can be any `f64`; one off the IPC wire is refused on
+    /// decode).
     #[must_use]
     pub fn native(self, size: Size, scale: ContentScale) -> (u32, u32) {
         match self {

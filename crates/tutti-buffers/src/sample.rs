@@ -280,10 +280,22 @@ pub trait Float:
     /// The cosine, in radians.
     #[must_use]
     fn cos(self) -> Self;
+    /// The tangent, in radians.
+    #[must_use]
+    fn tan(self) -> Self;
+    /// The hyperbolic tangent.
+    #[must_use]
+    fn tanh(self) -> Self;
+    /// The smaller of the two; a NaN loses to a number.
+    #[must_use]
+    fn min(self, other: Self) -> Self;
+    /// The larger of the two; a NaN loses to a number.
+    #[must_use]
+    fn max(self, other: Self) -> Self;
 }
 
 macro_rules! float_impl {
-    ($t:ty, $abs:ident, $floor:ident, $ceil:ident, $sqrt:ident, $exp:ident, $ln:ident, $pow:ident, $sin:ident, $cos:ident) => {
+    ($t:ty, $abs:ident, $floor:ident, $ceil:ident, $sqrt:ident, $exp:ident, $ln:ident, $pow:ident, $sin:ident, $cos:ident, $tan:ident, $tanh:ident, $min:ident, $max:ident) => {
         impl Float for $t {
             const ZERO: Self = 0.0;
             const ONE: Self = 1.0;
@@ -323,11 +335,29 @@ macro_rules! float_impl {
             fn cos(self) -> Self {
                 libm::$cos(self)
             }
+            #[inline]
+            fn tan(self) -> Self {
+                libm::$tan(self)
+            }
+            #[inline]
+            fn tanh(self) -> Self {
+                libm::$tanh(self)
+            }
+            #[inline]
+            fn min(self, other: Self) -> Self {
+                libm::$min(self, other)
+            }
+            #[inline]
+            fn max(self, other: Self) -> Self {
+                libm::$max(self, other)
+            }
         }
     };
 }
 
 float_impl!(
-    f32, fabsf, floorf, ceilf, sqrtf, expf, logf, powf, sinf, cosf
+    f32, fabsf, floorf, ceilf, sqrtf, expf, logf, powf, sinf, cosf, tanf, tanhf, fminf, fmaxf
 );
-float_impl!(f64, fabs, floor, ceil, sqrt, exp, log, pow, sin, cos);
+float_impl!(
+    f64, fabs, floor, ceil, sqrt, exp, log, pow, sin, cos, tan, tanh, fmin, fmax
+);

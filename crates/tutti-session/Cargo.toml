@@ -19,6 +19,8 @@ categories = ["multimedia::audio"]
 workspace = true
 
 [dependencies]
+# The editor's sizes, which name their unit (`dpi::Size`).
+dpi.workspace = true
 # Always: the graph, the engine and transport, the vocabulary, and the nodes
 # the builder inserts (the click) and modulation applies (`Modulation`).
 tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }

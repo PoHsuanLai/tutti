@@ -33,6 +33,8 @@ default = []
 conformance = ["tutti-vst3-ffi/conformance"]
 
 [dependencies]
+# The editor's sizes, which name their unit (`dpi::Size`).
+dpi.workspace = true
 thiserror = "2"
 parking_lot = "0.13"
 crossbeam-channel = "0.5"

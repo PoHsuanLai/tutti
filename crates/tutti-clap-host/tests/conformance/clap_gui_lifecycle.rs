@@ -23,7 +23,8 @@ use std::sync::{Mutex, MutexGuard};
 use crate::support;
 use support::main_thread;
 
-use tutti_clap_host::{ClapLoaded, ContentScale, EditorSize, LoadOptions};
+use dpi::{LogicalSize, PhysicalSize, Size};
+use tutti_clap_host::{ClapLoaded, ContentScale, LoadOptions};
 use tutti_clap_test_plugin::{
     GUI_ASPECT_H, GUI_ASPECT_W, GUI_CALL_ADJUST_SIZE, GUI_CALL_CAN_RESIZE, GUI_CALL_CREATE,
     GUI_CALL_DESTROY, GUI_CALL_GET_RESIZE_HINTS, GUI_CALL_GET_SIZE, GUI_CALL_HIDE,
@@ -343,6 +344,15 @@ fn has_editor_asks_about_the_current_platform_api() {
 /// a test that asked the host what it does could not disagree with the host.
 const PLATFORM_USES_LOGICAL_PIXELS: bool = cfg!(target_os = "macos");
 
+/// `width` by `height` in the unit this platform's window api counts in.
+fn native_size(width: u32, height: u32) -> Size {
+    if PLATFORM_USES_LOGICAL_PIXELS {
+        LogicalSize::new(width, height).into()
+    } else {
+        PhysicalSize::new(width, height).into()
+    }
+}
+
 /// The `GUI_CALL_*` ids `open_editor` must produce on this platform.
 fn expected_embed_sequence() -> Vec<u32> {
     let mut expected = vec![GUI_CALL_IS_API_SUPPORTED, GUI_CALL_CREATE];
@@ -374,10 +384,7 @@ fn open_editor_runs_the_spec_embed_sequence() {
 
     assert_eq!(
         size,
-        EditorSize {
-            width: GUI_WIDTH,
-            height: GUI_HEIGHT
-        },
+        native_size(GUI_WIDTH, GUI_HEIGHT),
         "the host must report the plugin's own `get_size`, not its 800x600 \
          fallback — the probe deliberately reports neither 800 nor 600"
     );
@@ -811,6 +818,35 @@ fn editor_capabilities_touches_nothing_before_create() {
 // resize_editor — and the adjust_size contract.
 // ===========================================================================
 
+/// **A size in the unit the window api does not count in is converted at the
+/// scale the editor opened with**: 2x here, so 100 points are 200 pixels.
+/// Spec: clap.ext.gui.set_size
+#[test]
+fn resize_editor_converts_a_size_in_the_other_unit_at_the_open_scale() {
+    let probe = Probe::acquire(GuiMode::Embeddable);
+    let mut loaded = probe.load();
+    loaded
+        .open_editor(
+            &main_thread(),
+            StandInWindow.handle(),
+            ContentScale::new(2.0).expect("a scale"),
+        )
+        .expect("opens");
+
+    let (width, height) = (GUI_SIZE_QUANTUM * 20, GUI_SIZE_QUANTUM * 10);
+    let other = if PLATFORM_USES_LOGICAL_PIXELS {
+        Size::from(PhysicalSize::new(width * 2, height * 2))
+    } else {
+        Size::from(LogicalSize::new(width / 2, height / 2))
+    };
+    assert_eq!(
+        loaded
+            .resize_editor(&main_thread(), other)
+            .expect("resize succeeds"),
+        native_size(width, height)
+    );
+}
+
 /// The host must forward the size the plugin **snapped to**, not the size the
 /// user dragged to.
 ///
@@ -832,20 +868,18 @@ fn resize_editor_forwards_the_adjusted_size() {
     gui_reset();
 
     // Deliberately off-grid in both axes.
-    let requested = EditorSize {
-        width: GUI_SIZE_QUANTUM * 33 + 7,
-        height: GUI_SIZE_QUANTUM * 21 + 3,
-    };
+    let (width, height) = (GUI_SIZE_QUANTUM * 33 + 7, GUI_SIZE_QUANTUM * 21 + 3);
+    let requested = native_size(width, height);
     let applied = loaded
         .resize_editor(&main_thread(), requested)
         .expect("resize succeeds");
 
     assert_eq!(
         applied,
-        EditorSize {
-            width: requested.width / GUI_SIZE_QUANTUM * GUI_SIZE_QUANTUM,
-            height: requested.height / GUI_SIZE_QUANTUM * GUI_SIZE_QUANTUM,
-        },
+        native_size(
+            width / GUI_SIZE_QUANTUM * GUI_SIZE_QUANTUM,
+            height / GUI_SIZE_QUANTUM * GUI_SIZE_QUANTUM,
+        ),
         "the returned size is the plugin's snap, not the raw request"
     );
 
@@ -858,12 +892,15 @@ fn resize_editor_forwards_the_adjusted_size() {
     );
     assert_eq!(
         (cap.last_adjust_in_w, cap.last_adjust_in_h),
-        (requested.width, requested.height),
+        (width, height),
         "the raw request reaches adjust_size unmodified"
     );
     assert_eq!(
         (cap.last_set_size_w, cap.last_set_size_h),
-        (applied.width, applied.height),
+        (
+            width / GUI_SIZE_QUANTUM * GUI_SIZE_QUANTUM,
+            height / GUI_SIZE_QUANTUM * GUI_SIZE_QUANTUM
+        ),
         "and the *adjusted* size is what reaches set_size"
     );
 }
@@ -892,13 +929,7 @@ fn resize_editor_fails_when_plugin_cannot_adjust() {
     gui_reset();
 
     let err = loaded
-        .resize_editor(
-            &main_thread(),
-            EditorSize {
-                width: 1234,
-                height: 567,
-            },
-        )
+        .resize_editor(&main_thread(), native_size(1234, 567))
         .expect_err("a fixed-size editor cannot honour an arbitrary size");
 
     let msg = format!("{err}");
@@ -981,10 +1012,7 @@ fn take_editor_resize_request_delivers_once() {
 
     assert_eq!(
         loaded.take_editor_resize_request(),
-        Some(EditorSize {
-            width: GUI_REQUESTED_RESIZE_W,
-            height: GUI_REQUESTED_RESIZE_H,
-        }),
+        Some(native_size(GUI_REQUESTED_RESIZE_W, GUI_REQUESTED_RESIZE_H)),
         "the host must deliver the plugin's requested size — the probe asks for \
          a size unrelated to its own get_size, so echoing the initial size fails"
     );

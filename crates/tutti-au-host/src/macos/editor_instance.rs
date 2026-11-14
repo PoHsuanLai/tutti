@@ -7,10 +7,10 @@
 
 use std::path::Path;
 
+use dpi::Size;
 use tutti_plugin_types::{
-    ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorSize, EditorWindow,
-    InProcess, Load, MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult,
-    WindowHandle,
+    ContentScale, Control, Editor, EditorCapabilities, EditorError, EditorWindow, InProcess, Load,
+    MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult, WindowHandle,
 };
 
 use crate::instance::AuLoaded;
@@ -101,7 +101,7 @@ impl EditorWindow for AuEditorInstance {
         main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
+    ) -> PluginResult<Size> {
         EditorWindow::open_editor(&mut self.inner, main, parent, scale)
     }
 
@@ -118,16 +118,12 @@ impl EditorWindow for AuEditorInstance {
         EditorCapabilities::default()
     }
 
-    fn set_editor_size(
-        &mut self,
-        _main: &MainThread,
-        _requested: EditorSize,
-    ) -> PluginResult<EditorSize> {
+    fn set_editor_size(&mut self, _main: &MainThread, _requested: Size) -> PluginResult<Size> {
         Err(editor_error("set_editor_size not supported".into()))
     }
 
     /// Nothing asked: this surface never queues a resize request.
-    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<EditorSize> {
+    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<Size> {
         None
     }
 }

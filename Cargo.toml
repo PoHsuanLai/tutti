@@ -149,6 +149,10 @@ missing_panics_doc = "warn"
 [workspace.dependencies]
 thiserror = "2"
 libloading = "0.9"
+# Physical and logical sizes and the scale factor between them (`Size`), the units a plugin
+# editor's geometry is written in. `std` (the default) is on: without it `dpi` calls `libm`,
+# which it does not depend on.
+dpi = "0.1.2"
 # The W3C UI Events key vocabulary (`Key`, `Code`, `Modifiers`, `KeyState`) a plugin editor's
 # key events are written in, so a windowing frontend converts name for name.
 keyboard-types = { version = "0.8.3", default-features = false }

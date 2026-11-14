@@ -364,7 +364,7 @@ pub enum RootTopologyStatus {
 /// // One global output: the mono device takes it as it is, unfolded.
 /// let mut session = Session::builder()
 ///     .outputs_floor(ChannelLayout::MONO)
-///     .build_offline(SampleRate::SR_48K, ChannelLayout::MONO, MaxBlock::of(Samples(64)))
+///     .outputs(ChannelLayout::MONO).max_block(MaxBlock::of(Samples(64))).build()
 ///     .unwrap();
 /// let (dc, _) = session.graph().add(ForkByClone(Const::mono(0.5)));
 /// session.graph().set_sources_hard(Root::output(0), [OutPort::new(dc, 0)]).unwrap();
@@ -467,9 +467,22 @@ pub struct Session {
 }
 
 impl Session {
-    /// A builder with the defaults.
-    pub fn builder() -> crate::SessionBuilder {
+    /// A builder with the defaults: offline, 48 kHz, stereo, blocks of up to
+    /// [`LIVE_MAX_BLOCK`](crate::LIVE_MAX_BLOCK) frames
+    /// ([`SessionBuilder`](crate::SessionBuilder) has the options and the
+    /// device state).
+    pub fn builder() -> crate::SessionBuilder<crate::Offline> {
         crate::SessionBuilder::default()
+    }
+
+    /// An offline session at `rate` with every other option at its default:
+    /// shorthand for `Session::builder().sample_rate(rate).build()`.
+    ///
+    /// # Errors
+    ///
+    /// As [`SessionBuilder::build`](crate::SessionBuilder::build).
+    pub fn new(rate: tutti_types::SampleRate) -> crate::Result<Self> {
+        Self::builder().sample_rate(rate).build()
     }
 
     /// The graph, to edit. An edit marks it edited; the next
@@ -501,7 +514,7 @@ impl Session {
     /// places the file from the declaration (`tutti_export::Setup::with_root`, set by the export's fork).
     ///
     /// The device a declaration must place on is the one the session renders
-    /// to (`build_offline`'s layout, or the open device's, and the new one on a
+    /// to (the offline `outputs`, or the open device's, and the new one on a
     /// restart); a detached session has none, and the file is checked at the
     /// export.
     ///
@@ -902,12 +915,12 @@ impl Session {
     /// # Panics
     ///
     /// On a session not built with
-    /// [`build_offline`](crate::SessionBuilder::build_offline): its engine
+    /// [`build`](crate::SessionBuilder::build): its engine
     /// is a device's callback, or there is none.
     pub fn render(&self, output: &mut tutti_types::InterleavedMut<'_>) {
         self.engine
             .as_ref()
-            .expect("render needs an offline session (SessionBuilder::build_offline)")
+            .expect("render needs an offline session (SessionBuilder::build)")
             .process(output);
     }
 

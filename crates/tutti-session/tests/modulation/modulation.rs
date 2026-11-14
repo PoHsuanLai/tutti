@@ -10,7 +10,6 @@ use crate::common;
 
 use std::cell::Cell;
 use std::time::{Duration, Instant};
-use tutti_types::MaxBlock;
 
 use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
@@ -38,11 +37,8 @@ const DECLICK: usize = 256;
 /// An offline session at 48 kHz, stereo.
 fn offline() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds")
 }
 

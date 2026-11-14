@@ -4,7 +4,7 @@
 use tutti_session::Session;
 use tutti_tempo::{TempoMap, TempoPoint};
 use tutti_transport::MotionEvent;
-use tutti_types::{Beat, Bpm, ChannelLayout, InterleavedMut, MaxBlock, SampleRate, Samples};
+use tutti_types::{Beat, Bpm, ChannelLayout, InterleavedMut, SampleRate};
 
 const RATE: f64 = 48_000.0;
 const BLOCK: usize = 512;
@@ -20,11 +20,8 @@ const BLOCK: usize = 512;
 #[test]
 fn a_step_published_behind_the_playhead_moves_no_beat() {
     let s = Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     let mut buf = vec![0.0f32; BLOCK * 2];
     let mut block = |s: &Session| {

@@ -37,8 +37,8 @@ use std::path::{Path, PathBuf};
 use tutti::export::Written;
 use tutti::session::Master;
 use tutti::{
-    Beat, Bounce, Bpm, ChannelLayout, Format, MaxBlock, MidiChannel, MidiFile, NodeKey, NoteNumber,
-    Pcm, PluginLoadRequest, PluginRef, PluginState, Range, Root, SampleRate, Samples, Session,
+    Beat, Bounce, Bpm, Format, MaxBlock, MidiChannel, MidiFile, NodeKey, NoteNumber, Pcm,
+    PluginLoadRequest, PluginRef, PluginState, Range, Root, SampleRate, Samples, Session,
     SessionEvent, Tick, Track,
 };
 
@@ -61,11 +61,10 @@ fn play<M: Master>(
     midi: &Path,
     master: impl FnOnce(Bounce) -> Bounce<NodeKey, M>,
 ) -> Result<M::Result, Box<dyn std::error::Error>> {
-    let mut s = Session::builder().build_offline(
-        RATE,
-        ChannelLayout::STEREO,
-        MaxBlock::of(Samples(512)),
-    )?;
+    let mut s = Session::builder()
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(512)))
+        .build()?;
 
     let plugin = PluginRef::file(plugin).ok_or("not a plugin file")?;
     let mut request = PluginLoadRequest::new(plugin.clone());

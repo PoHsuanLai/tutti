@@ -17,7 +17,7 @@ use tutti_session::{
     FollowClock, FollowTempo, MidiError, MidiEvent, Session, SessionEvent, TempoError,
 };
 use tutti_transport::MotionEvent;
-use tutti_types::{At, Bpm, ChannelLayout, MaxBlock, SampleRate, Samples};
+use tutti_types::{At, Bpm, SampleRate};
 use tutti_ump::{Message, MidiGroup, System, U7, Ump};
 
 const RATE: f64 = 48_000.0;
@@ -29,11 +29,8 @@ fn rig() -> (Session, FakeCounters) {
     let (backend, fake) = FakeBackend::build_with(vec![endpoint(KEYS, "Keys")], vec![], usize::MAX);
     let mut s = Session::builder()
         .midi_hardware_over(backend)
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     let _ = s.update();
     s.midi().connect_input("keys").expect("connects");

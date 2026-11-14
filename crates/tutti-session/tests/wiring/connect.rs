@@ -7,16 +7,10 @@ use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
 use tutti_nodes::testing::{Const, Through};
 use tutti_session::{ConnectError, OutPort, Root, Session};
-use tutti_types::{ChannelLayout, InterleavedMut, MaxBlock, SampleRate, Samples};
+use tutti_types::{ChannelLayout, InterleavedMut};
 
 fn offline() -> Session {
-    Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds")
+    Session::builder().build().expect("builds")
 }
 
 /// The first frame of a committed 64-frame block, per channel.

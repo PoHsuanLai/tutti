@@ -8,22 +8,14 @@
 use tutti_graph::{BusError, BusRef, BusSource, Buses, NodeKey, Unforkable};
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status};
 use tutti_session::{Committed, ConnectError, Edge, EdgeGainError, InPort, OutPort, Root, Session};
-use tutti_types::MaxBlock;
 use tutti_types::{
     Amplitude, BusTopology, ChannelLayout, ChannelTopology, FoldError, InterleavedMut, M3DB,
-    SampleRate, Samples,
 };
 
 const BLOCK: usize = 64;
 
 fn offline() -> Session {
-    Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds")
+    Session::builder().build().expect("builds")
 }
 
 fn layout(n: u16) -> ChannelLayout {

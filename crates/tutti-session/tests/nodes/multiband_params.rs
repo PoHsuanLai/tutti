@@ -11,7 +11,6 @@
 //! (`hp` is 1e-4 of it) and the right tone band 1's (`lp` is 6e-4).
 
 use std::f64::consts::{PI, TAU};
-use tutti_types::MaxBlock;
 
 use tutti_graph::ForkByClone;
 #[cfg(feature = "modulation")]
@@ -22,7 +21,7 @@ use tutti_nodes::{MultibandCompressorNode, MultibandControls};
 use tutti_session::RouteSpec;
 use tutti_session::{InPort, Key, OutPort, Root, Session};
 use tutti_transport::MotionEvent;
-use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate};
 #[cfg(feature = "modulation")]
 use tutti_types::{BeatsPerCycle, Depth};
 use tutti_types::{CompressionRatio, Db, Hz, Seconds, UnitAddr, UnitParam};
@@ -58,11 +57,8 @@ fn expected(hz: f64, g0: f64, g1: f64) -> f64 {
 /// node's controls.
 fn rig() -> (Session, Key<MultibandCompressorNode>, MultibandControls) {
     let mut s = Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     let g = s.graph();
     let (low, _) = g.add(ForkByClone(

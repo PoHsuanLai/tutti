@@ -68,6 +68,7 @@ fn spec() -> OutputSpec {
 fn rig(wire: &Wire) -> (Session, ManualStream, tutti_session::Device) {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut s, device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec(), driver)
         .expect("builds with no device")
         .into_parts();

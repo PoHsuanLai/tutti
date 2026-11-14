@@ -82,7 +82,7 @@ impl Vst2Loaded {
     /// `PluginInstance`'s thread rules).
     ///
     /// [`Control::parameter_text`]: tutti_plugin_types::Control::parameter_text
-    pub fn display_if_current(&self, id: ParamId, value: Normalized) -> Option<String> {
+    pub(crate) fn display_if_current(&self, id: ParamId, value: Normalized) -> Option<String> {
         let current = self.parameter_value(id)?;
         (current.get() == value.get())
             .then(|| self.parameter_display(id))

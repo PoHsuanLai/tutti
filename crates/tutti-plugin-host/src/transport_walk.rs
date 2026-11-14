@@ -200,7 +200,7 @@ impl Stretch {
 ///
 /// Public for `tutti-plugin`'s node of a served plugin, which drives the same piece.
 #[derive(Debug, Default)]
-pub struct TransportWalk {
+pub(crate) struct TransportWalk {
     stretch: Option<Stretch>,
     open: Option<Open>,
 }

@@ -23,7 +23,7 @@ pub enum Helper {
 impl Helper {
     /// The environment variable that names the binary outright.
     #[must_use]
-    pub const fn env_var(self) -> &'static str {
+    pub(crate) const fn env_var(self) -> &'static str {
         match self {
             Self::Server => "TUTTI_PLUGIN_SERVER",
             Self::Probe => "TUTTI_PLUGIN_PROBE",

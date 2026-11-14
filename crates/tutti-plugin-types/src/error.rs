@@ -79,16 +79,6 @@ pub enum Delivered {
     PluginDead,
 }
 
-impl Delivered {
-    /// Returns `true` only for [`Yes`](Self::Yes), for a call site that wants
-    /// a bool. Named rather than a `From` impl so the collapse is visible at the
-    /// site that chooses it.
-    #[must_use]
-    pub fn is_delivered(self) -> bool {
-        matches!(self, Self::Yes)
-    }
-}
-
 /// Why a preset call did not do what it was asked.
 ///
 /// Three answers a bare `Option<bool>` kept in one value: the plugin has no

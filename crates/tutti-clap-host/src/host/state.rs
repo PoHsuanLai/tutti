@@ -120,47 +120,17 @@ impl ParamState {
     }
 }
 
-/// Port-topology change notifications, from the audio-ports family of
-/// extensions.
-#[derive(Debug)]
-pub struct AudioPortState {
-    /// The set of selectable port configurations changed
-    /// (`CLAP_EXT_AUDIO_PORTS_CONFIG`).
-    pub config_changed: AtomicBool,
-    /// The plugin's ambisonic ordering/normalization changed.
-    pub ambisonic_changed: AtomicBool,
-    /// The plugin's surround channel map changed.
-    pub surround_changed: AtomicBool,
-}
-
-impl AudioPortState {
-    fn new() -> Self {
-        Self {
-            config_changed: AtomicBool::new(false),
-            ambisonic_changed: AtomicBool::new(false),
-            surround_changed: AtomicBool::new(false),
-        }
-    }
-}
-
-/// Note-side change notifications, from the note-ports, note-names and
-/// voice-info extensions.
+/// Note-side change notifications, from the note-ports extension.
 #[derive(Debug)]
 pub struct NoteState {
     /// The note-port layout changed and must be re-enumerated.
     pub ports_changed: AtomicBool,
-    /// The plugin's per-key names changed (a drum kit swapping its mapping).
-    pub names_changed: AtomicBool,
-    /// The plugin's reported voice count or capacity changed.
-    pub voice_info_changed: AtomicBool,
 }
 
 impl NoteState {
     fn new() -> Self {
         Self {
             ports_changed: AtomicBool::new(false),
-            names_changed: AtomicBool::new(false),
-            voice_info_changed: AtomicBool::new(false),
         }
     }
 }
@@ -396,9 +366,7 @@ pub struct HostState {
     pub gui: GuiState,
     /// Parameter rescan and flush requests.
     pub params: ParamState,
-    /// Audio-port topology change notifications.
-    pub audio_ports: AudioPortState,
-    /// Note-port, note-name and voice-info change notifications.
+    /// Note-port change notifications.
     pub notes: NoteState,
     /// The bounded ring of routed `clap.log` lines.
     pub log: LogState,
@@ -425,7 +393,6 @@ impl HostState {
             processing: ProcessingState::new(),
             gui: GuiState::new(),
             params: ParamState::new(),
-            audio_ports: AudioPortState::new(),
             notes: NoteState::new(),
             log: LogState::new(),
             timer: TimerState::new(),

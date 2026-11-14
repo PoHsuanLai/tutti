@@ -359,15 +359,6 @@ impl Session {
                     .and_then(|p| p.plugin().parameter_value_from_text(main, param_id, &text));
                 Ok(BridgeMessage::ParameterValueFromText { value }.into())
             }
-            M::GetParameterInfo { param_id } => {
-                let info = self.plugin.as_ref().and_then(|p| {
-                    p.plugin()
-                        .parameters(main)
-                        .into_iter()
-                        .find(|info| info.id() == param_id)
-                });
-                Ok(BridgeMessage::ParameterInfoResponse { info }.into())
-            }
 
             M::SetSampleRate { rate } => {
                 // A rate no clock can run at is refused by the wire itself: a
@@ -1267,13 +1258,6 @@ mod tests {
                 EmptyPayload,
             ),
             (
-                "GetParameterInfo",
-                HostMessage::GetParameterInfo {
-                    param_id: ParamId::new(0),
-                },
-                EmptyPayload,
-            ),
-            (
                 "SaveState",
                 HostMessage::SaveState {
                     state_use: StateUse::Project,
@@ -1319,9 +1303,6 @@ mod tests {
                     }
                     BridgeMessage::ParameterList { parameters } => {
                         assert!(parameters.is_empty(), "{name}: got parameters")
-                    }
-                    BridgeMessage::ParameterInfoResponse { info } => {
-                        assert!(info.is_none(), "{name}: got param info")
                     }
                     BridgeMessage::StateChunk { bytes, last, .. } => {
                         assert!(bytes.is_empty(), "{name}: got state bytes");
@@ -2077,25 +2058,6 @@ mod tests {
         match reply {
             BridgeMessage::ParameterValue { value } => assert!(value.is_some()),
             other => panic!("expected ParameterValue, got {other:?}"),
-        }
-    }
-
-    #[test]
-    #[cfg(feature = "clap")]
-    fn get_parameter_info_with_plugin() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let (mut s, _shm) = load_clap("get_param_info_clap", SampleFormat::Float32);
-        let param_id = first_param_id(&mut s);
-        let reply = s
-            .handle(&main_thread(), HostMessage::GetParameterInfo { param_id })
-            .unwrap()
-            .into_reply();
-        match reply {
-            BridgeMessage::ParameterInfoResponse { info } => {
-                let info = info.expect("info should exist");
-                assert_eq!(info.id(), param_id);
-            }
-            other => panic!("expected ParameterInfoResponse, got {other:?}"),
         }
     }
 

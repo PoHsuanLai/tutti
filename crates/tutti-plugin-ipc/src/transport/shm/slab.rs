@@ -227,7 +227,7 @@ impl AudioSlab {
     /// Equal to `seq` means "block `seq`'s inputs are there and complete".
     /// Anything else means the slot holds a different block — read nothing.
     #[inline]
-    pub fn input_sequence(&self, seq: u64) -> u64 {
+    pub(crate) fn input_sequence(&self, seq: u64) -> u64 {
         self.mapping
             .header()
             .sequence(Direction::Input, slot_for(seq))
@@ -235,7 +235,7 @@ impl AudioSlab {
 
     /// Which block currently occupies the output slot that `seq` maps to.
     #[inline]
-    pub fn output_sequence(&self, seq: u64) -> u64 {
+    pub(crate) fn output_sequence(&self, seq: u64) -> u64 {
         self.mapping
             .header()
             .sequence(Direction::Output, slot_for(seq))

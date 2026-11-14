@@ -60,7 +60,7 @@ impl FileFacts {
     /// the extension. A scan uses it: it keys a file by its canonical path but
     /// knows the format from the name it was found under, and a link's target
     /// may be named anything.
-    pub fn read_as(path: impl AsRef<Path>, format: Option<PluginFormat>) -> Self {
+    pub(crate) fn read_as(path: impl AsRef<Path>, format: Option<PluginFormat>) -> Self {
         let path = path.as_ref();
         let metadata = std::fs::metadata(path);
         let mut mtime = metadata.as_ref().ok().and_then(modified_secs);

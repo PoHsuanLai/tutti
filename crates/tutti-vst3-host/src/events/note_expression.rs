@@ -92,28 +92,3 @@ impl ToEvent for NoteExpressionIntValue {
         ))
     }
 }
-
-pub(super) fn decode(event: &Event) -> Option<NoteExpressionValue> {
-    let Payload::ExpressionValue(e) = &event.payload else {
-        return None;
-    };
-    Some(NoteExpressionValue {
-        sample_offset: event.sample_offset(),
-        note_id: e.noteId,
-        expression_type: expression_type_from_id(e.typeId)?,
-        value: e.value,
-    })
-}
-
-pub(super) fn decode_int(event: &Event) -> Option<NoteExpressionIntValue> {
-    let Payload::ExpressionInt(e) = &event.payload else {
-        return None;
-    };
-    Some(NoteExpressionIntValue {
-        sample_offset: event.sample_offset(),
-        note_id: e.noteId,
-        type_id: e.typeId,
-        // MIDI-2's 64 bits in VST3's unsigned slot: the same bits, read signed.
-        value: e.value.cast_signed(),
-    })
-}

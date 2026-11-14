@@ -9,6 +9,7 @@
 //! language the pattern accepted (each gate's docs say how).
 
 mod alloc_binaries;
+mod buffers;
 mod canonical_paths;
 mod clap_sys;
 mod comments;
@@ -137,6 +138,8 @@ pub(crate) enum Gate {
     PlatformSeam,
     /// The spec inventories are well formed, tags name rows, CLAP matches `clap-sys`.
     Conformance,
+    /// A public item names audio with a fixed sample format only as a row of the list.
+    Buffers,
 }
 
 impl Gate {
@@ -162,6 +165,7 @@ impl Gate {
             Gate::AllocBinaries => "gate check-alloc-binaries".to_owned(),
             Gate::PlatformSeam => "gate check-platform-seam".to_owned(),
             Gate::Conformance => "gate check-conformance".to_owned(),
+            Gate::Buffers => "gate check-buffers".to_owned(),
         }
     }
 
@@ -190,6 +194,7 @@ impl Gate {
             Gate::DocIdents => doc_idents::check(&tree),
             Gate::PassiveTests => passive_tests::check(&tree),
             Gate::Comments => comments::check(&tree),
+            Gate::Buffers => buffers::check(&tree, buffers::MIN_SITES),
             Gate::AllocBinaries => alloc_binaries::check(&tree, alloc_binaries::ALLOWED),
             Gate::PlatformSeam => platform_seam::check(&tree, platform_seam::ALLOW),
             Gate::Conformance => {

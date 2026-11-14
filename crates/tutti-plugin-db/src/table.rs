@@ -273,14 +273,6 @@ impl PluginDb {
             .is_some_and(|row| facts::is_blacklisted_and_unchanged(row, facts))
     }
 
-    /// Whether `path` has no row or its file's time has changed since it was
-    /// probed.
-    #[must_use]
-    pub fn needs_rescan(&self, path: &Path, facts: &FileFacts) -> bool {
-        self.row(path)
-            .is_none_or(|row| facts::needs_rescan(row, facts))
-    }
-
     /// Blacklists `path` with a reason, stamped with the file's time in `facts`.
     pub fn blacklist(&mut self, path: &Path, reason: String, facts: &FileFacts) {
         self.apply(Delta::put(path, FileRow::blacklisted(reason, facts)));
@@ -324,6 +316,7 @@ impl PluginDb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::facts::{ScanDecision, classify};
     use crate::format::PluginClass;
 
     const T: u64 = 1_700_000_000;
@@ -365,14 +358,19 @@ mod tests {
 
     #[test]
     fn a_path_with_no_row_needs_a_rescan() {
-        assert!(PluginDb::new().needs_rescan(Path::new("/p/unknown.vst3"), &facts(T)));
+        let db = PluginDb::new();
+        assert_eq!(
+            classify(db.row(Path::new("/p/unknown.vst3")), &facts(T)),
+            ScanDecision::Probe
+        );
     }
 
     #[test]
     fn needs_rescan_follows_the_facts_time() {
         let db = db_with("/p/a.vst3", row(T));
-        assert!(!db.needs_rescan(Path::new("/p/a.vst3"), &facts(T)));
-        assert!(db.needs_rescan(Path::new("/p/a.vst3"), &facts(T + 1)));
+        let path = Path::new("/p/a.vst3");
+        assert_eq!(classify(db.row(path), &facts(T)), ScanDecision::UpToDate);
+        assert_eq!(classify(db.row(path), &facts(T + 1)), ScanDecision::Probe);
     }
 
     #[test]
@@ -432,7 +430,10 @@ mod tests {
         db.blacklist(Path::new("/p/a.vst3"), "boom".into(), &facts(T));
         assert!(db.unblacklist(Path::new("/p/a.vst3")));
         assert!(db.row(Path::new("/p/a.vst3")).is_none());
-        assert!(db.needs_rescan(Path::new("/p/a.vst3"), &facts(T)));
+        assert_eq!(
+            classify(db.row(Path::new("/p/a.vst3")), &facts(T)),
+            ScanDecision::Probe
+        );
         assert!(!db.unblacklist(Path::new("/p/a.vst3")));
 
         db.apply(Delta::put("/p/healthy.vst3", row(T)));

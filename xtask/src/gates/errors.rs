@@ -87,11 +87,6 @@ pub(super) const ALLOW: &[(&str, &str, &str)] = &[
         "temporary: plugins session converts it",
     ),
     (
-        "tutti-plugin-db",
-        "ScanBusy",
-        "temporary: plugins session converts it",
-    ),
-    (
         "tutti-plugin-types",
         "PluginError",
         "temporary: plugins session converts it",
@@ -99,36 +94,6 @@ pub(super) const ALLOW: &[(&str, &str, &str)] = &[
     (
         "tutti-plugin-types",
         "PluginFailure",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-vst2-ffi",
-        "ChunkError",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-vst2-ffi",
-        "PluginLoadError",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-vst3-ffi",
-        "Vst3Error",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-vst3-ffi",
-        "LoadError",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-vst3-ffi",
-        "UnknownEventKind",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-vst3-host",
-        "ProcessFailed",
         "temporary: plugins session converts it",
     ),
     (

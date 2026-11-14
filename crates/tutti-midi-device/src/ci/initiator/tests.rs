@@ -2,27 +2,16 @@ use std::time::{Duration, Instant};
 use tutti_ump::DeviceIdentity;
 use tutti_ump::{MidiChannel, U7};
 
+use super::super::testing::{OTHER, OURS, PEER, channel, header_from, nak_with, wait, wait_with};
 use super::super::*;
-
-const OURS: u32 = 0x0100_0001;
-const PEER: u32 = 0x0200_0002;
-const OTHER: u32 = 0x0300_0003;
-
-fn muid(raw: u32) -> Muid {
-    Muid::new(raw).unwrap()
-}
 
 fn profile(n: u8) -> ProfileId {
     ProfileId::from_bytes([0x7E, n, 0, 1, 1]).unwrap()
 }
 
-fn channel(n: u8) -> CiDeviceId {
-    CiDeviceId::Channel(MidiChannel::of(n))
-}
-
 fn start() -> (ProfileInitiator, Vec<ProfileAction>, Instant) {
     let now = Instant::now();
-    let (initiator, actions) = ProfileInitiator::new(muid(OURS), muid(PEER), now);
+    let (initiator, actions) = ProfileInitiator::new(Muid::of(OURS), Muid::of(PEER), now);
     (initiator, actions, now)
 }
 
@@ -34,16 +23,8 @@ fn known() -> (ProfileInitiator, Instant) {
     (i, now)
 }
 
-fn header(source: u32, address: CiDeviceId) -> CiHeader {
-    CiHeader {
-        device_id: address,
-        ci_version: CI_VERSION,
-        source: muid(source),
-    }
-}
-
 fn from_peer(address: CiDeviceId) -> CiHeader {
-    header(PEER, address)
+    header_from(PEER, address)
 }
 
 fn reply_from(
@@ -54,8 +35,8 @@ fn reply_from(
     disabled: &[ProfileId],
 ) -> Decoded {
     Decoded::Message(CiMessage::ProfileReply {
-        header: header(source, address),
-        to: muid(to),
+        header: header_from(source, address),
+        to: Muid::of(to),
         profiles: ProfileLists::new(enabled.to_vec(), disabled.to_vec()).unwrap(),
     })
 }
@@ -66,7 +47,7 @@ fn reply(address: CiDeviceId, enabled: &[ProfileId], disabled: &[ProfileId]) -> 
 
 fn enabled(address: CiDeviceId, p: ProfileId, channels: u16) -> Decoded {
     Decoded::Message(CiMessage::ProfileEnabled {
-        header: header(PEER, address),
+        header: header_from(PEER, address),
         profile: p,
         channels: ProfileChannels::of(channels),
     })
@@ -74,17 +55,9 @@ fn enabled(address: CiDeviceId, p: ProfileId, channels: u16) -> Decoded {
 
 fn disabled(address: CiDeviceId, p: ProfileId, channels: u16) -> Decoded {
     Decoded::Message(CiMessage::ProfileDisabled {
-        header: header(PEER, address),
+        header: header_from(PEER, address),
         profile: p,
         channels: ProfileChannels::of(channels),
-    })
-}
-
-fn nak(address: CiDeviceId, original: u8, status: U7, p: ProfileId) -> Decoded {
-    Decoded::Message(CiMessage::Nak {
-        header: header(PEER, address),
-        to: muid(OURS),
-        nak: Nak::new(U7::of(original), status).with_details(p.to_bytes().map(U7::of)),
     })
 }
 
@@ -100,8 +73,8 @@ fn it_starts_with_a_profile_inquiry_to_the_function_block_from_us_to_the_peer() 
         panic!("one Inquiry, got {actions:?}");
     };
     assert_eq!(header.device_id, CiDeviceId::FunctionBlock);
-    assert_eq!(header.source, muid(OURS));
-    assert_eq!(*to, muid(PEER));
+    assert_eq!(header.source, Muid::of(OURS));
+    assert_eq!(*to, Muid::of(PEER));
     assert_eq!(initiator.deadline(), Some(now + PROFILE_TIMEOUT));
     assert!(!initiator.is_known());
 }
@@ -237,8 +210,8 @@ fn an_inquiry_that_is_never_finished_times_out_and_keeps_what_it_heard() {
 fn a_nak_of_the_inquiry_ends_it() {
     let (mut i, _, now) = start();
     let refusal = Decoded::Message(CiMessage::Nak {
-        header: header(PEER, CiDeviceId::FunctionBlock),
-        to: muid(OURS),
+        header: header_from(PEER, CiDeviceId::FunctionBlock),
+        to: Muid::of(OURS),
         nak: Nak::new(U7::of(0x20), Nak::STATUS_MESSAGE_NOT_SUPPORTED),
     });
     let actions = i.on_message(&refusal, now);
@@ -261,7 +234,7 @@ fn the_reports_update_the_table_and_say_what_changed() {
 
     // Added (§7.4): newly supported, disabled.
     let added = Decoded::Message(CiMessage::ProfileAdded {
-        header: header(PEER, channel(1)),
+        header: header_from(PEER, channel(1)),
         profile: p,
     });
     assert_eq!(
@@ -296,7 +269,7 @@ fn the_reports_update_the_table_and_say_what_changed() {
 
     // Removed (§7.5).
     let removed = Decoded::Message(CiMessage::ProfileRemoved {
-        header: header(PEER, channel(1)),
+        header: header_from(PEER, channel(1)),
         profile: p,
     });
     assert_eq!(
@@ -328,7 +301,7 @@ fn a_report_of_a_profile_the_table_lacks_adds_it() {
 fn a_report_from_another_source_is_not_this_peers() {
     let (mut i, _, now) = start();
     let other = Decoded::Message(CiMessage::ProfileEnabled {
-        header: header(OTHER, channel(0)),
+        header: header_from(OTHER, channel(0)),
         profile: profile(1),
         channels: ProfileChannels::of(1),
     });
@@ -355,7 +328,7 @@ fn a_report_at_one_address_leaves_the_same_profile_at_another_alone() {
 #[test]
 fn a_version_1_peers_report_has_no_channel_count() {
     let (mut i, _, now) = start();
-    let mut h = header(PEER, channel(0));
+    let mut h = header_from(PEER, channel(0));
     h.ci_version = CiVersion::of(1);
     i.on_message(
         &Decoded::Message(CiMessage::ProfileEnabled {
@@ -392,7 +365,7 @@ fn set_on_a_channel_sends_the_request_with_its_channel_count() {
     };
     assert_eq!(
         (header.device_id, header.source, *to, *p),
-        (channel(6), muid(OURS), muid(PEER), profile(1))
+        (channel(6), Muid::of(OURS), Muid::of(PEER), profile(1))
     );
     assert_eq!(*channels, ProfileChannels::of(7));
 }
@@ -510,7 +483,7 @@ fn a_report_from_another_muid_does_not_resolve_a_request() {
     let (mut i, _, now) = start();
     i.set_off(channel(0), profile(1), now).unwrap();
     let other = Decoded::Message(CiMessage::ProfileDisabled {
-        header: header(OTHER, channel(0)),
+        header: header_from(OTHER, channel(0)),
         profile: profile(1),
         channels: ProfileChannels::of(1),
     });
@@ -525,7 +498,12 @@ fn a_nak_of_a_set_resolves_it_as_refused_whatever_its_status() {
         i.set_on(ProfileTarget::FunctionBlock, profile(1), now)
             .unwrap();
         let actions = i.on_message(
-            &nak(CiDeviceId::FunctionBlock, 0x22, status, profile(1)),
+            &nak_with(
+                CiDeviceId::FunctionBlock,
+                0x22,
+                status,
+                profile(1).to_bytes(),
+            ),
             now,
         );
         let [
@@ -555,23 +533,23 @@ fn a_nak_for_another_profile_or_another_message_resolves_nothing() {
     i.set_on(ProfileTarget::Group, profile(1), now).unwrap();
     // The details name another Profile; the original message is a Set Off; another address.
     for refusal in [
-        nak(
+        nak_with(
             CiDeviceId::Group,
             0x22,
             Nak::STATUS_PROFILE_NOT_SUPPORTED,
-            profile(2),
+            profile(2).to_bytes(),
         ),
-        nak(
+        nak_with(
             CiDeviceId::Group,
             0x23,
             Nak::STATUS_PROFILE_NOT_SUPPORTED,
-            profile(1),
+            profile(1).to_bytes(),
         ),
-        nak(
+        nak_with(
             channel(0),
             0x22,
             Nak::STATUS_PROFILE_NOT_SUPPORTED,
-            profile(1),
+            profile(1).to_bytes(),
         ),
     ] {
         assert!(i.on_message(&refusal, now).is_empty());
@@ -584,8 +562,8 @@ fn a_nak_from_another_muid_resolves_nothing() {
     let (mut i, _, now) = start();
     i.set_on(ProfileTarget::Group, profile(1), now).unwrap();
     let foreign = Decoded::Message(CiMessage::Nak {
-        header: header(OTHER, CiDeviceId::Group),
-        to: muid(OURS),
+        header: header_from(OTHER, CiDeviceId::Group),
+        to: Muid::of(OURS),
         nak: Nak::new(U7::of(0x22), Nak::STATUS_PROFILE_NOT_SUPPORTED)
             .with_details(profile(1).to_bytes().map(U7::of)),
     });
@@ -650,7 +628,7 @@ fn details_resolves_on_the_reply_that_echoes_the_profile_and_target() {
     };
     assert_eq!(
         (header.device_id, *to, *p, *t),
-        (channel(2), muid(PEER), profile(1), target)
+        (channel(2), Muid::of(PEER), profile(1), target)
     );
 
     let data = ChannelsDetail {
@@ -661,7 +639,7 @@ fn details_resolves_on_the_reply_that_echoes_the_profile_and_target() {
     let answer = |address, p, target, to| {
         Decoded::Message(CiMessage::ProfileDetailsReply {
             header: from_peer(address),
-            to: muid(to),
+            to: Muid::of(to),
             profile: p,
             target,
             data: data.clone(),
@@ -702,11 +680,11 @@ fn details_is_refused_by_a_nak_0x04_and_times_out() {
     let target = InquiryTarget::NUMBER_OF_CHANNELS;
     i.details(channel(2), profile(1), target, now).unwrap();
     let actions = i.on_message(
-        &nak(
+        &nak_with(
             channel(2),
             0x28,
             Nak::STATUS_PROFILE_NOT_SUPPORTED,
-            profile(1),
+            profile(1).to_bytes(),
         ),
         now,
     );
@@ -728,9 +706,9 @@ fn details_is_refused_by_a_nak_0x04_and_times_out() {
 fn profile_specific_data_from_the_peer_is_handed_out_whole() {
     let (mut i, _, now) = start();
     let data = SpecificData::new(vec![1, 2, 3]).unwrap();
-    for to in [Destination::Broadcast, Destination::Muid(muid(OURS))] {
+    for to in [Destination::Broadcast, Destination::Muid(Muid::of(OURS))] {
         let message = Decoded::Message(CiMessage::ProfileSpecificData {
-            header: header(PEER, channel(9)),
+            header: header_from(PEER, channel(9)),
             to,
             profile: profile(1),
             data: data.clone(),
@@ -751,8 +729,8 @@ fn profile_specific_data_for_another_muid_or_from_another_source_is_not_ours() {
     let (mut i, _, now) = start();
     for (source, to) in [(PEER, OTHER), (OTHER, OURS)] {
         let message = Decoded::Message(CiMessage::ProfileSpecificData {
-            header: header(source, channel(0)),
-            to: Destination::Muid(muid(to)),
+            header: header_from(source, channel(0)),
+            to: Destination::Muid(Muid::of(to)),
             profile: profile(1),
             data: SpecificData::default(),
         });
@@ -803,21 +781,6 @@ fn the_wire_of_what_it_sends_decodes_back() {
     }
 }
 
-fn wait_ack(
-    address: CiDeviceId,
-    original: u8,
-    tenths_of_a_second: u8,
-    p: Option<ProfileId>,
-) -> Decoded {
-    Decoded::Message(CiMessage::Ack {
-        header: header(PEER, address),
-        to: muid(OURS),
-        ack: Ack::new(U7::of(original), Ack::STATUS_TIMEOUT_WAIT)
-            .with_status_data(U7::of(tenths_of_a_second))
-            .with_details(p.map_or([0; 5], ProfileId::to_bytes).map(U7::of)),
-    })
-}
-
 // §5.10, Table 14: Timeout Wait, Status Data in multiples of 100 ms.
 #[test]
 fn a_timeout_wait_extends_a_set_until_now_plus_the_time_asked() {
@@ -827,7 +790,7 @@ fn a_timeout_wait_extends_a_set_until_now_plus_the_time_asked() {
     let asked = now + Duration::from_secs(2);
     assert!(
         i.on_message(
-            &wait_ack(CiDeviceId::Group, 0x22, 50, Some(profile(1))),
+            &wait_with(CiDeviceId::Group, 0x22, 50, profile(1).to_bytes()),
             asked
         )
         .is_empty()
@@ -855,19 +818,19 @@ fn a_timeout_wait_that_is_not_for_the_set_extends_nothing() {
     let later = now + Duration::from_secs(1);
     for ack in [
         // Another Profile, another address, another message, another source, another destination.
-        wait_ack(CiDeviceId::Group, 0x22, 100, Some(profile(2))),
-        wait_ack(channel(0), 0x22, 100, Some(profile(1))),
-        wait_ack(CiDeviceId::Group, 0x23, 100, Some(profile(1))),
+        wait_with(CiDeviceId::Group, 0x22, 100, profile(2).to_bytes()),
+        wait_with(channel(0), 0x22, 100, profile(1).to_bytes()),
+        wait_with(CiDeviceId::Group, 0x23, 100, profile(1).to_bytes()),
         Decoded::Message(CiMessage::Ack {
-            header: header(OTHER, CiDeviceId::Group),
-            to: muid(OURS),
+            header: header_from(OTHER, CiDeviceId::Group),
+            to: Muid::of(OURS),
             ack: Ack::new(U7::of(0x22), Ack::STATUS_TIMEOUT_WAIT)
                 .with_status_data(U7::of(100))
                 .with_details(profile(1).to_bytes().map(U7::of)),
         }),
         Decoded::Message(CiMessage::Ack {
-            header: header(PEER, CiDeviceId::Group),
-            to: muid(OTHER),
+            header: header_from(PEER, CiDeviceId::Group),
+            to: Muid::of(OTHER),
             ack: Ack::new(U7::of(0x22), Ack::STATUS_TIMEOUT_WAIT)
                 .with_status_data(U7::of(100))
                 .with_details(profile(1).to_bytes().map(U7::of)),
@@ -884,8 +847,14 @@ fn a_timeout_wait_never_shortens_a_wait_and_a_zero_wait_changes_nothing() {
     let (mut i, now) = known();
     i.set_on(ProfileTarget::Group, profile(1), now).unwrap();
     let before = i.deadline();
-    i.on_message(&wait_ack(CiDeviceId::Group, 0x22, 0, Some(profile(1))), now);
-    i.on_message(&wait_ack(CiDeviceId::Group, 0x22, 5, Some(profile(1))), now);
+    i.on_message(
+        &wait_with(CiDeviceId::Group, 0x22, 0, profile(1).to_bytes()),
+        now,
+    );
+    i.on_message(
+        &wait_with(CiDeviceId::Group, 0x22, 5, profile(1).to_bytes()),
+        now,
+    );
     assert_eq!(i.deadline(), before);
 }
 
@@ -895,8 +864,8 @@ fn a_success_ack_does_not_end_a_set() {
     let (mut i, now) = known();
     i.set_on(ProfileTarget::Group, profile(1), now).unwrap();
     let ack = Decoded::Message(CiMessage::Ack {
-        header: header(PEER, CiDeviceId::Group),
-        to: muid(OURS),
+        header: header_from(PEER, CiDeviceId::Group),
+        to: Muid::of(OURS),
         ack: Ack::new(U7::of(0x22), Ack::STATUS_ACK)
             .with_details(profile(1).to_bytes().map(U7::of)),
     });
@@ -909,13 +878,13 @@ fn a_timeout_wait_for_nothing_in_flight_is_ignored() {
     let (mut i, now) = known();
     assert!(
         i.on_message(
-            &wait_ack(CiDeviceId::Group, 0x22, 50, Some(profile(1))),
+            &wait_with(CiDeviceId::Group, 0x22, 50, profile(1).to_bytes()),
             now
         )
         .is_empty()
     );
     assert!(
-        i.on_message(&wait_ack(CiDeviceId::FunctionBlock, 0x20, 50, None), now)
+        i.on_message(&wait(CiDeviceId::FunctionBlock, 0x20, 50), now)
             .is_empty()
     );
     assert_eq!(i.deadline(), None);
@@ -926,14 +895,17 @@ fn a_timeout_wait_extends_a_details_request() {
     let (mut i, now) = known();
     let target = InquiryTarget::NUMBER_OF_CHANNELS;
     i.details(channel(2), profile(1), target, now).unwrap();
-    i.on_message(&wait_ack(channel(2), 0x28, 100, Some(profile(1))), now);
+    i.on_message(
+        &wait_with(channel(2), 0x28, 100, profile(1).to_bytes()),
+        now,
+    );
     assert_eq!(i.deadline(), Some(now + Duration::from_secs(10)));
 }
 
 #[test]
 fn an_inquiry_with_a_timeout_wait_outlives_the_profile_timeout() {
     let (mut i, _, now) = start();
-    i.on_message(&wait_ack(CiDeviceId::FunctionBlock, 0x20, 100, None), now);
+    i.on_message(&wait(CiDeviceId::FunctionBlock, 0x20, 100), now);
     assert!(i.on_timeout(now + PROFILE_TIMEOUT).is_empty());
     assert!(i.on_timeout(now + Duration::from_secs(9)).is_empty());
     // The set still completes at the final Reply, and a wait past the end is the timeout.
@@ -943,7 +915,7 @@ fn an_inquiry_with_a_timeout_wait_outlives_the_profile_timeout() {
     );
     assert_eq!(actions, [ProfileAction::ProfilesKnown]);
     let (mut i, _, now) = start();
-    i.on_message(&wait_ack(CiDeviceId::FunctionBlock, 0x20, 100, None), now);
+    i.on_message(&wait(CiDeviceId::FunctionBlock, 0x20, 100), now);
     assert_eq!(
         i.on_timeout(now + Duration::from_secs(10)),
         [ProfileAction::InquiryTimedOut]
@@ -969,8 +941,8 @@ fn an_inquiry_of_tuttis_own_responder_completes_with_an_empty_table() {
         || 0x0200_0002,
         now,
     );
-    assert_eq!(device.muid(), muid(PEER));
-    let (mut initiator, mut to_device) = ProfileInitiator::new(muid(OURS), device.muid(), now);
+    assert_eq!(device.muid(), Muid::of(PEER));
+    let (mut initiator, mut to_device) = ProfileInitiator::new(Muid::of(OURS), device.muid(), now);
 
     let mut events = Vec::new();
     for _ in 0..4 {

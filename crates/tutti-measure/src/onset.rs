@@ -155,13 +155,6 @@ impl OnsetConfig {
     pub fn function(&self) -> DetectionFunction {
         self.function
     }
-
-    /// Minimum spacing between accepted onsets, in [`Samples`] — resolved from
-    /// the [`Seconds`] the setter takes, against this config's sample rate.
-    #[inline]
-    pub fn min_gap(&self) -> Samples {
-        self.min_gap
-    }
 }
 
 /// One detected onset.
@@ -729,10 +722,10 @@ mod tests {
     fn the_gap_is_expressed_in_seconds() {
         let cfg = OnsetConfig::new(geometry(), DetectionFunction::SpectralFlux)
             .with_min_gap(Seconds(0.05));
-        assert_eq!(cfg.min_gap(), Samples(2205));
+        assert_eq!(cfg.min_gap, Samples(2205));
 
         let wide = cfg.with_min_gap(Seconds(0.5));
-        assert_eq!(wide.min_gap(), Samples(22050));
+        assert_eq!(wide.min_gap, Samples(22050));
     }
 
     #[test]

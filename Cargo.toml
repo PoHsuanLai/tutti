@@ -11,6 +11,8 @@ members = [
     # The API layer: the cross-crate composition, not an umbrella. It
     # re-exports no crate whole (`cargo xtask check-session`).
     "crates/tutti-session",
+    # The audio cases the Python judges verify (`cargo xtask verify-audio`).
+    "testing/tutti-verify",
     "crates/tutti-engine",
     "crates/tutti-transport",
     "crates/tutti-metering",
@@ -150,6 +152,8 @@ libloading = "0.9"
 # The W3C UI Events key vocabulary (`Key`, `Code`, `Modifiers`, `KeyState`) a plugin editor's
 # key events are written in, so a windowing frontend converts name for name.
 keyboard-types = { version = "0.8.3", default-features = false }
+# The standard 8-bit RGBA colour (`RGBA8`) a plugin is told its track's colour in.
+rgb = { version = "0.8.53", default-features = false }
 
 # Benchmarks. One version across the workspace: `tutti-core` carried 0.5 —
 # dead, never with a `[[bench]]` — while the vendored fundsp fork was already

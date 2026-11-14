@@ -86,16 +86,9 @@ event_kinds! {
 }
 
 /// An `Event::type` tag the SDK does not define.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+#[error("unknown VST3 event type {0}")]
 pub struct UnknownEventKind(pub u16);
-
-impl std::fmt::Display for UnknownEventKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unknown VST3 event type {}", self.0)
-    }
-}
-
-impl std::error::Error for UnknownEventKind {}
 
 /// The fields every SDK event shares.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

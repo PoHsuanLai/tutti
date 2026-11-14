@@ -147,19 +147,6 @@ impl GateMember {
     pub fn range(&self) -> Db {
         self.range
     }
-
-    /// The hold in whole frames: `floor(hold * rate)`.
-    #[must_use]
-    pub fn hold_samples(&self) -> usize {
-        self.hold_samples
-    }
-
-    /// Whether a silent key opens the gate: only a threshold at or under [`Db::FLOOR`]
-    /// does, since silence is pinned at the floor for the comparison.
-    #[must_use]
-    pub fn silence_opens(&self) -> bool {
-        self.silence_opens
-    }
 }
 
 /// The decision against the member's threshold, in the linear domain.

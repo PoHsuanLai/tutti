@@ -120,6 +120,18 @@ impl Frame {
         self.scaled(to.get() / from.get())
     }
 
+    /// The time this frame is at, counted from frame 0 at `rate`.
+    ///
+    /// ```
+    /// use tutti_types::{Frame, SampleRate, Seconds};
+    /// assert_eq!(Frame::new(24_000).to_seconds(SampleRate::of(48_000.0)), Seconds::new(0.5));
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn to_seconds(self, rate: super::SampleRate) -> super::Seconds {
+        super::Seconds::new(self.0 as f64 / rate.get())
+    }
+
     /// Returns how many frames `earlier` is before `self`, or `None` when it is not
     /// before (it is later) or the distance does not fit a `Samples` on this
     /// target.
@@ -270,6 +282,14 @@ mod tests {
     fn a_frame_or_a_beat_is_an_at() {
         assert_eq!(At::from(Frame::new(48_000)), At::Frame(Frame::new(48_000)));
         assert_eq!(At::from(Beat(2.5)), At::Beat(Beat(2.5)));
+    }
+
+    /// **A frame is its count over the rate**: 24 000 frames at 48 kHz is half a second.
+    #[test]
+    fn a_frame_is_the_time_its_count_names() {
+        let rate = super::super::SampleRate::of(48_000.0);
+        assert_eq!(Frame::new(24_000).to_seconds(rate).get(), 0.5);
+        assert_eq!(Frame::new(0).to_seconds(rate).get(), 0.0);
     }
 
     /// Advancing adds the count, and saturates instead of wrapping.

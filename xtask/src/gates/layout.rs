@@ -203,7 +203,10 @@ pub(super) const WINNOW_HOMES: &[(&str, &[&str])] = &[
     ),
     (
         "tutti-midi-protocol",
-        &["crates/tutti-midi-protocol/src/universal/read.rs"],
+        &[
+            "crates/tutti-midi-protocol/src/universal/read.rs",
+            "crates/tutti-midi-protocol/src/universal/machine_control/read.rs",
+        ],
     ),
     (
         "tutti-midi-device",

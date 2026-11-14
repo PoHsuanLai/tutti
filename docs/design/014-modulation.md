@@ -443,7 +443,7 @@ the 32-byte event are unchanged.
 | Tail | `Tail::Unbounded` |
 | Latency | none; modulation lag is musical delay (§6) |
 | Cost | `Cost::Moderate`, measured (§5.3); `Light` was the estimate |
-| Controls | `LaneControls`: `publish`, the knob (a native `Param` cell, or `set_knob`), `set_range` for a plugin lane, `thinned()`, `truncated()`, `unranged()` |
+| Controls | `LaneControls`: `publish`, the knob (a native `Param` cell, or `set_knob`), `set_range` for a plugin lane (called by the reconciler, not by a host), `thinned()`, `truncated()`, `unranged()` |
 | Fork | the last published program (`Arc`), knob and range values at the gather, the address; fresh state (§5.6) |
 
 **Arrival.** With an input behind a latent path, the lane's arrival can be

@@ -38,6 +38,8 @@ tutti-plugin-types = { path = "../tutti-plugin-types", features = ["contract"] }
 # The integration tests re-open the reference plugin's library themselves (the
 # crate forbids `unsafe`; a test may use it).
 libloading.workspace = true
+# The track colour a test names (`rgb::RGBA8`).
+rgb.workspace = true
 # Finds the reference plugins and the plugin-server beside the test binary.
 tutti-fixtures = { path = "../../testing/tutti-fixtures", features = ["plugin"] }
 assert_no_alloc = { version = "1", default-features = false }

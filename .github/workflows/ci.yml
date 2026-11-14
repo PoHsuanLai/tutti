@@ -145,6 +145,8 @@ jobs:
       - run: cargo xtask check-paths tutti_tempo error grid map point segment
       # And `tutti-curve`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_curve envelope law
+      # And `tutti-buffers`, which keeps its modules private.
+      - run: cargo xtask check-paths tutti_buffers convert error i24 interleaved mono planes sample
       # And `tutti-voicing`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_voicing controller holds phase voicing
       # And `tutti-rt`, which keeps its modules private: the root names every item.

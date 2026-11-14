@@ -222,7 +222,8 @@ adapter is [tutti-audio/bevy-tutti](https://github.com/tutti-audio/bevy-tutti).
 
 0. `tutti-alsa-ffi`, `tutti-coremidi-ffi`, `tutti-ump`, `tutti-types`,
    `tutti-plugin-ipc-ffi`
-1. `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-curve`
+1. `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-curve`,
+   `tutti-buffers`
 2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-metering`, `tutti-codec`,
    `tutti-tempo`, `tutti-voicing`, `tutti-sf2`
 3. `tutti-transport`, `tutti-plugin-types`, `tutti-measure`

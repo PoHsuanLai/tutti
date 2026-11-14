@@ -241,6 +241,7 @@ pub(super) fn owner(krate: &str) -> Option<&'static str> {
         "tutti-transport",
         "tutti-tempo",
         "tutti-curve",
+        "tutti-buffers",
         "tutti-modulation",
         "tutti-codec",
         "tutti-export",

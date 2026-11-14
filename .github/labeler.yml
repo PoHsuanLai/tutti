@@ -9,6 +9,7 @@
           - crates/tutti-transport/**
           - crates/tutti-tempo/**
           - crates/tutti-curve/**
+          - crates/tutti-buffers/**
           - crates/tutti-metering/**
           - testing/tutti-shm-model/**
 "area: session":

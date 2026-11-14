@@ -85,13 +85,15 @@ fn depth_is_signed_because_inversion_is_the_point() {
 #[cfg(feature = "serde")]
 #[test]
 fn depth_keeps_the_range_contract() {
-    tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+    let c = tutti_fixtures::RangeContract {
         new: Depth::new,
         get: Depth::get,
         of: Some(Depth::of),
         valid: &[-1.0, -0.5, 0.0, 0.25, 1.0],
         invalid: &[-1.001, 1.001, f32::NAN, f32::INFINITY, f32::NEG_INFINITY],
-    });
+    };
+    tutti_fixtures::check_range_contract(&c);
+    tutti_fixtures::check_range_serde(&c);
 }
 
 /// The one saturating constructor maps NaN to `NONE`, and `Unit::from_raw`

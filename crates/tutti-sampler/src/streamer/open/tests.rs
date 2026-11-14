@@ -58,14 +58,16 @@ fn first_block(reader: StreamReader) -> Vec<Vec<f32>> {
 /// is refused, never clamped.
 #[test]
 fn placement_keeps_the_range_contract() {
-    use tutti_fixtures::{RangeContract, check_range_contract};
-    check_range_contract(&RangeContract {
+    use tutti_fixtures::{RangeContract, check_range_contract, check_range_serde};
+    let c = RangeContract {
         new: |raw| Placement::new(SamplePosition(raw)),
         get: |placement| placement.get().get(),
         of: None,
         valid: &[0.0, 0.5, 4_000.0, 1e12],
         invalid: &[-0.5, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY],
-    });
+    };
+    check_range_contract(&c);
+    check_range_serde(&c);
 }
 
 /// A fractional start is floored to the frame it falls in, and the stream's

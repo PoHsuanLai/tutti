@@ -2568,6 +2568,7 @@ name = "tutti-curve"
 version = "0.0.1"
 dependencies = [
  "thiserror 2.0.21",
+ "tutti-fixtures",
  "tutti-types",
 ]
 
@@ -2657,7 +2658,6 @@ dependencies = [
  "libc",
  "proptest",
  "ringbuf",
- "serde",
  "thiserror 2.0.21",
  "tutti-curve",
  "tutti-fixtures",
@@ -2795,7 +2795,6 @@ dependencies = [
  "assert_no_alloc",
  "criterion",
  "libm",
- "serde",
  "thiserror 2.0.21",
  "tutti-curve",
  "tutti-dsp",

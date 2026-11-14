@@ -1,14 +1,14 @@
 //! `SampleRate` keeps the range-checked contract (`CLAUDE.md`, "Range-checked values").
 #![cfg(feature = "serde")]
 
-use tutti_fixtures::{RangeContract, check_range_contract};
+use tutti_fixtures::{RangeContract, check_range_contract, check_range_serde};
 use tutti_types::{SampleRate, SampleRateOutOfRange};
 
 /// A rate is finite and above zero, with no audible floor or ceiling: that is
 /// the whole rule, and every consumer that wants a narrower one states it.
 #[test]
 fn a_rate_is_finite_and_above_zero() {
-    check_range_contract(&RangeContract {
+    let c = RangeContract {
         new: SampleRate::new,
         get: SampleRate::get,
         of: Some(SampleRate::of),
@@ -29,7 +29,9 @@ fn a_rate_is_finite_and_above_zero() {
             f64::INFINITY,
             f64::NAN,
         ],
-    });
+    };
+    check_range_contract(&c);
+    check_range_serde(&c);
     assert_eq!(SampleRate::try_from(0.0), Err(SampleRateOutOfRange(0.0)));
     assert!(SampleRateOutOfRange(-5.0).to_string().contains("-5"));
 }

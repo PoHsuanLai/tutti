@@ -9,7 +9,7 @@
 //! plugin that notifies the host from inside its own `process` from
 //! re-entering itself.
 
-use super::state::{HostState, PosixFdEntry, TimerEntry};
+use super::state::{HostState, PosixFdEntry, TRANSPORT_QUEUE, TimerEntry};
 use crate::types::{AudioPortsRescan, ParamRescan};
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -212,7 +212,14 @@ impl HostCallbacks for HostState {
     }
 
     fn transport_request(&self, request: TransportRequest) {
-        self.transport.push(request);
+        // A refused request is the plugin's flood, so it lands in the log a
+        // consumer reads, as the plugin misbehaving.
+        if !self.transport.push(request) {
+            self.log(
+                LogSeverity::PluginMisbehaving,
+                &format!("transport request {request:?} refused: {TRANSPORT_QUEUE} already wait"),
+            );
+        }
     }
 
     fn posix_fd_register(&self, fd: i32, flags: u32) -> bool {

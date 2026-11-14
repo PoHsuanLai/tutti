@@ -336,13 +336,18 @@ impl TransportState {
         }
     }
 
-    /// Queues `request`, or refuses it when [`TRANSPORT_QUEUE`] are waiting.
-    pub(crate) fn push(&self, request: TransportRequest) {
+    /// Queues `request`; `false` when it was refused, because
+    /// [`TRANSPORT_QUEUE`] are waiting or the queue's lock is poisoned.
+    #[must_use]
+    pub(crate) fn push(&self, request: TransportRequest) -> bool {
         let Ok(mut queue) = self.queue.lock() else {
-            return;
+            return false;
         };
         if queue.len() < TRANSPORT_QUEUE {
             queue.push(request);
+            true
+        } else {
+            false
         }
     }
 

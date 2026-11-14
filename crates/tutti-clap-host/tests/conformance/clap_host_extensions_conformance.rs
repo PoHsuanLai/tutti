@@ -469,14 +469,25 @@ fn a_transport_request_from_the_audio_thread_is_refused() {
 }
 
 /// A plugin that asks faster than the host takes is not queued without bound:
-/// the first requests are kept and the rest refused.
+/// the first requests are kept, and each one refused is a plugin-misbehaving
+/// line in the log, so none is lost unseen.
 /// Spec: clap.ext.transport_control.host.request_start
 #[test]
-fn a_flood_of_transport_requests_is_bounded() {
+fn a_flood_of_transport_requests_is_bounded_and_each_refusal_is_logged() {
     let probe = Probe::acquire();
     let mut inst = probe.load();
+    inst.drain_log();
 
     probe.command(&mut inst, HOSTEXT_CMD_START_BURST, 100, 0);
 
     assert_eq!(requests(&mut inst).len(), 64);
+    let refused = inst
+        .drain_log()
+        .into_iter()
+        .filter(|r| {
+            r.severity == clap_sys::ext::log::CLAP_LOG_PLUGIN_MISBEHAVING
+                && r.message.starts_with("transport request Start refused")
+        })
+        .count();
+    assert_eq!(refused, 100 - 64, "every refused request is logged once");
 }

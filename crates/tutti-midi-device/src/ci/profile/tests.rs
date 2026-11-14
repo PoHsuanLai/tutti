@@ -42,6 +42,16 @@ fn a_standard_profile_id_is_7e_bank_number_version_level() {
     );
 }
 
+/// M2-120 Table 4: the MPE Profile's five bytes.
+#[test]
+fn the_mpe_profile_id_is_table_4_of_m2_120() {
+    assert_eq!(ProfileId::MPE.to_bytes(), [0x7E, 0x31, 0x00, 0x01, 0x01]);
+    assert_eq!(
+        ProfileId::from_bytes([0x7E, 0x31, 0x00, 0x01, 0x01]),
+        Some(ProfileId::MPE)
+    );
+}
+
 #[test]
 fn a_manufacturer_profile_id_is_its_sysex_id_then_two_info_bytes() {
     // §7.3.1: a three-byte id fills bytes 1 to 3; a one-byte id is in the first byte

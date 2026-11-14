@@ -21,7 +21,7 @@ impl Default for PitchBendSensitivity {
     /// The MPE default per-note bend range: ±48 semitones (MPE spec RP-053).
     #[inline]
     fn default() -> Self {
-        Self::MPE_DEFAULT
+        Self::MPE_MEMBER_DEFAULT
     }
 }
 
@@ -29,8 +29,18 @@ impl PitchBendSensitivity {
     /// Fraction bits of the Q7.25 word (M2-104 section 7.4.13).
     const FRAC_BITS: u32 = 25;
 
-    /// The MPE default per-note bend range: 48 semitones (MPE spec RP-053).
-    pub const MPE_DEFAULT: Self = Self(48 << Self::FRAC_BITS);
+    /// The bend range an MPE 1.1 master channel starts at, and an MPE
+    /// Configuration Message resets it to: 2 semitones (M1-100 section 2.2.5).
+    pub const MPE_MASTER_DEFAULT: Self = Self(2 << Self::FRAC_BITS);
+
+    /// The bend range an MPE 1.1 member channel starts at, and an MPE
+    /// Configuration Message resets it to: the per-note default of 48 semitones
+    /// (MPE spec RP-053, M1-100 section 2.2.5).
+    pub const MPE_MEMBER_DEFAULT: Self = Self(48 << Self::FRAC_BITS);
+
+    /// The bend range a MIDI-CI MPE Profile zone starts at, for its Manager
+    /// and every Member: 48 semitones (M2-120 section 3.5).
+    pub const MPE_PROFILE_DEFAULT: Self = Self(48 << Self::FRAC_BITS);
 
     /// The widest whole-semitone sensitivity: 7 integer bits.
     pub(crate) const MAX_SEMITONES: u8 = 127;

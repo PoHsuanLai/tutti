@@ -6,7 +6,7 @@ use core::fmt;
 use std::num::NonZeroUsize;
 
 use crate::{AllocationStrategy, PortamentoConfig, Tuning, UnisonConfig, VoiceMode};
-use tutti_midi_protocol::{MpeMode, SysexDeviceId};
+use tutti_midi_protocol::{MpeMode, PitchBendSensitivity, SysexDeviceId};
 use tutti_types::Adsr;
 use tutti_types::{Depth, Hz, Q, Resonance, Semitones};
 use tutti_ump::MidiGroup;
@@ -250,7 +250,7 @@ pub struct SynthConfig {
     /// zones, or single-channel note rotation. Per-note messages are
     /// *accepted* either way; this decides whether the accumulated per-note
     /// bend, pressure, slide and gain reach the audio. The per-note pitch-bend
-    /// range of a zone is its member range (`MpeZoneConfig::member_pitch_bend_range`,
+    /// range of a zone is its member range (`MpeZoneConfig::pitch_bend_range_for` a member channel,
     /// 48 semitones by default); without zones it is 48 semitones. A channel's
     /// own per-note pitch-bend sensitivity RPN (00/07, M2-104 section 7.4.13)
     /// replaces it for that channel alone.
@@ -276,12 +276,17 @@ impl SynthConfig {
     /// says otherwise: a zone's member range ([`mpe`](Self::mpe)), else the MPE
     /// convention of 48 semitones.
     pub(crate) fn per_note_bend_range(&self) -> Semitones {
+        let default = PitchBendSensitivity::MPE_MEMBER_DEFAULT.semitones();
         match &self.mpe {
             MpeMode::Zones(zones) => zones
                 .zones()
                 .next()
-                .map_or(Semitones(48.0), |z| z.member_pitch_bend_range().semitones()),
-            _ => Semitones(48.0),
+                .and_then(|z| {
+                    let member = z.member_channels().next()?;
+                    Some(z.pitch_bend_range_for(member).semitones())
+                })
+                .unwrap_or(default),
+            _ => default,
         }
     }
 }

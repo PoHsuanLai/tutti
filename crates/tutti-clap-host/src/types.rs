@@ -11,8 +11,8 @@ use std::fmt;
 
 pub use tutti_plugin_types::{
     AudioBuffer, AudioBuffer32, AudioBuffer64, ChannelLayout, ContentScale, EditorCapabilities,
-    EditorSize, NoteExpressionType, ParameterChanges, ParameterPoint, ParameterQueue,
-    TransportInfo, WindowHandle, WireMidi,
+    NoteExpressionType, ParameterChanges, ParameterPoint, ParameterQueue, TransportInfo,
+    WindowHandle, WireMidi,
 };
 
 /// Metadata describing a loaded plugin, returned from

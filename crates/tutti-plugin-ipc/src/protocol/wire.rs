@@ -329,18 +329,23 @@ mod tests {
     /// widths the spec's rules give.** A variant tag is a varint over declaration
     /// order, so the earlier variants keep their numbers (`SetSampleRate` is 8
     /// above) and the new ones sit at the end (host: 23 to 25; server: 28 to 31);
-    /// a size is two varints, a scale an `f64`, a parent an `Option<u64>`.
+    /// a size is a unit tag then two varints (physical) or two `f64` (logical), a
+    /// scale an `f64`, a parent an `Option<u64>`.
     #[test]
     fn the_editor_messages_follow_every_earlier_variant() {
         use crate::protocol::{BridgeMessage, HostMessage};
-        use tutti_plugin_types::{ContentScale, EditorSize};
+        use dpi::{LogicalSize, PhysicalSize, Size};
+        use tutti_plugin_types::ContentScale;
 
-        let size = EditorSize {
-            width: 640,
-            height: 480,
-        };
-        // 640 = 0x280 and 480 = 0x1e0, seven bits a byte, low group first.
-        let size_bytes = [0x80, 0x05, 0xe0, 0x03];
+        let size = Size::Physical(PhysicalSize::new(640, 480));
+        // Tag 0 (physical), then 640 = 0x280 and 480 = 0x1e0, seven bits a byte, low
+        // group first.
+        let size_bytes = [0x00, 0x80, 0x05, 0xe0, 0x03];
+        // Tag 1 (logical), then 1.0 and 2.0 as little-endian `f64`.
+        assert_eq!(
+            postcard::to_allocvec(&Size::Logical(LogicalSize::new(1.0, 2.0))).unwrap(),
+            [1, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f, 0, 0, 0, 0, 0, 0, 0, 0x40]
+        );
         let open = HostMessage::OpenEditor {
             parent: None,
             scale: ContentScale::IDENTITY,

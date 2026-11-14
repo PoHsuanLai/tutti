@@ -7,7 +7,8 @@ use clap_sys::ext::gui::{
     CLAP_WINDOW_API_COCOA, clap_gui_resize_hints, clap_plugin_gui, clap_window, clap_window_handle,
 };
 use clap_sys::plugin::clap_plugin;
-use tutti_plugin_types::{MainThread, WindowHandle};
+use dpi::Size;
+use tutti_plugin_types::{ContentScale, EditorUnit, MainThread, WindowHandle};
 
 use crate::plugin::Plugin;
 
@@ -61,12 +62,10 @@ impl fmt::Display for GuiError {
 impl std::error::Error for GuiError {}
 
 /// What opening an embedded editor produced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EmbedOutcome {
-    /// The editor's width.
-    pub width: u32,
-    /// The editor's height.
-    pub height: u32,
+    /// The editor's size, in the unit its window api counts in.
+    pub size: Size,
     /// Whether the plugin has a `create` entry and it ran, so the editor
     /// exists and must be destroyed later.
     pub did_create: bool,
@@ -123,6 +122,24 @@ fn api_uses_logical_pixels(api: *const c_char) -> bool {
     // `'static` nul-terminated string.
     let api = unsafe { CStr::from_ptr(api) };
     api == CLAP_WINDOW_API_COCOA || api.to_bytes() == b"uikit"
+}
+
+/// The unit `api`'s sizes are in.
+fn unit_of(api: *const c_char) -> EditorUnit {
+    if api_uses_logical_pixels(api) {
+        EditorUnit::Logical
+    } else {
+        EditorUnit::Physical
+    }
+}
+
+/// `width` by `height` as the platform's window api counts them: the one place
+/// a `clap.gui` size gets its unit (physical pixels, except logical points on
+/// Cocoa). A size the plugin asked for with `request_resize` is read through
+/// it.
+#[must_use]
+pub fn gui_size(width: u32, height: u32) -> Size {
+    unit_of(platform_window_handle(std::ptr::null_mut()).0).size(width, height)
 }
 
 /// One instance's `clap.gui` entries, called with the instance and window API
@@ -267,7 +284,7 @@ unsafe fn embed_editor_sequence(
     plugin: *const clap_plugin,
     api: *const c_char,
     window: clap_window_handle,
-    scale: f64,
+    scale: ContentScale,
 ) -> Result<EmbedOutcome, GuiError> {
     // SAFETY: this function's contract.
     let call = unsafe { GuiCall::new(gui, plugin, api) };
@@ -282,7 +299,7 @@ unsafe fn embed_editor_sequence(
     // A logical-pixel API (Cocoa, UIKit) scales itself; `set_scale` there
     // would double-scale (`ext/gui.h`).
     if !api_uses_logical_pixels(api) {
-        call.set_scale(scale);
+        call.set_scale(scale.get());
     }
     let (width, height) = call.get_size().unwrap_or((800, 600));
     if call.set_parent(window) == Some(false) {
@@ -290,8 +307,7 @@ unsafe fn embed_editor_sequence(
     }
     call.show();
     Ok(EmbedOutcome {
-        width,
-        height,
+        size: unit_of(api).size(width, height),
         did_create,
     })
 }
@@ -410,7 +426,7 @@ impl Plugin {
         &mut self,
         _main: &MainThread,
         parent: &WindowHandle,
-        scale: f64,
+        scale: ContentScale,
     ) -> Result<EmbedOutcome, GuiError> {
         let gui = self.gui()?;
         if self.gui_created {
@@ -421,7 +437,10 @@ impl Plugin {
         // is its `clap.gui`, and `parent` is a valid window by its constructor.
         let outcome = unsafe { embed_editor_sequence(gui, self.raw(), api, handle, scale) };
         match outcome {
-            Ok(done) => self.gui_created = done.did_create,
+            Ok(done) => {
+                self.gui_created = done.did_create;
+                self.gui_scale = scale;
+            }
             // `create` ran and `set_parent` refused: the editor exists but
             // will not be shown, so it is destroyed here rather than left for
             // a caller to know.
@@ -470,18 +489,15 @@ impl Plugin {
         Some(unsafe { query_editor_capabilities(gui, self.raw()) })
     }
 
-    /// Asks the plugin to adjust `width` by `height` to a size it can take,
-    /// then sets it. Returns the size set.
+    /// Asks the plugin to adjust `requested` to a size it can take, then sets
+    /// it. Returns the size set, in the window api's unit ([`gui_size`]); a
+    /// request in the other unit is converted at the scale the editor opened
+    /// with or was last given.
     ///
     /// # Errors
     /// No `clap.gui`, no editor created, no usable adjusted size, no
     /// `set_size`, or a refused `set_size`.
-    pub fn resize_gui(
-        &mut self,
-        _main: &MainThread,
-        width: u32,
-        height: u32,
-    ) -> Result<(u32, u32), GuiError> {
+    pub fn resize_gui(&mut self, _main: &MainThread, requested: Size) -> Result<Size, GuiError> {
         let gui = self.gui()?;
         if !self.gui_created {
             return Err(GuiError::NotCreated);
@@ -489,7 +505,8 @@ impl Plugin {
         // SAFETY: `&mut self` is the main-thread half of a live instance and
         // `gui` its `clap.gui`; these entries take no window API.
         let call = unsafe { GuiCall::new(gui, self.raw(), std::ptr::null()) };
-        let (mut w, mut h) = (width, height);
+        let unit = unit_of(platform_window_handle(std::ptr::null_mut()).0);
+        let (mut w, mut h) = unit.native(requested, self.gui_scale);
         if call.adjust_size(&mut w, &mut h) == Some(false) {
             return Err(GuiError::AdjustRefused);
         }
@@ -498,7 +515,7 @@ impl Plugin {
             Some(false) => return Err(GuiError::SetSizeRefused),
             Some(true) => {}
         }
-        Ok((w, h))
+        Ok(unit.size(w, h))
     }
 
     /// Tells the created editor its window's scale changed (`gui.set_scale`).
@@ -508,18 +525,27 @@ impl Plugin {
     ///
     /// # Errors
     /// No `clap.gui`, or no editor created.
-    pub fn rescale_gui(&mut self, _main: &MainThread, scale: f64) -> Result<bool, GuiError> {
+    pub fn rescale_gui(
+        &mut self,
+        _main: &MainThread,
+        scale: ContentScale,
+    ) -> Result<bool, GuiError> {
         let gui = self.gui()?;
         if !self.gui_created {
             return Err(GuiError::NotCreated);
         }
         let (api, _) = platform_window_handle(std::ptr::null_mut());
-        if api_uses_logical_pixels(api) {
-            return Ok(false);
-        }
-        // SAFETY: as `resize_gui`.
-        let call = unsafe { GuiCall::new(gui, self.raw(), api) };
-        Ok(call.set_scale(scale) == Some(true))
+        // The scale is kept on every api: a logical-pixel editor is not told, but
+        // a request in device pixels is still converted at the window's scale.
+        let taken = if api_uses_logical_pixels(api) {
+            false
+        } else {
+            // SAFETY: as `resize_gui`.
+            let call = unsafe { GuiCall::new(gui, self.raw(), api) };
+            call.set_scale(scale.get()) == Some(true)
+        };
+        self.gui_scale = scale;
+        Ok(taken)
     }
 
     /// Hides the editor (unless its window is already gone) and destroys it. A
@@ -679,7 +705,7 @@ mod embed_sequence_tests {
     }
 
     /// Drives the embed sequence against `api` and return the call log.
-    fn run_embed(api: &std::ffi::CStr) -> Vec<&'static str> {
+    fn run_embed(api: &std::ffi::CStr) -> (Vec<&'static str>, Size) {
         let mut order: Vec<&'static str> = Vec::new();
         let plugin = stub_plugin(&mut order);
         let gui = stub_gui();
@@ -694,22 +720,44 @@ mod embed_sequence_tests {
                 &plugin as *const clap_plugin,
                 api.as_ptr(),
                 handle,
-                2.0,
+                ContentScale::new(2.0).expect("a scale"),
             )
         }
         .expect("embed sequence succeeds");
 
         assert!(outcome.did_create, "create ran");
-        assert_eq!(outcome.width, 640);
-        assert_eq!(outcome.height, 480);
-        order
+        // At scale 1 a size is the same pair in either unit.
+        assert_eq!(
+            outcome.size.to_physical::<u32>(1.0),
+            dpi::PhysicalSize::new(640, 480)
+        );
+        (order, outcome.size)
+    }
+
+    /// **The editor's size is in the unit of its window api** (`ext/gui.h`):
+    /// device pixels on win32 and x11, points on cocoa and uikit.
+    #[test]
+    fn the_embedded_size_is_in_the_window_apis_unit() {
+        use clap_sys::ext::gui::{CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11};
+        for api in [CLAP_WINDOW_API_WIN32, CLAP_WINDOW_API_X11] {
+            assert_eq!(
+                run_embed(api).1,
+                Size::Physical(dpi::PhysicalSize::new(640, 480))
+            );
+        }
+        for api in [CLAP_WINDOW_API_COCOA, c"uikit"] {
+            assert_eq!(
+                run_embed(api).1,
+                Size::Logical(dpi::LogicalSize::new(640.0, 480.0))
+            );
+        }
     }
 
     #[test]
     fn embed_sequence_calls_in_spec_order() {
         // win32 is a physical-pixel api, so this is the shape that includes
         // `set_scale`; the logical-pixel apis are covered below.
-        let order = run_embed(clap_sys::ext::gui::CLAP_WINDOW_API_WIN32);
+        let (order, _) = run_embed(clap_sys::ext::gui::CLAP_WINDOW_API_WIN32);
 
         // The exact CLAP embed order: is_api_supported → create → set_scale →
         // get_size → set_parent → show.
@@ -732,7 +780,7 @@ mod embed_sequence_tests {
     /// makes a Retina editor open at twice its size.
     #[test]
     fn embed_sequence_skips_set_scale_on_cocoa() {
-        let order = run_embed(clap_sys::ext::gui::CLAP_WINDOW_API_COCOA);
+        let (order, _) = run_embed(clap_sys::ext::gui::CLAP_WINDOW_API_COCOA);
 
         assert!(
             !order.contains(&"set_scale"),
@@ -758,7 +806,7 @@ mod embed_sequence_tests {
     /// alone leaves it out.
     #[test]
     fn embed_sequence_skips_set_scale_on_uikit() {
-        let order = run_embed(c"uikit");
+        let (order, _) = run_embed(c"uikit");
 
         assert!(
             !order.contains(&"set_scale"),
@@ -772,7 +820,7 @@ mod embed_sequence_tests {
     /// call on win32/x11, where the plugin needs it.
     #[test]
     fn embed_sequence_sets_scale_for_an_unrecognized_api() {
-        let order = run_embed(c"some-future-windowing-api");
+        let (order, _) = run_embed(c"some-future-windowing-api");
 
         assert!(
             order.contains(&"set_scale"),
@@ -800,7 +848,7 @@ mod embed_sequence_tests {
                 &plugin as *const clap_plugin,
                 std::ptr::null(),
                 handle,
-                1.0,
+                ContentScale::IDENTITY,
             )
         };
 

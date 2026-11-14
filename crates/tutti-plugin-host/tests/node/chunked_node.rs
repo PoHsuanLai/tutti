@@ -24,10 +24,10 @@ use tutti_graph::{
 use tutti_plugin_host::{InProcClient, NodeControls, PluginNode, load_client};
 use tutti_plugin_types::{
     AudioBufferMut, BusRole, ChannelLayout, ChannelTopology, ContentScale, Control, Controller,
-    EditorError, EditorSize, EditorWindow, Features, InProcess, Load, Loaded, LoadedPlugin,
-    MainThread, Normalized, Origin, ParamId, ParameterInfo, PluginBus, PluginDescriptor,
-    PluginError, PluginIo, PluginResult, PluginTail, Prepare, Processor, Refused,
-    RenderModeSupport, RestartRules, Samples, Speaker, Stuck, WindowHandle,
+    EditorError, EditorWindow, Features, InProcess, Load, Loaded, LoadedPlugin, MainThread,
+    Normalized, Origin, ParamId, ParameterInfo, PluginBus, PluginDescriptor, PluginError, PluginIo,
+    PluginResult, PluginTail, Prepare, Processor, Refused, RenderModeSupport, RestartRules,
+    Samples, Speaker, Stuck, WindowHandle,
 };
 use tutti_tempo::{TempoMap, TempoPoint, Transition};
 use tutti_transport::TempoReader;
@@ -185,7 +185,7 @@ macro_rules! rec_control {
                 _: &MainThread,
                 _: WindowHandle,
                 _: ContentScale,
-            ) -> PluginResult<EditorSize> {
+            ) -> PluginResult<dpi::Size> {
                 Err(PluginError::Editor(EditorError::PluginError("none".into())))
             }
             fn close_editor(&mut self, _: &MainThread) {}
@@ -203,8 +203,8 @@ macro_rules! rec_control {
             fn set_editor_size(
                 &mut self,
                 _main: &tutti_plugin_types::MainThread,
-                _requested: tutti_plugin_types::EditorSize,
-            ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
+                _requested: dpi::Size,
+            ) -> tutti_plugin_types::PluginResult<dpi::Size> {
                 Err(tutti_plugin_types::PluginError::Editor(
                     tutti_plugin_types::EditorError::PluginError(
                         "set_editor_size not supported".into(),
@@ -216,7 +216,7 @@ macro_rules! rec_control {
             fn poll_editor_resize_request(
                 &mut self,
                 _main: &tutti_plugin_types::MainThread,
-            ) -> Option<tutti_plugin_types::EditorSize> {
+            ) -> Option<dpi::Size> {
                 None
             }
         }

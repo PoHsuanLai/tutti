@@ -7,9 +7,10 @@
 //! server process, and every window call is a message to it. It is a runtime
 //! choice of the client, not a marker on a format.
 
+use dpi::Size;
 use tutti_plugin_types::{
-    ContentScale, EditorCapabilities, EditorError, EditorSize, EditorWindow, MainThread,
-    PluginError, PluginResult, WindowHandle,
+    ContentScale, EditorCapabilities, EditorError, EditorWindow, MainThread, PluginError,
+    PluginResult, WindowHandle,
 };
 
 use super::audio::AudioBridge;
@@ -66,7 +67,7 @@ impl EditorWindow for RemoteEditor {
         _main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
+    ) -> PluginResult<Size> {
         if !WindowHandle::embeds_across_processes() {
             return Err(plugin_error(EditorError::UnsupportedPlatform {
                 got: "a window of this platform cannot be embedded into by another process; \
@@ -116,11 +117,7 @@ impl EditorWindow for RemoteEditor {
         EditorCapabilities::default()
     }
 
-    fn set_editor_size(
-        &mut self,
-        _main: &MainThread,
-        requested: EditorSize,
-    ) -> PluginResult<EditorSize> {
+    fn set_editor_size(&mut self, _main: &MainThread, requested: Size) -> PluginResult<Size> {
         self.hear_closed();
         if !self.open {
             return Err(plugin_error(EditorError::PluginError(
@@ -132,7 +129,7 @@ impl EditorWindow for RemoteEditor {
             .map_err(plugin_error)
     }
 
-    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<EditorSize> {
+    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<Size> {
         self.audio.take_editor_wants_size()
     }
 }

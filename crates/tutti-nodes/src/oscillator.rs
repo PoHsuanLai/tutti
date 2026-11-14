@@ -111,7 +111,9 @@ impl OscillatorNode {
         self.frequency.store(frequency.into());
     }
 
-    /// Sets the level; heard from the next block. Lock-free.
+    /// Sets the level; heard from the next block, as a step at its edge.
+    /// Lock-free. A smooth change is a [`tutti_graph::ParamRamp`] on the level
+    /// port, which the graph runs per frame.
     pub fn set_level(&self, level: impl Into<Amplitude>) {
         self.level.store(level.into());
     }

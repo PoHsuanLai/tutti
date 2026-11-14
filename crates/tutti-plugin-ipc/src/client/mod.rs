@@ -12,5 +12,4 @@ pub mod composite;
 mod hostile_peer_tests;
 mod remote_editor;
 
-pub(crate) use composite::EditorLoader;
-pub use composite::PluginBridge;
+pub use composite::{EditorLoader, PluginBridge};

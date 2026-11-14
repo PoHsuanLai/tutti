@@ -59,7 +59,7 @@ fn pull_editor_state(
 /// GUI instance. Audio processing goes through `AudioBridge` (IPC to
 /// plugin-server child process). Editor/GUI operations load the plugin
 /// in-process on first `open_editor` call, or, for a bridge made with no
-/// `EditorLoader`, run in the server.
+/// [`EditorLoader`], run in the server.
 pub struct PluginBridge {
     audio: AudioBridge,
     /// The file and the plugin in it, which the editor-only instance loads
@@ -94,7 +94,7 @@ impl std::fmt::Debug for PluginBridge {
 /// a path, in this process (`OutOfProcess::load_editor` for the path's
 /// format). The host passes its own: which formats it was built with is the
 /// host's, not the bridge's.
-pub(crate) type EditorLoader = fn(&MainThread, &Path, &Load) -> BridgeResult<Box<dyn Editor>>;
+pub type EditorLoader = fn(&MainThread, &Path, &Load) -> BridgeResult<Box<dyn Editor>>;
 
 /// How many parameter writes wait for the next editor idle. A full ring drops
 /// the newest: the mirror is cosmetic, and the audio command is authoritative.

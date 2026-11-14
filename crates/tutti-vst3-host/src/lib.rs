@@ -33,7 +33,7 @@
 //! ## What it does not own
 //!
 //! **The shared vocabulary.** [`ParameterChanges`], [`TransportInfo`],
-//! [`ProcessOutput`], [`WindowHandle`], [`EditorSize`] and the `Features` bitset are
+//! [`ProcessOutput`], [`WindowHandle`] and the `Features` bitset are
 //! [`tutti-plugin-types`](../tutti-plugin-types)' — this crate re-exports them so
 //! a caller can stay format-agnostic, but does not define them. MIDI is the
 //! workspace-wide UMP: an event into the plugin is `(Offset, Ump)` (a
@@ -182,7 +182,7 @@
 //!     // Any winit or other `raw-window-handle` window.
 //!     let handle = WindowHandle::from_window(window)?;
 //!     let size = plugin.open_editor(&main, handle, ContentScale::IDENTITY)?;
-//!     println!("editor is {}x{}", size.width, size.height);
+//!     println!("editor is {size:?}");
 //! }
 //! plugin.close_editor(&main);
 //! # Ok(()) }
@@ -288,7 +288,6 @@
 //! [`TransportInfo`]: crate::TransportInfo
 //! [`ProcessOutput`]: crate::ProcessOutput
 //! [`WindowHandle`]: crate::WindowHandle
-//! [`EditorSize`]: crate::EditorSize
 //! [`WireMidi`]: crate::WireMidi
 //! [`tutti_graph::Offset`]: tutti_graph::Offset
 //! [`MidiEncoder`]: crate::MidiEncoder
@@ -316,7 +315,7 @@ pub use host::{
     descriptor_of,
 };
 pub use types::{
-    AudioBuffer, BusInfo, BusType, ContentScale, EditorCapabilities, EditorSize, KeyswitchKind,
+    AudioBuffer, BusInfo, BusType, ContentScale, EditorCapabilities, KeyswitchKind,
     NoteExpressionFlags, NoteExpressionIntValue, NoteExpressionType, NoteExpressionValue,
     ParameterChanges, ParameterFlags, ParameterPoint, ParameterQueue, PhysicalUiType, PlainRange,
     PluginInfo, PrefetchSupport, ProcessContextRequirements, ProcessMode, ProcessOutput,

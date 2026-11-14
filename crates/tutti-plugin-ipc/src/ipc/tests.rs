@@ -22,10 +22,7 @@ use crate::{
 const CEILING: usize = 64;
 const RATE: SampleRate = SampleRate::SR_48K;
 /// The size the mock server's editor opens at.
-const MOCK_EDITOR: tutti_plugin_types::EditorSize = tutti_plugin_types::EditorSize {
-    width: 640,
-    height: 480,
-};
+const MOCK_EDITOR: dpi::Size = dpi::Size::Physical(dpi::PhysicalSize::new(640, 480));
 
 /// What the mock server was sent, in order.
 type Received = Arc<Mutex<Vec<HostMessage>>>;
@@ -445,7 +442,7 @@ fn host_window(raw: u64) -> tutti_plugin_types::WindowHandle {
 #[test]
 #[cfg(all(unix, not(target_os = "macos")))]
 fn a_remote_editor_opens_resizes_and_closes_over_the_wire() {
-    use tutti_plugin_types::{ContentScale, EditorSize, EditorWindow};
+    use tutti_plugin_types::{ContentScale, EditorWindow};
     let _machine = machine_lock();
     let (mut ipc, server) = mock_remote();
     let main = main_thread();
@@ -455,10 +452,7 @@ fn a_remote_editor_opens_resizes_and_closes_over_the_wire() {
         .open_editor(&main, host_window(0x40_0001), scale)
         .expect("the server opens it");
     assert_eq!(size, MOCK_EDITOR);
-    let wanted = EditorSize {
-        width: 801,
-        height: 601,
-    };
+    let wanted = dpi::Size::Physical(dpi::PhysicalSize::new(801, 601));
     assert_eq!(ipc.set_editor_size(&main, wanted).expect("resized"), wanted);
     ipc.close_editor(&main);
 
@@ -508,16 +502,13 @@ fn a_refused_remote_open_carries_the_servers_reason() {
 #[test]
 #[cfg(all(unix, not(target_os = "macos")))]
 fn what_the_servers_editor_says_unprompted_is_heard() {
-    use tutti_plugin_types::{ContentScale, EditorSize, EditorWindow};
+    use tutti_plugin_types::{ContentScale, EditorWindow};
     let _machine = machine_lock();
     let (mut ipc, server) = mock_remote();
     let main = main_thread();
     ipc.open_editor(&main, host_window(0x40_0001), ContentScale::IDENTITY)
         .expect("opens");
-    let asked = EditorSize {
-        width: 1024,
-        height: 768,
-    };
+    let asked = dpi::Size::Physical(dpi::PhysicalSize::new(1024, 768));
     server.say(&BridgeMessage::EditorWantsSize { size: asked });
     server.say(&BridgeMessage::EditorClosed);
     // An idle bridge reads nothing: the next command's reply reads both.

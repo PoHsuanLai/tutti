@@ -106,8 +106,8 @@ pub use sdk::{
 };
 pub use types::*;
 pub use view::{
-    EditorError, detach_view, platform_type_refused, send_key_down, send_key_up, send_wheel,
-    set_view_focus,
+    EditorError, detach_view, platform_type_refused, rect_size, send_key_down, send_key_up,
+    send_wheel, set_view_focus,
 };
 
 // Test-only global allocator for the allocation-free regression tests. Panics

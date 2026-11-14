@@ -83,7 +83,8 @@ impl Channels {
 
     /// The key's channels: the input's width when [`keyed`](Self::keyed), else 0.
     #[must_use]
-    pub const fn key_width(&self) -> usize {
+    #[cfg(any(test, feature = "contract"))]
+    pub(crate) const fn key_width(&self) -> usize {
         if self.keyed { self.input_width() } else { 0 }
     }
 

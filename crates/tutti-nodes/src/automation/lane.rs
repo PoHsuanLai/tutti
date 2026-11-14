@@ -104,16 +104,6 @@ impl AutomationLaneNode {
         }
     }
 
-    /// Most recent value the lane emitted: after a block, the value at its
-    /// last frame — the end-of-block value, not the average (for an event
-    /// lane, the value its last segment gives that frame; unchanged by a
-    /// block it sent nothing in). A node reset
-    /// clears it to zero. (A lane inside a graph belongs to the executor;
-    /// this is for a lane driven by hand.)
-    pub fn last_value(&self) -> f32 {
-        self.last_value
-    }
-
     /// Evaluates the curve at `beat`.
     ///
     /// Returns `0.0` where the curve has no value — before its first point, or
@@ -296,10 +286,10 @@ mod tests {
             64,
         );
         d.block();
-        assert!((d.node.last_value() - 0.5).abs() < 0.01);
+        assert!((d.node.last_value - 0.5).abs() < 0.01);
 
         Node::reset(&mut *d.node);
-        assert_eq!(d.node.last_value(), 0.0);
+        assert_eq!(d.node.last_value, 0.0);
     }
 
     #[test]
@@ -339,12 +329,12 @@ mod tests {
             SampleRate::SR_48K,
             64,
         );
-        assert_eq!(d.node.last_value(), 0.0);
+        assert_eq!(d.node.last_value, 0.0);
         d.block();
         assert!(
-            (d.node.last_value() - 0.5).abs() < 0.01,
+            (d.node.last_value - 0.5).abs() < 0.01,
             "Expected ~0.5, got {}",
-            d.node.last_value()
+            d.node.last_value
         );
     }
 

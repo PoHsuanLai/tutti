@@ -1,14 +1,14 @@
 use super::*;
-use tutti_fixtures::midi::{m1_cc, m1_note_on, note_on};
+
+use tutti_fixtures::midi;
 use tutti_types::Beat;
-use tutti_ump::ControlValue;
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7};
+use tutti_ump::{CCNumber, ControlValue, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7};
 
 /// **A clip a block still held when `set` replaced it is freed by
 /// the next `reclaim`**, with no further publish.
 #[test]
 fn reclaim_frees_a_clip_a_block_held_across_its_replacement() {
-    let on = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0xFFFF);
+    let on = midi::note_on(MidiChannel::FIRST, 60, 0xFFFF);
     let mut node = MidiClipNode::new([TimedMidiEvent::new(Beat(1.0), on).unwrap()]);
     let controls = MidiClipControls {
         shared: Arc::clone(&node.shared),
@@ -40,27 +40,42 @@ fn a_clip_nodes_table_is_24_kib() {
 #[test]
 fn a_clip_is_translated_in_beat_order_and_keeps_its_list_order() {
     let note = NoteNumber::of(60);
-    let on0 = m1_note_on(MidiChannel::FIRST, note, U7::of(0));
+    let on0 = Ump::from(Message::midi1(
+        MidiChannel::FIRST,
+        Voice1::note_on(note, U7::of(0)),
+    ));
     let events = [
         TimedMidiEvent::new(Beat(3.0), on0).unwrap(),
         TimedMidiEvent::new(
             Beat(2.0),
-            m1_cc(MidiChannel::FIRST, CCNumber::DATA_ENTRY_LSB, U7::of(50)),
+            Message::midi1(
+                MidiChannel::FIRST,
+                Voice1::control_change(CCNumber::DATA_ENTRY_LSB, U7::of(50)),
+            ),
         )
         .unwrap(),
         TimedMidiEvent::new(
             Beat(1.0),
-            m1_cc(MidiChannel::FIRST, CCNumber::DATA_ENTRY, U7::of(12)),
+            Message::midi1(
+                MidiChannel::FIRST,
+                Voice1::control_change(CCNumber::DATA_ENTRY, U7::of(12)),
+            ),
         )
         .unwrap(),
         TimedMidiEvent::new(
             Beat(0.0),
-            m1_cc(MidiChannel::FIRST, CCNumber::RPN_MSB, U7::of(0)),
+            Message::midi1(
+                MidiChannel::FIRST,
+                Voice1::control_change(CCNumber::RPN_MSB, U7::of(0)),
+            ),
         )
         .unwrap(),
         TimedMidiEvent::new(
             Beat(0.0),
-            m1_cc(MidiChannel::FIRST, CCNumber::RPN_LSB, U7::of(0)),
+            Message::midi1(
+                MidiChannel::FIRST,
+                Voice1::control_change(CCNumber::RPN_LSB, U7::of(0)),
+            ),
         )
         .unwrap(),
     ];
@@ -82,7 +97,7 @@ fn a_clip_is_translated_in_beat_order_and_keeps_its_list_order() {
                     address,
                     tutti_ump::Voice2::NoteOff {
                         note,
-                        velocity: NoteVelocity::new(0x8000),
+                        velocity: NoteVelocity::CENTER,
                         attribute: tutti_ump::Attribute::None,
                     }
                 )

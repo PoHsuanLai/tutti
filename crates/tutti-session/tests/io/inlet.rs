@@ -3,14 +3,14 @@
 
 use tutti_graph::InletRing;
 use tutti_session::{InletError, OutPort, Root, Session};
-use tutti_types::MaxBlock;
 use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(1_024)))
+        .sample_rate(RATE)
+        .build()
         .expect("builds")
 }
 

@@ -9,8 +9,11 @@
 //! that is not in the topology compiles to nothing. Opening a tap refuses a source that does not exist then
 //! ([`MissingSource`](crate::MissingSource)); a lane whose port goes missing
 //! later (a node replaced by a narrower one, a removed node) reads silence and
-//! the commit succeeds; the reader is not told, and the zeros count as neither
-//! data nor loss.
+//! the commit succeeds, and the zeros count as neither data nor loss. The
+//! reader is told only when **every** lane's node was removed: the tap is then
+//! taken out of the plan (it compiles to no op, as a closed tap does) and,
+//! once the plan without it is the one running, its [`FaultLatch`] is raised
+//! ([`TapReader::source_gone`], [`Pull::Ended`] after the ring is drained).
 //!
 //! The ring each lane writes is `ringbuf`'s single-producer, single-consumer
 //! heap ring, already this crate's dependency for the editor-to-executor queue;
@@ -35,7 +38,7 @@ use std::sync::{Arc, Weak};
 use crate::TapId;
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
-use tutti_rt::RtScope;
+use tutti_rt::{FaultLatch, RtScope};
 use tutti_types::{ChannelLayout, Frame, Pull, Samples, Source};
 
 use crate::slots::AudioSlots;
@@ -216,6 +219,8 @@ pub struct TapReader {
     left: usize,
     /// The editor holds a `Weak` of this: when it dies, the reader is gone.
     alive: Arc<()>,
+    /// Raised when the tap was taken out of the plan for good.
+    end: Arc<FaultLatch>,
 }
 
 impl std::fmt::Debug for TapReader {
@@ -241,6 +246,7 @@ impl TapReader {
     #[must_use]
     pub fn pair(id: TapId, width: usize, capacity: Samples) -> (Self, TapWriter) {
         let lost = Arc::new(AtomicU64::new(0));
+        let end = Arc::new(FaultLatch::new());
         let (run_prod, run_cons) = HeapRb::<Run>::new(capacity.get().clamp(1, MAX_RUNS)).split();
         let (cons, prods): (Vec<_>, Vec<_>) = (0..width)
             .map(|_| HeapRb::<f32>::new(capacity.get().max(1)).split())
@@ -254,6 +260,7 @@ impl TapReader {
             at: Frame::ZERO,
             left: 0,
             alive: Arc::new(()),
+            end,
         };
         let writer = TapWriter {
             lanes: prods,
@@ -269,6 +276,25 @@ impl TapReader {
     #[must_use]
     pub fn watch(&self) -> Weak<()> {
         Arc::downgrade(&self.alive)
+    }
+
+    /// The latch the editor raises when the tap leaves the plan because every
+    /// node it read was removed.
+    pub(crate) fn end_latch(&self) -> Arc<FaultLatch> {
+        Arc::clone(&self.end)
+    }
+
+    /// Whether the tap was taken out of the plan because every node it read
+    /// was removed, and no frame will be written after what is in its rings.
+    ///
+    /// **Ask before reading the rings** ([`FaultLatch`]'s order): a `true`
+    /// answer, then a read that finds nothing, is the end; read first and
+    /// ask after, and a frame written between the two is lost. A tap with a
+    /// source left, or one whose source was only replaced by a narrower node,
+    /// never ends: its lanes read silence ([`Editor::open_tap`](crate::Editor::open_tap)).
+    #[must_use]
+    pub fn source_gone(&self) -> bool {
+        self.end.is_raised()
     }
 
     /// The tap's id, the one [`Editor::close_tap`](crate::Editor::close_tap) takes.
@@ -452,17 +478,24 @@ impl Source for TapReader {
 
     /// Pops up to `out.len() / width` frames into `out` ([`pop_into`](TapReader::pop_into)).
     ///
-    /// **The graph does not end**, so an empty tap is [`Starved`](Pull::Starved),
-    /// never [`Ended`](Pull::Ended): it means the graph has not rendered since
-    /// the last pull (the audio thread was between blocks, or the tap was only
-    /// just opened: it flows from the commit that carries it). A consumer that
-    /// read it as end-of-stream would stop within a block of starting.
+    /// **The graph does not end**, so an empty tap is [`Starved`](Pull::Starved):
+    /// it means the graph has not rendered since the last pull (the audio
+    /// thread was between blocks, or the tap was only just opened: it flows
+    /// from the commit that carries it). A consumer that read it as
+    /// end-of-stream would stop within a block of starting. The tap's own
+    /// sources can end: once every node it read was removed and the frames
+    /// before the removal are read, it answers [`Ended`](Pull::Ended)
+    /// ([`source_gone`](TapReader::source_gone)).
     fn pull(&mut self, out: &mut [f32]) -> Pull {
+        // The latch first, then the ring: `FaultLatch::drain`'s order.
+        let gone = self.source_gone();
         let frames = self.pop_into(out);
-        if frames.is_zero() {
-            Pull::Starved
-        } else {
+        if !frames.is_zero() {
             Pull::Frames(frames)
+        } else if gone {
+            Pull::Ended
+        } else {
+            Pull::Starved
         }
     }
 

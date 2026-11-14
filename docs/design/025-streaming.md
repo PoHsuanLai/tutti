@@ -350,7 +350,7 @@ enum Effect { Publish(StreamId, Status), Decode(StreamId), Free(StreamId), Warn(
   true only because of the manual driver.
 - **The driver is a typestate**, not two runtime flags and asserts: a streamer
   is built, then either stepped by hand or running on its thread, and the
-  type says which (the `Lifecycle` shape of design 016). It is the cut after
+  type says which. It is the cut after
   the core exists (cut 4).
 - **Containment is per stream.** A refill, an open and a decode each run under
   `catch_unwind` per stream; a panic faults that stream (`StreamFault::Panicked`,

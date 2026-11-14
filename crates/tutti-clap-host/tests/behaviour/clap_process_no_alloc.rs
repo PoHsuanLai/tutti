@@ -23,7 +23,6 @@ use std::sync::Mutex;
 use tutti_graph::UmpAt;
 
 use tutti_clap_host::{AudioBuffer32, ClapLoaded, ClapProcessContext, LoadOptions, TransportInfo};
-use tutti_fixtures::midi as fx;
 use tutti_graph::Offset;
 use tutti_types::Samples;
 
@@ -56,6 +55,7 @@ const MAX_FRAMES: u32 = 512;
 // convention.
 use tutti_clap_test_plugin::rt_probe::status;
 use tutti_clap_test_plugin::{StatusMode, WideLayout};
+use tutti_fixtures::midi;
 use tutti_ump::{Data128, Message, MidiChannel, MidiGroup, Sysex8Packet, SysexStatus, Ump};
 
 /// A block long enough for every offset these tests use.
@@ -254,14 +254,8 @@ fn process_with_midi_does_not_allocate() {
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
 
-    let on_event = [(
-        at(0),
-        fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
-    )];
-    let off_event = [(
-        at(0),
-        fx::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-    )];
+    let on_event = [(at(0), midi::note_on(MidiChannel::FIRST, 60, 0x8000))];
+    let off_event = [(at(0), midi::note_off(MidiChannel::FIRST, 60, 0))];
 
     // Prime with a note pair, then silent blocks, so any first-call lazy
     // allocation on the event path is flushed before the gate.
@@ -491,7 +485,7 @@ fn alternating_continue_sleep_does_not_allocate() {
 }
 
 /// **The host turns the plugin's `clap_process_status` into the shared
-/// per-block status the graph node reads** (doc 023 step 2): *sleep* and
+/// per-block status the graph node reads**: *sleep* and
 /// *tail* as themselves, *continue* and *continue if not quiet* as
 /// `Continue` (neither narrows anything), checked through the real
 /// `Processor::process` path, not the raw status the tests above read.
@@ -1016,14 +1010,8 @@ fn a_param_flood_keeps_note_offs_and_final_values() {
     let mut bufs = StereoBufs::new();
     let transport = TransportInfo::default();
     let notes = [
-        (
-            at(0),
-            fx::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, fx::MID_VELOCITY),
-        ),
-        (
-            at(0),
-            fx::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-        ),
+        (at(0), midi::note_on(MidiChannel::FIRST, 60, 0x8000)),
+        (at(0), midi::note_off(MidiChannel::FIRST, 60, 0)),
     ];
     let ctx = ClapProcessContext {
         midi: &notes,

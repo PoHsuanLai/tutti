@@ -25,7 +25,7 @@ serde = ["dep:serde", "arrayvec/serde", "bitflags/serde", "dpi/serde", "keyboard
 # wire between `tutti-plugin-probe` and the host that spawned it.
 probe-wire = ["serde", "dep:postcard"]
 
-# The mapping contract, `tutti_plugin_types::contract` (doc 029 section 6.1): the
+# The mapping contract, `tutti_plugin_types::contract`: the
 # laws a `ParamMapping` is held to, as `mapping_contract!`. Test support, so off
 # by default: this crate's own tests turn it on through the self dev-dependency
 # below, and a format host turns it on in its dev-dependency on this crate.

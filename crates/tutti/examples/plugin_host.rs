@@ -31,9 +31,9 @@ use std::path::PathBuf;
 use tutti::plugin::catalog::{CatalogConfig, PluginDb};
 use tutti::ump::{Address, Message, NoteNumber, U7, Ump, Voice1};
 use tutti::{
-    Beat, Bounce, Catalog, ChannelLayout, Format, Hosting, MaxBlock, MidiChannel, Normalized,
-    ParamId, Pcm, PluginEvent, PluginLoadRequest, PluginRef, PresetError, PresetKind, Range, Root,
-    SampleRate, Samples, Session, SessionEvent, TimedMidiEvent,
+    Beat, Bounce, Catalog, Format, Hosting, MaxBlock, MidiChannel, Normalized, ParamId, Pcm,
+    PluginEvent, PluginLoadRequest, PluginRef, PresetError, PresetKind, Range, Root, SampleRate,
+    Samples, Session, SessionEvent, TimedMidiEvent,
 };
 
 const RATE: SampleRate = SampleRate::SR_48K;
@@ -77,11 +77,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    plugin it blacklisted is refused here (`BridgeError::Blacklisted`),
     //    before any server starts. The thread that loads an in-process plugin
     //    is the main thread: claim the token once.
-    let mut session = Session::builder().build_offline(
-        RATE,
-        ChannelLayout::STEREO,
-        MaxBlock::of(Samples(512)),
-    )?;
+    let mut session = Session::builder()
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(512)))
+        .build()?;
     let main = tutti::plugin::MainThread::claim()?;
     let loaded = session
         .plugin_load(PluginLoadRequest::new(plugin))

@@ -231,6 +231,9 @@ pub struct UmpOut {
     sends: Vec<(Offset, SendAt)>,
     /// Scratch for the batch as the sink takes it, with its send times.
     outgoing: Vec<Outgoing>,
+    /// Scratch a drain collects its whole run of events into
+    /// ([`MidiOutRouter::route_drain`]), so one drain is one batch.
+    drained: Vec<(Frame, Ump)>,
 }
 
 /// What an [`UmpOut`] sends into.
@@ -281,14 +284,20 @@ impl UmpOut {
     }
 
     fn over(sink: Sink, sample_rate: tutti_types::SampleRate) -> Self {
+        let stream = tutti_midi_runtime::JrStream::new(sample_rate).with_clock(sample_rate);
+        Self::with_stream(sink, stream)
+    }
+
+    fn with_stream(sink: Sink, stream: tutti_midi_runtime::JrStream) -> Self {
         Self {
             sink,
-            stream: tutti_midi_runtime::JrStream::new(sample_rate).with_clock(sample_rate),
+            stream,
             stamping: false,
             stamped: Vec::new(),
             rebased: Vec::new(),
             sends: Vec::new(),
             outgoing: Vec::new(),
+            drained: Vec::new(),
         }
     }
 
@@ -334,6 +343,22 @@ impl UmpOut {
         sample_rate: tutti_types::SampleRate,
     ) -> Self {
         Self::over(Sink::Device(Box::new(output)), sample_rate)
+    }
+
+    /// An output over `output` that carries on `stream`, the stamp stream of
+    /// an output that was closed ([`into_stream`](Self::into_stream)).
+    #[cfg(feature = "midi-hardware")]
+    pub(crate) fn resumed(
+        output: tutti_midi_hardware::OpenOutput,
+        stream: tutti_midi_runtime::JrStream,
+    ) -> Self {
+        Self::with_stream(Sink::Device(Box::new(output)), stream)
+    }
+
+    /// The stamp stream, which outlives the sink it stamped for.
+    #[cfg(feature = "midi-hardware")]
+    pub(crate) fn into_stream(self) -> tutti_midi_runtime::JrStream {
+        self.stream
     }
 
     /// JR-stamp `events` and send each resulting UMP message (the timestamp
@@ -421,7 +446,10 @@ impl UmpOut {
     fn send_all(&mut self, events: &[UmpAt]) {
         let mut out = core::mem::take(&mut self.outgoing);
         out.clear();
-        // A JR stamp is at its event's offset, so it is sent with it.
+        // A JR stamp is at its event's offset, so it is sent with it. An offset
+        // is its frame less the batch's first and a send time is a function of
+        // the frame, so events on one offset share one send time and any
+        // match of the search is the right one.
         out.extend(events.iter().map(|&(at, ump)| {
             Outgoing {
                 at,
@@ -508,6 +536,34 @@ pub struct MidiOutRouter<'a> {
 }
 
 impl MidiOutRouter<'_> {
+    /// Routes one drain as one batch: `fill` hands every event of the drain
+    /// to the callback it is given, and they are then sent together
+    /// ([`UmpOut::send_frames`]), so the spacing of the whole drain, not of
+    /// a chunk of it, is what the stamps and the send times keep. With no
+    /// output the events are counted as dropped, as [`route`](Self::route)
+    /// does.
+    pub fn route_drain(&mut self, fill: impl FnOnce(&mut dyn FnMut(Frame, Ump))) {
+        match self.out.as_mut() {
+            Some(out) => {
+                let mut batch = core::mem::take(&mut out.drained);
+                batch.clear();
+                fill(&mut |frame, ump| batch.push((frame, ump)));
+                let refused = out.send_frames(&batch, self.timing);
+                out.drained = batch;
+                if let Some(drops) = self.drops {
+                    drops.record_refused(refused as u64);
+                }
+            }
+            None => {
+                let mut n = 0;
+                fill(&mut |_, _| n += 1);
+                if let Some(drops) = self.drops {
+                    drops.record(n);
+                }
+            }
+        }
+    }
+
     /// Routes a batch of drained events, each on its frame on the graph's
     /// clock, to the open output ([`UmpOut::send_frames`]). An event with
     /// no output is dropped (the ring must not back up), counted first.
@@ -528,31 +584,30 @@ impl MidiOutRouter<'_> {
     }
 }
 
-/// Drains a [`MidiReceiver`] mailbox fully and routes every event.
+/// Drains a [`MidiReceiver`] mailbox fully and routes every event as one
+/// batch ([`MidiOutRouter::route_drain`]).
 ///
 /// For a host's own outbound mailbox (a MIDI-CI reply, a track's MIDI out);
 /// the graph's hardware out is a tap and reads its frames directly. A
-/// mailbox stamp is a raw `u32` whose meaning is the host's, so each drained
-/// batch is read as frames from its first event (every stamp less the
-/// first's, wrapping): the spacing, which is what the router needs.
+/// mailbox stamp is a raw `u32` whose meaning is the host's, so the drain is
+/// read as frames from its first event (every stamp less the first's,
+/// wrapping): the spacing, which is what the router needs.
 pub fn drain_receiver_through(receiver: &MidiReceiver, router: &mut MidiOutRouter<'_>) {
-    // Both on the stack, as the one buffer was before: this runs every frame.
-    let mut buf = [(0u32, Ump([0; 4])); DRAIN_CHUNK];
-    let mut batch = [(Frame::ZERO, Ump([0; 4])); DRAIN_CHUNK];
-    loop {
-        let n = receiver.poll_into(&mut buf);
-        if n == 0 {
-            break;
+    router.route_drain(|push| {
+        // On the stack: this runs every frame.
+        let mut buf = [(0u32, Ump([0; 4])); DRAIN_CHUNK];
+        let mut base = None;
+        loop {
+            let n = receiver.poll_into(&mut buf);
+            for &(stamp, ump) in &buf[..n] {
+                let base = *base.get_or_insert(stamp);
+                push(Frame::new(u64::from(stamp.wrapping_sub(base))), ump);
+            }
+            if n < DRAIN_CHUNK {
+                break;
+            }
         }
-        let base = buf[0].0;
-        for (slot, &(stamp, ump)) in batch.iter_mut().zip(&buf[..n]) {
-            *slot = (Frame::new(u64::from(stamp.wrapping_sub(base))), ump);
-        }
-        router.route(&batch[..n]);
-        if n < DRAIN_CHUNK {
-            break;
-        }
-    }
+    });
 }
 
 /// What [`Midi::unroute`] found missing: the rule `id` named.
@@ -723,6 +778,13 @@ pub(crate) struct MidiState {
     /// the routes are then the host's, and the session's own are refused.
     host_routes: bool,
     pub(crate) out: Option<UmpOut>,
+    /// The stamp stream of a device output that was disconnected, which the
+    /// next one carries on ([`Midi::connect_output`]).
+    #[cfg(feature = "midi-hardware")]
+    pub(crate) parked_stream: Option<tutti_midi_runtime::JrStream>,
+    /// What the app connected and the OS took away, wanted back.
+    #[cfg(feature = "midi-hardware")]
+    pub(crate) lost: crate::midi_hardware::Lost,
     /// The session's one MPE mode ([`Midi::set_mpe`]).
     mpe: MpeMode,
     /// The hardware out's tap on the clock, which `Phase::MidiOut` drains;
@@ -880,29 +942,23 @@ impl MidiState {
         out: &mut Vec<crate::SessionEvent>,
     ) -> bool {
         let Some(io) = io else { return false };
-        let events = self.device_events.as_ref();
-        for event in events.into_iter().flat_map(|events| events.try_iter()) {
+        // Drained first: reopening a device takes the state mutably.
+        let pending: Vec<_> = self
+            .device_events
+            .iter()
+            .flat_map(tutti_midi_hardware::DeviceEvents::try_iter)
+            .collect();
+        for event in pending {
             out.push(MidiEvent::of_device(event.clone()).into());
-            if let tutti_midi_hardware::DeviceEvent::Removed(device) = event {
-                // Held ones are closed here, not left to fail on a dead
-                // handle: the port goes and the lists agree.
-                if io.disconnect_input(&device.id) {
-                    out.push(
-                        MidiEvent::InputLost {
-                            info: device.clone(),
-                        }
-                        .into(),
-                    );
+            match event {
+                tutti_midi_hardware::DeviceEvent::Removed(device) => {
+                    self.lose(io, &device, out);
                 }
-                if self
-                    .out
-                    .as_ref()
-                    .and_then(UmpOut::device)
-                    .is_some_and(|open| *open.id() == device.id)
-                {
-                    self.out = None;
-                    out.push(MidiEvent::OutputLost { info: device }.into());
+                tutti_midi_hardware::DeviceEvent::Added(device) => {
+                    let rate = graph.prepared().sample_rate();
+                    self.restore(io, rate, &device, out);
                 }
+                _ => {}
             }
         }
         // The devices' UMP Stream negotiations take their step at `now`: the
@@ -923,17 +979,27 @@ impl MidiState {
                     tutti_midi_hardware::Polled::Stream(device, stream) => {
                         MidiEvent::StreamSettled { device, stream }
                     }
-                    tutti_midi_hardware::Polled::Ci(device, change) => {
-                        MidiEvent::CiPeer { device, change }
-                    }
-                    tutti_midi_hardware::Polled::Profile(device, change) => {
+                    tutti_midi_hardware::Polled::Ci(device, peer, change) => MidiEvent::CiPeer {
+                        device,
+                        peer,
+                        change,
+                    },
+                    tutti_midi_hardware::Polled::Profile(device, peer, change) => {
                         if !profile_peers.contains(&device) {
                             profile_peers.push(device.clone());
                         }
-                        MidiEvent::CiProfiles { device, change }
+                        MidiEvent::CiProfiles {
+                            device,
+                            peer,
+                            change,
+                        }
                     }
-                    tutti_midi_hardware::Polled::Process(device, change) => {
-                        MidiEvent::CiProcess { device, change }
+                    tutti_midi_hardware::Polled::Process(device, peer, change) => {
+                        MidiEvent::CiProcess {
+                            device,
+                            peer,
+                            change,
+                        }
                     }
                     // A kind of report this session does not know is not one.
                     _ => continue,
@@ -946,7 +1012,10 @@ impl MidiState {
         }
         let wired = wire_inlets(&mut self.inlet_keys, io.ports().inlets(), nodes, graph);
         if !self.watch_failure_reported
-            && let Some(why) = events.and_then(tutti_midi_hardware::DeviceEvents::failure)
+            && let Some(why) = self
+                .device_events
+                .as_ref()
+                .and_then(tutti_midi_hardware::DeviceEvents::failure)
         {
             self.watch_failure_reported = true;
             out.push(MidiEvent::WatchFailed(why).into());
@@ -974,7 +1043,6 @@ impl MidiState {
             frame: Frame::ZERO,
             ump: Ump([0; 4]),
         }; DRAIN_CHUNK];
-        let mut batch = [(Frame::ZERO, Ump([0; 4])); DRAIN_CHUNK];
         #[cfg(feature = "device")]
         let timing = self
             .output_clock
@@ -987,18 +1055,17 @@ impl MidiState {
             drops: Some(&self.drops),
             timing: timing.as_ref(),
         };
-        loop {
-            let n = tap.pop_into(&mut events);
-            for (slot, e) in batch.iter_mut().zip(&events[..n]) {
-                *slot = (e.frame, e.ump);
+        router.route_drain(|push| {
+            loop {
+                let n = tap.pop_into(&mut events);
+                for e in &events[..n] {
+                    push(e.frame, e.ump);
+                }
+                if n < DRAIN_CHUNK {
+                    break;
+                }
             }
-            if n > 0 {
-                router.route(&batch[..n]);
-            }
-            if n < DRAIN_CHUNK {
-                break;
-            }
-        }
+        });
         self.drops.record_refused(tap.take_lost());
     }
 
@@ -2318,8 +2385,8 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
+    use tutti_fixtures::midi;
     use tutti_types::SampleRate;
-    use tutti_ump::MidiGroup;
 
     /// **A device's inlet holds at least a second of a saturated MIDI 1.0
     /// cable** (MIDI 1.0 Detailed Specification, Hardware: a byte every 320
@@ -2354,12 +2421,7 @@ mod tests {
     fn note(offset: usize) -> UmpAt {
         (
             Offset::of(Samples(offset), Samples(512)),
-            tutti_fixtures::midi::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                60,
-                tutti_fixtures::midi::MID_VELOCITY,
-            ),
+            midi::note_on(MidiChannel::FIRST, 60, 0x8000),
         )
     }
 
@@ -2509,6 +2571,63 @@ mod tests {
             sent.iter().map(|e| e.0).collect::<Vec<_>>(),
             [0, 10].map(|o| Offset::of(Samples(o), span))
         );
+    }
+
+    /// **A drain is one timeline, whatever its chunks.** A mailbox of 256
+    /// events on stamps 0 to 255 and one more on stamp 1 000 (the second
+    /// chunk of the drain, a gap of 745 frames after the first) reaches the
+    /// sink with the last event at offset 1 000, and a stamping
+    /// output advances its origin by the whole span, 1 001 frames.
+    #[test]
+    fn a_drain_over_several_chunks_keeps_the_gap_between_them() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut out = UmpOut::new(Box::new(Recording(log.clone())), SampleRate::SR_48K);
+        out.set_stamping(true);
+        let (tx, rx) = tutti_midi_runtime::MidiMailbox::with_capacity(
+            core::num::NonZeroUsize::new(512).unwrap(),
+        );
+        let mut stamped: Vec<(u32, Ump)> = (0..256).map(|s| (s, note(0).1)).collect();
+        stamped.push((1_000, note(0).1));
+        tx.queue_stamped(&stamped);
+        let mut router = MidiOutRouter {
+            out: Some(&mut out),
+            drops: None,
+            timing: None,
+        };
+        drain_receiver_through(&rx, &mut router);
+        let log = log.lock().unwrap();
+        let last = log.iter().flatten().map(|e| e.0).max().unwrap();
+        assert_eq!(last, Offset::of(Samples(1_000), Samples(1_001)));
+        assert_eq!(
+            out.origin(),
+            Frame::new(1_001),
+            "the origin moved by the span"
+        );
+    }
+
+    /// **Events sharing a frame are sent at that frame's time, whichever
+    /// event of the frame a send is looked up by.** The send time is a pure
+    /// function of the frame, and an offset is the frame less the batch's
+    /// first, so one offset names one frame and one time: three events on two
+    /// frames, with stamping on, each go out at the time its own frame has.
+    #[test]
+    fn events_on_one_frame_share_that_frames_send_time() {
+        let t0 = Instant::now() + Duration::from_secs(60);
+        let (mut out, log) = timed_out();
+        out.set_stamping(true);
+        let timing = timing_at(t0, OutputTerms::default());
+        let map = timing.map.unwrap();
+        out.send_frames(&[at(1_000), at(2_000), at(1_000)], Some(&timing));
+        let sent = taken(&log);
+        let notes: Vec<_> = sent.iter().filter(|e| e.ump == note(0).1).collect();
+        assert_eq!(notes.len(), 3);
+        for (note, frame) in notes.iter().zip([1_000, 2_000, 1_000]) {
+            assert_eq!(
+                note.send,
+                SendAt::At(map.os_at(Frame::new(frame)).unwrap()),
+                "frame {frame}"
+            );
+        }
     }
 
     /// Keeps every batch's events with the time each was sent at.

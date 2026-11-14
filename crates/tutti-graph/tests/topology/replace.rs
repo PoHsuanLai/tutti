@@ -8,7 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use common::{Kind, TestNode, prepare};
-use tutti_fixtures::midi::m1_note_on;
+
+use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::{
     CommitError, CrossfadeCurve, Cx, Editor, EventIn, EventKind, Executor, Fade, Io, Node, Prepare,
@@ -17,7 +18,7 @@ use tutti_graph::{
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_rt::RtScope;
 use tutti_types::{At, ChannelLayout, Samples};
-use tutti_ump::{MidiChannel, NoteNumber, U7};
+use tutti_ump::{MidiChannel, U7};
 
 const NODE: NodeKey = NodeKey(1);
 
@@ -510,11 +511,7 @@ fn events_go_to_the_incoming_unit_only() {
             port: 0,
         })]);
     ed.commit().expect("commits");
-    let note = EventKind::Midi(m1_note_on(
-        MidiChannel::FIRST,
-        NoteNumber::of(60),
-        U7::of(100),
-    ));
+    let note = EventKind::Midi(midi::m1_note_on(MidiChannel::FIRST, 60, U7::of(100)));
     let mut out = vec![0.0f32; 64];
     let mut block = |exec: &mut Executor| {
         exec.process(64, &TransportPosition::default(), &[], &mut [&mut out[..]]);
@@ -701,6 +698,26 @@ fn the_reference_cuts_a_fade_on_a_latency_change() {
     );
 }
 
+/// **A replace gives the key the incoming unit's own kind**, not the kind
+/// the key was inserted under: a key that held one type of node and now holds
+/// another must not name the old type in the spec (the kind is what
+/// diagnostics print), whether the replace fades or swaps.
+#[test]
+fn a_replace_takes_the_incoming_units_kind() {
+    let fade = Fade::new(Samples(100), CrossfadeCurve::EqualAmplitude);
+    for incoming in [gain(3.0), TestNode::new(Kind::Lag { latency: 3 })] {
+        let (mut ed, _exec) = gain_graph(1.0);
+        assert_eq!(ed.spec().topology.nodes[&NODE].kind, "gain");
+        ed.replace_or_swap(NODE, Unforkable(incoming), fade)
+            .expect("not poisoned, not re-preparing");
+        assert_eq!(
+            ed.spec().topology.nodes[&NODE].kind,
+            std::any::type_name::<TestNode>(),
+            "the spec names the unit that runs at the key"
+        );
+    }
+}
+
 /// **`replace_or_swap` fades where `replace` would, and swaps where
 /// `replace` refuses**: a unit that fits the running one fades in; one that
 /// does not (here: a latency the plan was not compiled for) lands whole on
@@ -747,5 +764,9 @@ fn replace_or_swap_fades_when_it_fits_and_swaps_when_it_does_not() {
         .expect("swaps");
     ed.commit().expect("commits");
     assert_eq!(ed.fades_in_flight(), 0);
-    assert_eq!(ed.spec().topology.nodes[&NodeKey(5)].kind, "gain");
+    assert_eq!(
+        ed.spec().topology.nodes[&NodeKey(5)].kind,
+        std::any::type_name::<TestNode>(),
+        "the swapped-in unit's kind (a replace names the unit that runs)"
+    );
 }

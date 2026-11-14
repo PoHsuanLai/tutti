@@ -8,6 +8,7 @@ use crate::test_support::FakeBackend;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tutti_fixtures::midi;
 use tutti_graph::{Offset, UmpAt};
 use tutti_midi_device::EndpointId;
 
@@ -45,16 +46,8 @@ fn input(s: &MidiSession, name: &str) -> DeviceId {
 }
 
 fn note() -> UmpAt {
-    use tutti_ump::{MidiChannel, MidiGroup};
-    (
-        Offset::ZERO,
-        tutti_fixtures::midi::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            tutti_fixtures::midi::MID_VELOCITY,
-        ),
-    )
+    use tutti_ump::MidiChannel;
+    (Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0x8000))
 }
 
 #[test]

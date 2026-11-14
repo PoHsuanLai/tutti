@@ -1,4 +1,5 @@
 use super::*;
+use tutti_fixtures::midi;
 use tutti_ump::{MidiChannel, TimeSignature as Wire};
 
 fn tempo_in(group: u8, field: u32) -> Ump {
@@ -105,13 +106,5 @@ fn other_messages_are_not_followed() {
         }),
     ));
     assert_eq!(f.step(metronome), None);
-    assert_eq!(
-        f.step(tutti_fixtures::midi::note_on(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            60,
-            0x8000
-        )),
-        None
-    );
+    assert_eq!(f.step(midi::note_on(MidiChannel::FIRST, 60, 0x8000)), None);
 }

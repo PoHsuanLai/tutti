@@ -27,7 +27,7 @@ pub fn step(core: &mut Voicing, channel: u8, message: Voice2) -> Vec<Command> {
 pub fn note_on(key: u8) -> Voice2 {
     Voice2::NoteOn {
         note: NoteNumber::of(key),
-        velocity: NoteVelocity::new(0x8000),
+        velocity: NoteVelocity::CENTER,
         attribute: Attribute::None,
     }
 }

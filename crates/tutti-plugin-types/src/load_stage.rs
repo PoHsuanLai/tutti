@@ -10,7 +10,7 @@
 //! format.
 
 /// Labels the phase of plugin loading in which an error was produced.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum LoadStage {
     /// Resolving the plugin bundle / file on disk before opening it.

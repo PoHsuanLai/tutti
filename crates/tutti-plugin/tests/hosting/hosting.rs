@@ -47,8 +47,8 @@ mod clap {
         env
     }
 
-    /// **`Auto` serves a CLAP plugin**: the format's default is out of process
-    /// (design 021 Q3), so it runs in a `plugin-server` process, which the
+    /// **`Auto` serves a CLAP plugin**: the format's default is out of process,
+    /// so it runs in a `plugin-server` process, which the
     /// handle names.
     #[test]
     fn auto_serves_a_clap_plugin() {

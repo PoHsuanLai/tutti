@@ -1,4 +1,4 @@
-//! A hosted plugin's presets (design 029 section 2.4): what the format can do
+//! A hosted plugin's presets: what the format can do
 //! with them, the list where there is one, and a load that says what happened.
 //!
 //! Presets are the main thread's (VST3, VST2 and AU answer them there), so the
@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use tutti_plugin_host::PluginHandle;
+use crate::plugin::HostedPlugin;
 use tutti_plugin_types::{MainThread, Preset, PresetError, PresetId, PresetSupport};
 
 /// What a plugin's format does with presets ([`Presets::kind`]).
@@ -33,20 +33,21 @@ pub enum PresetKind {
 /// asked again by making another.
 #[derive(Debug)]
 pub struct Presets<'a> {
-    handle: &'a PluginHandle,
+    hosted: &'a HostedPlugin,
     main: MainThread,
     kind: PresetKind,
     list: Vec<Preset>,
 }
 
 impl<'a> Presets<'a> {
-    /// The presets of the plugin behind `handle`.
+    /// The presets of the plugin of `hosted`.
     ///
     /// # Errors
     ///
     /// [`PresetError::Unsupported`]: the plugin has no preset surface;
     /// [`PresetError::Lost`]: it is gone.
-    pub(crate) fn of(handle: &'a PluginHandle, main: MainThread) -> Result<Self, PresetError> {
+    pub(crate) fn of(hosted: &'a HostedPlugin, main: MainThread) -> Result<Self, PresetError> {
+        let handle = &hosted.handle;
         let kind = match handle.preset_support() {
             // A format that lists but cannot load answers its loads `Refused`.
             PresetSupport::Full | PresetSupport::ListOnly => PresetKind::Browse,
@@ -58,7 +59,7 @@ impl<'a> Presets<'a> {
             PresetKind::File => Vec::new(),
         };
         Ok(Self {
-            handle,
+            hosted,
             main,
             kind,
             list,
@@ -96,7 +97,7 @@ impl<'a> Presets<'a> {
     /// The preset the plugin says is loaded, when it will say: not every format
     /// has the query, and the plugin may decline. Never "the first one".
     pub fn current(&self) -> Option<PresetId> {
-        self.handle.current_preset(&self.main)
+        self.hosted.handle.current_preset(&self.main)
     }
 
     /// Loads the preset file at `path` ([`PresetKind::File`]).
@@ -110,8 +111,11 @@ impl<'a> Presets<'a> {
         if self.kind != PresetKind::File {
             return Err(PresetError::Unsupported);
         }
-        self.handle
-            .load_preset(&self.main, &PresetId::Location(path.as_ref().to_path_buf()))
+        self.hosted
+            .handle
+            .load_preset(&self.main, &PresetId::Location(path.as_ref().to_path_buf()))?;
+        self.hosted.refresh_values();
+        Ok(())
     }
 }
 
@@ -145,8 +149,12 @@ impl PresetEntry<'_> {
     /// [`PresetError::Refused`] when the plugin declines (leave the selection
     /// where it was); [`PresetError::Lost`] when it is gone.
     pub fn load(&self) -> Result<(), PresetError> {
-        self.presets
+        let presets = self.presets;
+        presets
+            .hosted
             .handle
-            .load_preset(&self.presets.main, &self.preset.id)
+            .load_preset(&presets.main, &self.preset.id)?;
+        presets.hosted.refresh_values();
+        Ok(())
     }
 }

@@ -4,15 +4,13 @@
 use tutti_graph::NodeKey;
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_session::{ParamRef, RangeError, RouteError, RouteSpec, Session};
-use tutti_types::{Depth, Hz, MaxBlock, Mix, Q, SampleRate, Samples};
+use tutti_types::{Depth, Hz, MaxBlock, Mix, Q, Samples};
 
 fn session() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            tutti_types::ChannelLayout::STEREO,
-            MaxBlock::of(Samples(256)),
-        )
+        .outputs(tutti_types::ChannelLayout::STEREO)
+        .max_block(MaxBlock::of(Samples(256)))
+        .build()
         .expect("builds")
 }
 

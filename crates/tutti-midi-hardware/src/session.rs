@@ -34,7 +34,7 @@ use std::time::Instant;
 
 use crate::HardwareMidiInputs;
 use crate::backend;
-use crate::ci::{CiChange, CiPeerInfo, Heard};
+use crate::ci::{CiChange, CiPeerInfo, Heard, PeerId};
 use crate::devices::{Devices, OpenInput, OpenOutput};
 use crate::endpoints::MidiEndpoints;
 use crate::error::{Error, Result};
@@ -134,6 +134,16 @@ impl From<&str> for DeviceQuery {
 }
 
 impl DeviceQuery {
+    /// Whether this names `device`: its id, or a name that is a
+    /// case-insensitive substring of the device's.
+    #[must_use]
+    pub fn matches(&self, device: &DeviceInfo) -> bool {
+        match &self.0 {
+            Query::Id(id) => *id == device.id,
+            Query::Name(name) => device.name.to_lowercase().contains(&name.to_lowercase()),
+        }
+    }
+
     /// The device this picks among `list`, or the error naming what was
     /// searched. An id is taken as it is (the open reports a stale one).
     fn pick(&self, list: Vec<DeviceInfo>) -> Result<DeviceId> {
@@ -164,14 +174,15 @@ pub enum Polled {
     /// changed.
     /// (Boxed: an Endpoint is large.)
     Stream(DeviceId, Box<DeviceStream>),
-    /// A MIDI-CI peer of the device was found, changed or lost.
-    Ci(DeviceId, CiChange),
+    /// A MIDI-CI peer of the device (named by its [`PeerId`]) was found, changed
+    /// or lost.
+    Ci(DeviceId, PeerId, CiChange),
     /// A MIDI-CI peer's Profiles became known or changed, a switch ended, or
     /// the peer's Profiles were dropped.
-    Profile(DeviceId, ProfilesChange),
+    Profile(DeviceId, PeerId, ProfilesChange),
     /// A MIDI-CI peer answered Process Inquiry, a MIDI Message Report began or
     /// ended, or the peer's Process Inquiry was dropped.
-    Process(DeviceId, ProcessChange),
+    Process(DeviceId, PeerId, ProcessChange),
 }
 
 impl MidiSession {
@@ -449,19 +460,19 @@ impl MidiSession {
                 stepped
                     .ci
                     .into_iter()
-                    .map(|change| Polled::Ci(id.clone(), change)),
+                    .map(|(peer, change)| Polled::Ci(id.clone(), peer, change)),
             );
             polled.extend(
                 stepped
                     .profiles
                     .into_iter()
-                    .map(|change| Polled::Profile(id.clone(), change)),
+                    .map(|(peer, change)| Polled::Profile(id.clone(), peer, change)),
             );
             polled.extend(
                 stepped
                     .process
                     .into_iter()
-                    .map(|change| Polled::Process(id.clone(), change)),
+                    .map(|(peer, change)| Polled::Process(id.clone(), peer, change)),
             );
         }
         polled.into_iter()

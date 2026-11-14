@@ -139,7 +139,7 @@ impl ProcessStatus {
 ///
 /// The plugin may serialize differently per context. The host reaches two of
 /// the three the extension defines: it has no preset save.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StateContext {
     /// Saving or loading as part of the enclosing project.
     ForProject,
@@ -170,7 +170,7 @@ impl From<tutti_plugin_types::StateUse> for StateContext {
 
 /// What the host tells a plugin about a parameter's automation
 /// (`clap.param-indication`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AutomationState {
     /// No automation.
     None,

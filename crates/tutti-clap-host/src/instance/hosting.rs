@@ -1,5 +1,5 @@
 //! Where CLAP runs: in the host's process, and served from another one with
-//! an editor-only instance here (design 021 §3).
+//! an editor-only instance here.
 
 use std::path::Path;
 

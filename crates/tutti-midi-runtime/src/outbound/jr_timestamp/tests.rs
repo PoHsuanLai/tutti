@@ -1,8 +1,9 @@
 use super::*;
 use crate::test_support::at;
-use tutti_fixtures::midi::{jr_timestamp, note_off, note_on};
+
+use tutti_fixtures::midi;
 use tutti_types::{Frame, Samples};
-use tutti_ump::{KeyEvent, Message, MidiChannel, MidiGroup, Utility};
+use tutti_ump::{KeyEvent, Message, MidiChannel, Utility};
 
 /// The sender-clock value if `ump` is a JR Clock (M2-104 section 7.2.2.1).
 fn jr_clock_value(ump: &Ump) -> Option<u16> {
@@ -121,10 +122,7 @@ fn a_stamped_block_carries_its_clock_before_the_stamps() {
     let sample_rate = 48_000.0;
     let mut stream =
         JrStream::new(SampleRate::of(sample_rate)).with_clock(SampleRate::of(sample_rate));
-    let events = [at(
-        0,
-        note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
-    )];
+    let events = [at(0, midi::note_on(MidiChannel::FIRST, 60, 0x8000))];
     let mut out = Vec::new();
     stream.stamp_span(&events, Samples(512), &mut out);
     // clock, then stamp, then the note.
@@ -182,8 +180,8 @@ fn the_default_interval_is_inside_the_spec_maximum() {
 #[test]
 fn a_blocks_span_is_one_past_its_furthest_offset() {
     let events = [
-        at(0, note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)),
-        at(511, note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0)),
+        at(0, midi::note_on(MidiChannel::FIRST, 60, 0x8000)),
+        at(511, midi::note_off(MidiChannel::FIRST, 60, 0)),
     ];
     assert_eq!(JrStamper::block_span(&events), Samples(512));
     assert_eq!(
@@ -198,11 +196,8 @@ fn a_blocks_span_is_one_past_its_furthest_offset() {
 fn a_stream_advances_its_origin_across_blocks() {
     let mut stream = JrStream::new(SampleRate::SR_48K);
     let events = [
-        at(0, note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)),
-        at(
-            24_000,
-            note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-        ),
+        at(0, midi::note_on(MidiChannel::FIRST, 60, 0x8000)),
+        at(24_000, midi::note_off(MidiChannel::FIRST, 60, 0)),
     ];
 
     let mut first = Vec::new();
@@ -230,14 +225,8 @@ fn two_producers_on_one_stream_keep_stamps_monotonic() {
     let mut wire = JrStream::new(SampleRate::SR_48K);
 
     // One 512-frame block each, the event at the block's end.
-    let clock_block = [at(
-        511,
-        note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000),
-    )];
-    let track_block = [at(
-        511,
-        note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
-    )];
+    let clock_block = [at(511, midi::note_on(MidiChannel::FIRST, 60, 0x8000))];
+    let track_block = [at(511, midi::note_on(MidiChannel::FIRST, 64, 0x8000))];
 
     let mut from_clock = Vec::new();
     wire.stamp(&clock_block, &mut from_clock);
@@ -258,11 +247,8 @@ fn two_producers_on_one_stream_keep_stamps_monotonic() {
 fn stamp_block_prefixes_each_event() {
     let stamper = JrStamper::new(SampleRate::SR_48K);
     let events = [
-        at(0, note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)),
-        at(
-            24_000,
-            note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-        ),
+        at(0, midi::note_on(MidiChannel::FIRST, 60, 0x8000)),
+        at(24_000, midi::note_off(MidiChannel::FIRST, 60, 0)),
     ];
     let mut out = Vec::new();
     stamper.stamp_block(&events, Frame::new(0), &mut out);
@@ -280,10 +266,10 @@ fn stamp_then_observe_recovers_spacing() {
     let stamper = JrStamper::new(SampleRate::of(sr));
     let quarter_second = 12_000; // 0.25 s of samples at 48 kHz
     let events = [
-        at(0, note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)),
+        at(0, midi::note_on(MidiChannel::FIRST, 60, 0x8000)),
         at(
             quarter_second,
-            note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, 0x8000),
+            midi::note_on(MidiChannel::FIRST, 64, 0x8000),
         ),
     ];
     let mut stream = Vec::new();
@@ -314,7 +300,7 @@ fn stamp_then_observe_recovers_spacing() {
 fn observe_before_any_timestamp_is_none() {
     let mut rx = JrReceiver::new();
     assert_eq!(
-        rx.observe(&note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000)),
+        rx.observe(&midi::note_on(MidiChannel::FIRST, 60, 0x8000)),
         None
     );
 }
@@ -323,9 +309,12 @@ fn observe_before_any_timestamp_is_none() {
 fn observe_handles_16bit_wrap() {
     // Two timestamps straddling the wrap: 0xFFF0 → 0x0010 is a delta of 0x20.
     let mut rx = JrReceiver::new();
-    assert_eq!(rx.observe(&jr_timestamp(0xFFF0)), None);
+    assert_eq!(
+        rx.observe(&Ump::from(Message::Utility(Utility::JrTimestamp(0xFFF0)))),
+        None
+    );
     let d = rx
-        .observe(&jr_timestamp(0x0010))
+        .observe(&Ump::from(Message::Utility(Utility::JrTimestamp(0x0010))))
         .expect("has a prior stamp");
     assert_eq!(d, ticks_to_duration(0x20));
 }

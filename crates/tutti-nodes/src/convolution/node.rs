@@ -20,7 +20,7 @@
 use tutti_graph::{
     Cx, Inputs, IntoNode, Io, Node, NodeParts, Outputs, ParamNode, ParamSet, Prepare, Shape, Status,
 };
-use tutti_types::{Amplitude, ChannelLayout, Fold, Param, Samples, UnitParam};
+use tutti_types::{Amplitude, ChannelLayout, Fold, FoldError, Param, Samples, UnitParam};
 use tutti_types::{Latency, Tail};
 
 use crate::ramp::LastGood;
@@ -43,6 +43,30 @@ pub(super) fn ring_out(ir_length: usize) -> Tail {
         0 | 1 => Tail::None,
         n => Tail::Finite(Samples(n - 1)),
     }
+}
+
+/// Why a [`ConvolverNode`] could not be built from the impulse responses given.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ConvolverError {
+    /// No impulse response, or a layout of no channels: a node has at least one.
+    #[error("a ConvolverNode needs at least one channel")]
+    NoChannels,
+    /// More channels than a [`ChannelLayout`] counts.
+    #[error("a ConvolverNode has at most {} channels, not {channels}", u16::MAX)]
+    TooWide {
+        /// The channels asked for.
+        channels: usize,
+    },
+    /// A folded node whose width has no fold to mono.
+    #[error("a {width}-wide folded ConvolverNode has no fold to mono")]
+    NoFold {
+        /// The node's width.
+        width: u16,
+        /// Why the width does not fold.
+        #[source]
+        source: FoldError,
+    },
 }
 
 /// How a [`ConvolverNode`]'s impulse responses map onto its channels.
@@ -137,26 +161,31 @@ impl std::fmt::Debug for ConvolverNode {
 }
 
 impl ConvolverNode {
-    /// The shared body behind every public constructor.
-    fn build(convolvers: Vec<Convolver>, config: IrChannelConfig) -> Self {
-        debug_assert!(!convolvers.is_empty());
-        assert!(
-            u16::try_from(convolvers.len()).is_ok(),
-            "a ConvolverNode has at most {} channels",
-            u16::MAX
-        );
+    /// The node over `convolvers`, checked: at least one, a width a
+    /// [`ChannelLayout`] counts and, folded, one that folds to mono.
+    fn build(convolvers: Vec<Convolver>, config: IrChannelConfig) -> Result<Self, ConvolverError> {
+        if convolvers.is_empty() {
+            return Err(ConvolverError::NoChannels);
+        }
+        let width = u16::try_from(convolvers.len()).map_err(|_| ConvolverError::TooWide {
+            channels: convolvers.len(),
+        })?;
+        let fold = match config {
+            IrChannelConfig::MonoToStereo => Some(
+                Fold::widths(ChannelLayout::from(width), ChannelLayout::MONO)
+                    .map_err(|source| ConvolverError::NoFold { width, source })?,
+            ),
+            IrChannelConfig::Mono | IrChannelConfig::Stereo => None,
+        };
+        Ok(Self::assemble(convolvers, config, fold))
+    }
+
+    /// The node over `convolvers`, which a caller has checked as [`build`](Self::build) does.
+    fn assemble(convolvers: Vec<Convolver>, config: IrChannelConfig, fold: Option<Fold>) -> Self {
         let latency_samples = convolvers[0].latency();
         // Every constructor builds all channels with one block size, so one
         // figure is true of the whole node.
         debug_assert!(convolvers.iter().all(|c| c.latency() == latency_samples));
-        let width = convolvers.len();
-        let fold = (config == IrChannelConfig::MonoToStereo).then(|| {
-            let layout =
-                ChannelLayout::try_from(width).expect("the width was checked above to fit u16");
-            Fold::widths(layout, ChannelLayout::MONO).unwrap_or_else(|e| {
-                panic!("a {width}-wide folded ConvolverNode has no fold to mono: {e}")
-            })
-        });
         Self {
             convolvers,
             config,
@@ -169,17 +198,21 @@ impl ConvolverNode {
         }
     }
 
-    /// One convolver per IR, all at `block_size`.
-    ///
-    /// # Panics
-    ///
-    /// If `irs` is empty: a node needs at least one channel, and a zero-width
-    /// convolver has no meaning to fall back to.
-    fn per_ir(irs: &[&[f32]], block_size: usize, config: IrChannelConfig) -> Self {
-        assert!(
-            !irs.is_empty(),
-            "a ConvolverNode needs at least one impulse response"
-        );
+    /// One convolver per IR, all at `block_size`. The count is checked before
+    /// any convolver is built.
+    fn per_ir(
+        irs: &[&[f32]],
+        block_size: usize,
+        config: IrChannelConfig,
+    ) -> Result<Self, ConvolverError> {
+        if irs.is_empty() {
+            return Err(ConvolverError::NoChannels);
+        }
+        if u16::try_from(irs.len()).is_err() {
+            return Err(ConvolverError::TooWide {
+                channels: irs.len(),
+            });
+        }
         Self::build(
             irs.iter()
                 .map(|ir| Convolver::new(ir, block_size))
@@ -195,7 +228,11 @@ impl ConvolverNode {
     /// resamples it.
     #[must_use]
     pub fn new(ir: &[f32], block_size: usize) -> Self {
-        Self::build(vec![Convolver::new(ir, block_size)], IrChannelConfig::Mono)
+        Self::assemble(
+            vec![Convolver::new(ir, block_size)],
+            IrChannelConfig::Mono,
+            None,
+        )
     }
 
     /// A 1-channel convolver using the default block size.
@@ -203,16 +240,24 @@ impl ConvolverNode {
     /// The rate caveat on the type applies unchanged.
     #[must_use]
     pub fn with_ir(ir: &[f32]) -> Self {
-        Self::build(vec![Convolver::with_ir(ir)], IrChannelConfig::Mono)
+        Self::assemble(vec![Convolver::with_ir(ir)], IrChannelConfig::Mono, None)
     }
 
     /// The same IR applied independently to each of `channels` channels
-    /// ([`IrChannelConfig::Mono`]); a width of 0 is clamped to 1.
+    /// ([`IrChannelConfig::Mono`]).
     ///
     /// The IR is partitioned and transformed once, and every channel reads
     /// those spectra (see the module docs); each keeps its own running state.
-    pub fn shared_ir(channels: impl Into<ChannelLayout>, ir: &[f32], block_size: usize) -> Self {
-        let n = usize::from(channels.into().count()).max(1);
+    ///
+    /// # Errors
+    ///
+    /// [`ConvolverError::NoChannels`] for a layout of no channels.
+    pub fn shared_ir(
+        channels: impl Into<ChannelLayout>,
+        ir: &[f32],
+        block_size: usize,
+    ) -> Result<Self, ConvolverError> {
+        let n = usize::from(channels.into().count());
         let head = Convolver::new(ir, block_size);
         Self::build(
             (0..n).map(|_| head.fresh()).collect(),
@@ -223,30 +268,38 @@ impl ConvolverNode {
     /// One IR per channel ([`IrChannelConfig::Stereo`]): channel `c` is
     /// convolved with `irs[c]`, and the width is `irs.len()`.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If `irs` is empty or longer than `u16::MAX`.
-    pub fn per_channel(irs: &[&[f32]], block_size: usize) -> Self {
+    /// [`ConvolverError::NoChannels`] if `irs` is empty and
+    /// [`ConvolverError::TooWide`] if it is longer than `u16::MAX`.
+    pub fn per_channel(irs: &[&[f32]], block_size: usize) -> Result<Self, ConvolverError> {
         Self::per_ir(irs, block_size, IrChannelConfig::Stereo)
     }
 
     /// Every input folded to mono, then convolved with one IR per output
     /// ([`IrChannelConfig::MonoToStereo`]); the width is `irs.len()`.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// If `irs` is empty or longer than `u16::MAX`, or its width has no fold to
-    /// mono: only 1, 2, 4, 6, 8 and 12 have an order ([`Fold::widths`] places
-    /// any other by index and refuses to narrow it), where an unmatrixed width
-    /// once dropped its centre and surrounds without warning.
-    pub fn folded(irs: &[&[f32]], block_size: usize) -> Self {
+    /// As [`per_channel`](Self::per_channel), and [`ConvolverError::NoFold`] for a
+    /// width with no fold to mono: only 1, 2, 4, 6, 8 and 12 have an order
+    /// ([`Fold::widths`] places any other by index and refuses to narrow it).
+    pub fn folded(irs: &[&[f32]], block_size: usize) -> Result<Self, ConvolverError> {
         Self::per_ir(irs, block_size, IrChannelConfig::MonoToStereo)
     }
 
-    /// True stereo: L with `ir_l`, R with `ir_r`. Shorthand for
-    /// [`per_channel(&[ir_l, ir_r], …)`](Self::per_channel).
+    /// True stereo: L with `ir_l`, R with `ir_r`, as
+    /// [`per_channel(&[ir_l, ir_r], …)`](Self::per_channel) builds it.
+    #[must_use]
     pub fn stereo(ir_l: &[f32], ir_r: &[f32], block_size: usize) -> Self {
-        Self::per_channel(&[ir_l, ir_r], block_size)
+        Self::assemble(
+            vec![
+                Convolver::new(ir_l, block_size),
+                Convolver::new(ir_r, block_size),
+            ],
+            IrChannelConfig::Stereo,
+            None,
+        )
     }
 
     /// How the node's impulse responses map onto its channels.
@@ -516,6 +569,46 @@ mod tests {
     use tutti_types::SampleRate;
     use tutti_types::Seconds;
 
+    /// A node has a channel: no IR, or a layout of none, is refused by name.
+    #[test]
+    fn a_node_of_no_channels_is_refused() {
+        assert_eq!(
+            ConvolverNode::per_channel(&[], 64).err(),
+            Some(ConvolverError::NoChannels)
+        );
+        assert_eq!(
+            ConvolverNode::folded(&[], 64).err(),
+            Some(ConvolverError::NoChannels)
+        );
+        assert_eq!(
+            ConvolverNode::shared_ir(ChannelLayout::EMPTY, &[1.0], 64).err(),
+            Some(ConvolverError::NoChannels)
+        );
+    }
+
+    /// More IRs than a `ChannelLayout` counts is refused, not truncated.
+    #[test]
+    fn more_channels_than_a_layout_counts_is_refused() {
+        let irs = vec![&[1.0_f32][..]; usize::from(u16::MAX) + 1];
+        assert_eq!(
+            ConvolverNode::per_channel(&irs, 64).err(),
+            Some(ConvolverError::TooWide {
+                channels: irs.len()
+            })
+        );
+    }
+
+    /// A folded node needs a width with a fold to mono: 3 has no order, 2 has.
+    #[test]
+    fn a_folded_width_with_no_fold_to_mono_is_refused() {
+        let ir = [1.0_f32];
+        assert!(matches!(
+            ConvolverNode::folded(&[&ir, &ir, &ir], 64),
+            Err(ConvolverError::NoFold { width: 3, .. })
+        ));
+        assert!(ConvolverNode::folded(&[&ir, &ir], 64).is_ok());
+    }
+
     /// The "control changed between two blocks" experiment.
     ///
     /// Three nodes from `make` render `block1` identically. Then `change` is
@@ -645,7 +738,7 @@ mod tests {
     #[test]
     fn the_spectra_are_stored_once_and_a_fork_shares_them() {
         let ir = generate_test_ir(4_096, Seconds::new(0.3), SampleRate::SR_48K);
-        let node = ConvolverNode::shared_ir(6u16, &ir, 256);
+        let node = ConvolverNode::shared_ir(6u16, &ir, 256).unwrap();
         let first = node.convolvers[0].spectra();
         assert!(
             node.convolvers
@@ -843,7 +936,7 @@ mod golden {
             ),
             (
                 "shared_ir",
-                ConvolverNode::shared_ir(2u16, &ir_a, 32),
+                ConvolverNode::shared_ir(2u16, &ir_a, 32).unwrap(),
                 vec![(&ir_a[..], 0), (&ir_a[..], 1)],
             ),
             (
@@ -853,7 +946,7 @@ mod golden {
             ),
             (
                 "folded",
-                ConvolverNode::folded(&[&ir_a, &ir_b], 16),
+                ConvolverNode::folded(&[&ir_a, &ir_b], 16).unwrap(),
                 vec![(&ir_a[..], FOLDED), (&ir_b[..], FOLDED)],
             ),
         ];
@@ -908,7 +1001,7 @@ mod golden {
             })
             .collect();
         let refs: Vec<&[f32]> = irs.iter().map(Vec::as_slice).collect();
-        let wide = ConvolverNode::per_channel(&refs, 64);
+        let wide = ConvolverNode::per_channel(&refs, 64).unwrap();
         let shape = wide.shape();
         assert_eq!(
             (shape.audio_in().count(), shape.audio_out().count()),
@@ -931,7 +1024,7 @@ mod golden {
     /// `node_mix.rs`'s).
     #[test]
     fn a_six_channel_shared_ir_keeps_each_channel_to_itself_and_aligned() {
-        let node = ConvolverNode::shared_ir(6u16, &[1.0], 64);
+        let node = ConvolverNode::shared_ir(6u16, &[1.0], 64).unwrap();
         let latency = node.latency_samples().0;
         assert_eq!(node.shape().latency, Latency::new(Samples(latency)));
         let mut x = vec![vec![0.0f32; 4 * latency]; 6];
@@ -956,7 +1049,7 @@ mod golden {
             .map(|c| generate_test_ir(150 + 40 * c, Seconds::new(0.3), SampleRate::SR_48K))
             .collect();
         let refs: Vec<&[f32]> = irs.iter().map(Vec::as_slice).collect();
-        let node = ConvolverNode::folded(&refs, 32);
+        let node = ConvolverNode::folded(&refs, 32).unwrap();
         let x = signal(6, 700);
         let got = render(node, &x);
         let to_mono = Fold::widths(ChannelLayout::from(6u16), ChannelLayout::MONO).unwrap();
@@ -988,7 +1081,7 @@ mod golden {
         let ir = generate_test_ir(256, Seconds::new(0.2), SampleRate::SR_48K);
         let x = noise(21, 64 * 8);
         let (hist, block) = (&x[..64 * 7], &x[64 * 7..]);
-        let make = || ConvolverNode::shared_ir(ChannelLayout::STEREO, &ir, 64);
+        let make = || ConvolverNode::shared_ir(ChannelLayout::STEREO, &ir, 64).unwrap();
         let run = change_between_node_blocks(
             make,
             |n| n.set_gain(Amplitude::new(4.0)),

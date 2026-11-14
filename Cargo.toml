@@ -23,6 +23,10 @@ members = [
     # layer 1, `tutti-types` alone. The graph, the modulation compiler and the
     # automation lanes evaluate the same `Law`.
     "crates/tutti-curve",
+    # The sample formats (`Sample`, `Float`, `I24`) and the borrowed mono, interleaved
+    # and planar views over them, with the conversions between formats and layouts:
+    # layer 1, `tutti-types` alone (and `libm`).
+    "crates/tutti-buffers",
     "crates/tutti-cpal",
     "crates/tutti-types",
     # The audio file encoders (WAV, AIFF, FLAC, Ogg Vorbis) behind one `Encoder`
@@ -61,12 +65,12 @@ members = [
     "crates/tutti-measure",
     "crates/tutti-plugin-ipc-ffi",
     "crates/tutti-plugin-ipc",
-    # The format-generic half of plugin hosting (design 021 step 4a): the control
+    # The format-generic half of plugin hosting: the control
     # handle and the node pieces, over `tutti-plugin-types`. No ipc, no format host.
     "crates/tutti-plugin-host",
     "crates/tutti-plugin",
     "crates/tutti-plugin-server",
-    # The probe binary (design 021 section 2.5): reads a plugin's descriptor into a
+    # The probe binary: reads a plugin's descriptor into a
     # result file. Depends on the format hosts, not on a hosting; nothing depends on it.
     "crates/tutti-plugin-probe",
     "crates/tutti-plugin-types",

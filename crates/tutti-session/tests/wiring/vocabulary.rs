@@ -7,16 +7,10 @@
 use tutti_graph::ForkByClone;
 use tutti_nodes::testing::{Const, Through};
 use tutti_session::{ConnectError, Edge, EdgeGainError, OutPort, Root, Session};
-use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, MaxBlock, SampleRate, Samples};
+use tutti_types::{Amplitude, ChannelLayout, ChannelTopology, FoldError, InterleavedMut};
 
 fn offline() -> Session {
-    Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds")
+    Session::builder().build().expect("builds")
 }
 
 /// The first frame of a committed 64-frame block, per channel.
@@ -28,9 +22,9 @@ fn first_frame(s: &mut Session) -> [f32; 2] {
 }
 
 /// **A main bus connected to the root feeds its channels in order**: a stereo
-/// constant (0.25, 0.5) is heard as (0.25, 0.5), and a mono one, narrower than
-/// the root, feeds the first channel only and leaves the second silent (no
-/// wrap, no zero-fill claim on the rest).
+/// constant (0.25, 0.5) is heard as (0.25, 0.5). A mono one, narrower than the
+/// root, is placed by speaker: a lone channel feeds the front pair of a stereo
+/// root at gain 1.0, so (0.5) is heard as (0.5, 0.5).
 #[test]
 fn a_main_bus_feeds_the_roots_channels_in_order() {
     let mut s = offline();
@@ -41,7 +35,37 @@ fn a_main_bus_feeds_the_roots_channels_in_order() {
     let mut s = offline();
     let (mono, _) = s.graph().add(ForkByClone(Const::mono(0.5)));
     s.graph().connect(mono, Root).unwrap().hard();
-    assert_eq!(first_frame(&mut s), [0.5, 0.0]);
+    assert_eq!(first_frame(&mut s), [0.5, 0.5]);
+}
+
+/// **A mono bus into a declared stereo root is placed by speaker** as into an
+/// undeclared one: (0.5) is heard as (0.5, 0.5).
+#[test]
+fn a_mono_bus_feeds_both_channels_of_a_declared_stereo_root() {
+    let mut s = offline();
+    s.declare_root_topology(Some(ChannelTopology::smpte(ChannelLayout::STEREO).unwrap()))
+        .expect("a stereo root");
+    let (mono, _) = s.graph().add(ForkByClone(Const::mono(0.5)));
+    s.graph().connect(mono, Root).unwrap().hard();
+    assert_eq!(first_frame(&mut s), [0.5, 0.5]);
+}
+
+/// **A narrower bus with no place on the root is refused, never truncated**:
+/// a root declared as two unassigned channels names no speaker a mono bus
+/// could feed, so the fold fails, the refusal names it, and nothing is stored.
+#[test]
+fn a_bus_with_no_place_on_the_root_is_refused() {
+    let mut s = offline();
+    s.declare_root_topology(Some(ChannelTopology::unassigned(ChannelLayout::STEREO)))
+        .expect("an unassigned stereo root");
+    let (mono, _) = s.graph().add(ForkByClone(Const::mono(0.5)));
+    let _ = s.update();
+    assert!(matches!(
+        s.graph().connect(mono, Root).err(),
+        Some(ConnectError::RootFold { from, cause: FoldError::Unassigned { .. } })
+            if from == mono.erase()
+    ));
+    assert!(!s.graph_ref().is_edited(), "nothing was stored");
 }
 
 /// **A bus wider than the root is refused, never truncated**, and nothing is

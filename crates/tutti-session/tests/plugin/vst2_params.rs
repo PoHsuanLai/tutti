@@ -1,4 +1,4 @@
-//! `Params::typed` over a real format's own value map (design 029 step 3): the
+//! `Params::typed` over a real format's own value map: the
 //! reference VST2 plugin, in process. Its parameter 1 is labelled `Hz` and
 //! declares the integer range `0..=127`, which VST2 maps linearly
 //! (`tutti-vst2-host`'s `IntegerRange`), so `Hz(31.75)` is position `0.25`
@@ -79,7 +79,11 @@ fn a_typed_hertz_parameter_round_trips_through_the_formats_own_range() {
             Normalized::of(position),
             "{plain} Hz is position {position}"
         );
-        assert_eq!(hertz.get(), Hz::new(plain), "and reads back as {plain} Hz");
+        assert_eq!(
+            hertz.get(),
+            Ok(Hz::new(plain)),
+            "and reads back as {plain} Hz"
+        );
     }
     assert_eq!(
         hertz.set(Hz::new(128.0)),

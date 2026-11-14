@@ -9,7 +9,7 @@ use tutti_plugin::error::StateError;
 use tutti_plugin_db::{PluginEntry, PluginFormat};
 use tutti_plugin_types::{PluginClass, PluginDescriptor};
 use tutti_session::{PluginLoadRequest, Session};
-use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
+use tutti_types::{MaxBlock, Samples};
 
 fn first_id() -> &'static str {
     tutti_clap_test_plugin::PLUGIN_ID.to_str().expect("utf-8")
@@ -30,11 +30,8 @@ fn session() -> Session {
     // the first server is spawned, from the test's own thread.
     unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", plugin_server()) };
     Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(512)),
-        )
+        .max_block(MaxBlock::of(Samples(512)))
+        .build()
         .expect("an offline session builds")
 }
 

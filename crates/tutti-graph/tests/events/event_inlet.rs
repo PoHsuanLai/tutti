@@ -12,7 +12,8 @@
 use tutti_graph::testing as common;
 
 use common::{Kind, TestNode};
-use tutti_fixtures::midi::{m1_cc, m1_note_off, m1_note_on};
+
+use tutti_fixtures::midi;
 use tutti_graph::contract::{Direct, HAND_EVENT_CAPACITY};
 use tutti_graph::{
     Edge, Editor, Env, EventCapacity, EventEdge, EventIn, EventInletNode, EventInletWriter,
@@ -22,23 +23,23 @@ use tutti_graph::{
 };
 use tutti_types::MaxBlock;
 use tutti_types::{Frame, Moment, SampleRate, Samples};
-use tutti_ump::{CCNumber, MidiChannel, NoteNumber, U7, Ump};
+use tutti_ump::{CCNumber, MidiChannel, U7, Ump};
 
 const R48: SampleRate = SampleRate::SR_48K;
 const R441: SampleRate = SampleRate::SR_44K1;
 
 /// MIDI 1.0, channel 0, note-on, velocity 100.
 fn note(n: u32) -> Ump {
-    m1_note_on(MidiChannel::FIRST, NoteNumber::of(n as u8), U7::of(100))
+    midi::m1_note_on(MidiChannel::FIRST, n as u8, U7::of(100))
 }
 
 fn off(n: u32) -> Ump {
-    m1_note_off(MidiChannel::FIRST, NoteNumber::of(n as u8), U7::of(0))
+    midi::m1_note_off(MidiChannel::FIRST, n as u8, U7::of(0))
 }
 
 /// A MIDI 1.0 Control Change of `controller`, value 0.
 fn cc(controller: u32) -> Ump {
-    m1_cc(
+    midi::m1_cc(
         MidiChannel::FIRST,
         CCNumber::of(controller as u8),
         U7::of(0),

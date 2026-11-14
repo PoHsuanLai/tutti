@@ -24,6 +24,7 @@ use tutti_types::Seconds;
 /// every frame and drifts about 3.6 seconds an hour. Treating one as the other
 /// keeps playing at the right speed and reports the wrong position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(u8)]
 pub enum SmpteFrameRate {
     /// 24 fps (film)
@@ -42,6 +43,7 @@ pub enum SmpteFrameRate {
 /// cycle and in the hours byte of a Full Message (M1 p.53 and T-9). The
 /// discriminants are the wire codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(u8)]
 pub enum MtcRate {
     /// Code 0: 24 frames per second.

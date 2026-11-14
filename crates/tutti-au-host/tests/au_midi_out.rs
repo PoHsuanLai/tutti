@@ -59,7 +59,7 @@ use tutti_au_host::types::MIDIPacketList;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_midi_protocol::channel_voice;
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup, NoteNumber, Voice2};
+use tutti_ump::{CCNumber, MidiChannel, NoteNumber, Voice2};
 
 /// Same rationale as `au_conformance.rs`'s `AU_LOCK`.
 static AU_LOCK: Mutex<()> = Mutex::new(());
@@ -408,14 +408,8 @@ fn no_delivery_arrives_after_the_callback_is_withdrawn() {
     // Drive some MIDI *in* so the unit is actually generating, then render. If the
     // unit did emit MIDI this is where it would arrive.
     let notes = [
-        (
-            Offset::ZERO,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
-        ),
-        (
-            Offset::ZERO,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 64, midi::MID_VELOCITY),
-        ),
+        (Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0x8000)),
+        (Offset::ZERO, midi::note_on(MidiChannel::FIRST, 64, 0x8000)),
     ];
     au.send_midi(&notes);
     for _ in 0..8 {

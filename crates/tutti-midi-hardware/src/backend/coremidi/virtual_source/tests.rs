@@ -1,5 +1,6 @@
 use super::*;
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_fixtures::midi;
+use tutti_ump::{Message, MidiChannel, Ump, Utility};
 
 #[test]
 fn create_ump_source() {
@@ -18,7 +19,7 @@ fn send_jr_timestamp_word() {
     // A JR Timestamp is a single UMP Utility word — the whole point of this
     // endpoint (it has no MIDI 1.0 form). It must send without error.
     let src = UmpVirtualSource::new("Test UMP JR").expect("creates");
-    let jr = tutti_fixtures::midi::jr_timestamp(0x1234).words()[0];
+    let jr = Ump::from(Message::Utility(Utility::JrTimestamp(0x1234))).words()[0];
     assert!(src.send_ump(&[jr]).is_ok());
 }
 
@@ -26,11 +27,6 @@ fn send_jr_timestamp_word() {
 fn send_multiword_note_on() {
     // A MIDI 2.0 channel-voice note-on is two words.
     let src = UmpVirtualSource::new("Test UMP Note").expect("creates");
-    let note = tutti_fixtures::midi::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        tutti_fixtures::midi::MID_VELOCITY,
-    );
+    let note = midi::note_on(MidiChannel::FIRST, 60, 0x8000);
     assert!(src.send_ump(note.words()).is_ok());
 }

@@ -25,6 +25,7 @@
 
 use std::sync::Arc;
 use tutti_engine::Engine;
+use tutti_fixtures::midi;
 use tutti_nodes::{ClickNode, ClickSettings, MetronomeMode};
 use tutti_transport::{LoopEdit, Transport};
 use tutti_types::LoopRange;
@@ -72,13 +73,12 @@ impl tutti_graph::Node for TransportTone {
 /// so the split into graph blocks runs too.
 #[test]
 fn graph_engine_with_timed_transport_is_allocation_free() {
-    use tutti_fixtures::midi::m1_note_on;
     use tutti_graph::NodeKey;
     use tutti_graph::{Editor, EventIn, EventKind, Prepare, Unforkable};
     use tutti_graph::{OutPort, Source};
     use tutti_transport::{MotionEvent, TransportCommand};
     use tutti_types::{At, Beat, Frame};
-    use tutti_ump::{MidiChannel, NoteNumber, U7};
+    use tutti_ump::{MidiChannel, U7};
 
     let sample_rate = 48_000.0;
     let transport = Transport::new(SampleRate::of(sample_rate));
@@ -109,11 +109,7 @@ fn graph_engine_with_timed_transport_is_allocation_free() {
         ed.schedule(
             At::Beat(Beat(0.25 * b as f64)),
             to,
-            EventKind::Midi(m1_note_on(
-                MidiChannel::FIRST,
-                NoteNumber::of(60),
-                U7::of(100),
-            )),
+            EventKind::Midi(midi::m1_note_on(MidiChannel::FIRST, 60, U7::of(100))),
         )
         .expect("room");
     }

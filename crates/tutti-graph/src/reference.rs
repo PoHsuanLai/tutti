@@ -2283,7 +2283,7 @@ impl RefHeld {
                     addr(g, c),
                     Voice2::ControlChange {
                         controller: cc,
-                        value: ControlValue::new(0),
+                        value: ControlValue::MIN,
                     },
                 )
             } else {

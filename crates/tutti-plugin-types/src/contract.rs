@@ -1,5 +1,4 @@
-//! The mapping contract: the laws every [`ParamMapping`] is held to
-//! (doc 029 section 6.1, item 1).
+//! The mapping contract: the laws every [`ParamMapping`] is held to.
 //!
 //! Behind the `contract` feature (off by default): a format host turns it on in
 //! its dev-dependency on this crate and runs [`mapping_contract!`](crate::mapping_contract) on each

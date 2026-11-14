@@ -1,6 +1,6 @@
 //! [`handoff`]: one value that moves between a control thread and the audio
 //! thread, at a block boundary, without a lock: a plugin's Processor lent to
-//! the graph and recalled for a rate change (doc 016 §2.6).
+//! the graph and recalled for a rate change.
 //!
 //! The control end, [`Hand`], **lends** a value, **recalls** it, and **takes**
 //! it back once returned. The audio end, [`Rt`], holds the value it was lent

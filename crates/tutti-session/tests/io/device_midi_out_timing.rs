@@ -10,13 +10,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tutti_cpal::{ManualStream, ManualStreamDriver, OutputSpec};
-use tutti_fixtures::midi;
 use tutti_graph::UmpAt;
 use tutti_midi_runtime::{MidiOut, Outgoing, OutputLatency, OutputOffset, SendAt};
 use tutti_session::{Session, UmpOut};
 use tutti_transport::MotionEvent;
 use tutti_types::{ChannelLayout, SampleRate, Seconds};
-use tutti_ump::MidiGroup;
+use tutti_ump::{Message, MidiGroup, System, Ump};
 
 const RATE: f64 = 48_000.0;
 const BLOCK: usize = 512;
@@ -46,7 +45,7 @@ impl Wire {
     fn tick_times(events: &[Outgoing]) -> Vec<Instant> {
         events
             .iter()
-            .filter(|e| e.ump == midi::timing_clock(MidiGroup::FIRST))
+            .filter(|e| e.ump == Ump::from(Message::System(MidiGroup::FIRST, System::TimingClock)))
             .map(|e| match e.send {
                 SendAt::At(at) => at,
                 SendAt::Now => panic!("a tick was sent now"),
@@ -68,6 +67,7 @@ fn spec() -> OutputSpec {
 fn rig(wire: &Wire) -> (Session, ManualStream, tutti_session::Device) {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut s, device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec(), driver)
         .expect("builds with no device")
         .into_parts();

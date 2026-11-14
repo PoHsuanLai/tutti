@@ -2,8 +2,9 @@ use super::*;
 use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_graph::UmpAt;
+use tutti_midi_protocol::{widen_bend, widen_value};
 use tutti_types::Samples;
-use tutti_ump::{CCNumber, KeyEvent, MidiChannel, MidiGroup};
+use tutti_ump::{CCNumber, KeyEvent, MidiChannel, MidiGroup, Sysex7Packets, System, U7, U14};
 
 /// A packet from its words, zero-padded to four, at offset 0.
 fn raw(words: &[u32]) -> UmpAt {
@@ -63,10 +64,9 @@ fn cc_decodes_to_controller_and_normalized_value() {
     } = mapped(&(
         Offset::ZERO,
         midi::cc(
-            MidiGroup::FIRST,
             MidiChannel::of(2),
             CCNumber::BRIGHTNESS,
-            tutti_fixtures::midi::wide_value(64),
+            widen_value(U7::of(64)).get(),
         ),
     ))
     .unwrap();
@@ -83,11 +83,7 @@ fn channel_pressure_decodes_to_aftertouch() {
         value,
     } = mapped(&(
         Offset::ZERO,
-        midi::channel_pressure(
-            MidiGroup::FIRST,
-            MidiChannel::FIRST,
-            tutti_fixtures::midi::wide_value(127),
-        ),
+        midi::channel_pressure(MidiChannel::FIRST, widen_value(U7::of(127)).get()),
     ))
     .unwrap();
     assert_eq!(ch, MidiChannel::of(0));
@@ -103,11 +99,7 @@ fn pitch_bend_center_is_half() {
         value,
     } = mapped(&(
         Offset::ZERO,
-        midi::pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::of(4),
-            tutti_fixtures::midi::wide_bend(8192),
-        ),
+        midi::pitch_bend(MidiChannel::of(4), widen_bend(U14::of(8192)).get()),
     ))
     .unwrap();
     assert_eq!(ch, MidiChannel::of(4));
@@ -119,10 +111,7 @@ fn pitch_bend_center_is_half() {
 #[test]
 fn note_on_is_not_a_mapped_controller() {
     assert_eq!(
-        mapped(&(
-            Offset::ZERO,
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY)
-        )),
+        mapped(&(Offset::ZERO, midi::note_on(MidiChannel::FIRST, 60, 0x8000))),
         None
     );
 }
@@ -145,23 +134,18 @@ fn route_cc_events_splits_mapped_cc_into_params() {
         (
             at(8),
             midi::cc(
-                MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                tutti_fixtures::midi::wide_value(64),
+                widen_value(U7::of(64)).get(),
             ),
         ),
-        (
-            at(0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
-        ),
+        (at(0), midi::note_on(MidiChannel::FIRST, 60, 0x8000)),
         (
             at(0),
             midi::cc(
-                MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::BRIGHTNESS,
-                tutti_fixtures::midi::wide_value(100),
+                widen_value(U7::of(100)).get(),
             ),
         ),
     ];
@@ -195,10 +179,9 @@ fn route_cc_events_preserves_host_params() {
     let events = [(
         at(0),
         midi::cc(
-            MidiGroup::FIRST,
             MidiChannel::FIRST,
             CCNumber::MOD_WHEEL,
-            tutti_fixtures::midi::wide_value(127),
+            widen_value(U7::of(127)).get(),
         ),
     )];
 
@@ -225,19 +208,17 @@ fn sort_param_points_orders_merged_host_and_cc_points() {
         (
             at(100),
             midi::cc(
-                MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                tutti_fixtures::midi::wide_value(100),
+                widen_value(U7::of(100)).get(),
             ),
         ),
         (
             at(10),
             midi::cc(
-                MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                tutti_fixtures::midi::wide_value(10),
+                widen_value(U7::of(10)).get(),
             ),
         ),
     ];
@@ -363,10 +344,9 @@ fn cc_route_reserves_only_while_mapped() {
     let events = [(
         at(3),
         midi::cc(
-            MidiGroup::FIRST,
             MidiChannel::FIRST,
             CCNumber::MOD_WHEEL,
-            tutti_fixtures::midi::wide_value(64),
+            widen_value(U7::of(64)).get(),
         ),
     )];
     let mut host = ParameterChanges::reserved(1, 1);
@@ -395,10 +375,9 @@ fn a_following_route_uses_the_published_mapping() {
     let events = [(
         at(3),
         midi::cc(
-            MidiGroup::FIRST,
             MidiChannel::FIRST,
             CCNumber::MOD_WHEEL,
-            tutti_fixtures::midi::wide_value(64),
+            widen_value(U7::of(64)).get(),
         ),
     )];
 
@@ -430,16 +409,12 @@ fn cc_route_first_block_is_allocation_free_without_warmup() {
         (
             at(16),
             midi::cc(
-                MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                tutti_fixtures::midi::wide_value(64),
+                widen_value(U7::of(64)).get(),
             ),
         ),
-        (
-            at(0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
-        ),
+        (at(0), midi::note_on(MidiChannel::FIRST, 60, 0x8000)),
     ];
     let mut host = ParameterChanges::reserved(1, 4);
     for (offset, value) in [(0, 0.1), (8, 0.2), (24, 0.3), (40, 0.4)] {
@@ -485,12 +460,7 @@ fn cc_points_past_the_scratch_pool_give_way_without_allocating() {
     let cc = |frame: usize, value: u32| {
         (
             at(frame),
-            midi::cc(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                CCNumber::MOD_WHEEL,
-                value,
-            ),
+            midi::cc(MidiChannel::FIRST, CCNumber::MOD_WHEEL, value),
         )
     };
     let (warm, measured) = (chunk(0..pooled), chunk(pooled..2 * pooled));
@@ -556,10 +526,9 @@ fn a_bridged_chunk_reaches_the_route_whole() {
     let mapped = (
         Offset::ZERO,
         midi::cc(
-            MidiGroup::FIRST,
             MidiChannel::FIRST,
             CCNumber::MOD_WHEEL,
-            tutti_fixtures::midi::wide_value(64),
+            widen_value(U7::of(64)).get(),
         ),
     );
     for events in [&[][..], &[mapped][..]] {
@@ -633,12 +602,7 @@ fn a_queue_with_host_and_cc_points_ends_on_its_latest_value() {
     let cc = |frame: usize, value: u32| {
         (
             at(frame),
-            midi::cc(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                CCNumber::MOD_WHEEL,
-                value,
-            ),
+            midi::cc(MidiChannel::FIRST, CCNumber::MOD_WHEEL, value),
         )
     };
     let mut route = CcRoute::new(mod_wheel_mapping(MAPPED), 1, room);
@@ -680,12 +644,7 @@ fn the_merge_sorts_a_full_room_queue_without_allocating() {
     let cc = |frame: usize, value: u32| {
         (
             at(frame),
-            midi::cc(
-                MidiGroup::FIRST,
-                MidiChannel::FIRST,
-                CCNumber::MOD_WHEEL,
-                value,
-            ),
+            midi::cc(MidiChannel::FIRST, CCNumber::MOD_WHEEL, value),
         )
     };
     // On host frames (multiples of 8) and between them.
@@ -732,27 +691,19 @@ fn route_cc_events_is_allocation_free_after_warmup() {
         (
             at(0),
             midi::cc(
-                MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::MOD_WHEEL,
-                tutti_fixtures::midi::wide_value(64),
+                widen_value(U7::of(64)).get(),
             ),
         ),
-        (
-            at(0),
-            midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
-        ),
-        (
-            at(64),
-            midi::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
-        ),
+        (at(0), midi::note_on(MidiChannel::FIRST, 60, 0x8000)),
+        (at(64), midi::note_off(MidiChannel::FIRST, 60, 0)),
         (
             at(32),
             midi::cc(
-                MidiGroup::FIRST,
                 MidiChannel::FIRST,
                 CCNumber::BRIGHTNESS,
-                tutti_fixtures::midi::wide_value(10),
+                widen_value(U7::of(10)).get(),
             ),
         ),
     ];
@@ -780,7 +731,9 @@ fn sysex_in(list: &EventList) -> Vec<Vec<u8>> {
 }
 
 fn sysex_packets(payload: &[u8]) -> Vec<UmpAt> {
-    midi::sysex7_packets(payload)
+    Sysex7Packets::from_payload(MidiGroup::FIRST, payload)
+        .expect("a payload of 7-bit bytes")
+        .collect::<Vec<Ump>>()
         .into_iter()
         .map(|ump| (Offset::ZERO, ump))
         .collect()
@@ -799,10 +752,9 @@ fn a_mapped_route_passes_a_sysex_spanning_blocks_whole() {
     let cc = (
         Offset::ZERO,
         midi::cc(
-            MidiGroup::FIRST,
             MidiChannel::FIRST,
             CCNumber::MOD_WHEEL,
-            tutti_fixtures::midi::wide_value(64),
+            widen_value(U7::of(64)).get(),
         ),
     );
     let first: Vec<UmpAt> = std::iter::once(cc)
@@ -895,7 +847,10 @@ fn a_packet_is_mapped_by_what_it_decodes_to() {
         })
     );
     assert_eq!(
-        mapped(&(Offset::ZERO, midi::timing_clock(MidiGroup::FIRST))),
+        mapped(&(
+            Offset::ZERO,
+            Ump::from(Message::System(MidiGroup::FIRST, System::TimingClock))
+        )),
         None
     );
     assert_eq!(mapped(&raw(&[0x6000_0000])), None);

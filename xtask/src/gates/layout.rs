@@ -61,6 +61,7 @@ pub(super) const LAYERS: &[&[&str]] = &[
         "tutti-midi-protocol",
         "tutti-midi-device",
         "tutti-curve",
+        "tutti-buffers",
     ],
     &[
         "tutti-graph",
@@ -142,8 +143,7 @@ const ONLY: &[(&str, &[&str])] = &[
             "tutti-plugin-ipc-ffi",
         ],
     ),
-    // The server is `Ipc` hosting over the served formats (design 021 sections
-    // 2.3 and 6.1): the wire, the vocabulary and the CLAP, VST3 and AU hosts.
+    // The server is `Ipc` hosting over the served formats: the wire, the vocabulary and the CLAP, VST3 and AU hosts.
     // Not the facade, not `-host`, not VST2 (not served: editor and audio are
     // one object): the banned ones below hold for a dev-dependency too.
     (
@@ -175,6 +175,7 @@ const ONLY: &[(&str, &[&str])] = &[
     ),
     ("tutti-dsp", &["tutti-types"]),
     ("tutti-curve", &["tutti-types"]),
+    ("tutti-buffers", &["tutti-types"]),
     (
         "tutti-modulation",
         &["tutti-types", "tutti-curve", "tutti-ump"],
@@ -656,7 +657,7 @@ mod tests {
     fn a_layered_workspace_passes() {
         let r = run(&base());
         assert!(r.passed(), "{:?}", r.findings);
-        assert_eq!(r.out[0], "check-layout: ok (6 members, 46 ranked)");
+        assert_eq!(r.out[0], "check-layout: ok (6 members, 47 ranked)");
     }
 
     #[test]

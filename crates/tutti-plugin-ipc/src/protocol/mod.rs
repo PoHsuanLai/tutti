@@ -70,16 +70,16 @@ pub(crate) mod wire;
 /// - **Version 32** adds `status` to `AudioProcessed`: what the plugin said of
 ///   itself at the end of the block (`BlockStatus`: CLAP's process status as
 ///   *continue*, *tail* or *sleep*), so the node can report no tail and park
-///   when the plugin sleeps (doc 023 step 2). It is a field of every block's
+///   when the plugin sleeps. It is a field of every block's
 ///   reply, so a version-31 server's replies read differently from the first
 ///   byte after the MIDI.
-/// - **Version 33** appends the editor messages (doc 029 section 6.5): the
+/// - **Version 33** appends the editor messages: the
 ///   host's `OpenEditor { parent, scale }`, `CloseEditor` and `SetEditorSize`,
 ///   and the server's `EditorOpened`, `EditorSized`, `EditorWantsSize` and
 ///   `EditorClosed`, so a served plugin's editor can live in the server. They
 ///   follow every earlier variant, which keep their numbers.
-/// - **Version 34** splits the audio phase into two connections (doc 029
-///   section 6.5). No message changed: the host connects a third time after the
+/// - **Version 34** splits the audio phase into two connections. No message changed: the host
+///   connects a third time after the
 ///   audio connection, the server sends `Ready` on it, and the audio connection
 ///   carries `ProcessAudio` and `Reset` alone (the server's render thread
 ///   serves it) while the control connection carries every other request and
@@ -218,12 +218,14 @@ pub use tutti_plugin_types::{
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use tutti_fixtures::midi;
+    use tutti_midi_protocol::{widen_value, widen_velocity};
     use tutti_plugin_types::{
         ChordValue, Load, NoteExpressionIntValue, NoteExpressionTextValue, ScaleValue, WireMidi,
     };
     use tutti_types::SampleRate;
-    use tutti_ump::{CCNumber, Message, MidiChannel, MidiGroup, Ump, Voice2};
+    use tutti_ump::{CCNumber, Message, MidiChannel, U7, Ump, Voice2};
+
+    use tutti_fixtures::midi;
 
     /// Every preset frame survives the wire in both directions.
     ///
@@ -616,20 +618,14 @@ mod tests {
         let midi_out: MidiEventVec = [
             at(
                 0,
-                midi::note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    60,
-                    tutti_fixtures::midi::wide_velocity(100),
-                ),
+                midi::note_on(MidiChannel::FIRST, 60, widen_velocity(U7::of(100)).get()),
             ),
             at(
                 64,
                 midi::cc(
-                    MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     CCNumber::VOLUME,
-                    tutti_fixtures::midi::wide_value(64),
+                    widen_value(U7::of(64)).get(),
                 ),
             ),
         ]
@@ -745,29 +741,18 @@ mod tests {
         let midi_events: MidiEventVec = [
             at(
                 0,
-                midi::note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    60,
-                    tutti_fixtures::midi::wide_velocity(100),
-                ),
+                midi::note_on(MidiChannel::FIRST, 60, widen_velocity(U7::of(100)).get()),
             ),
             at(
                 128,
-                midi::note_on(
-                    MidiGroup::FIRST,
-                    MidiChannel::FIRST,
-                    64,
-                    tutti_fixtures::midi::wide_velocity(100),
-                ),
+                midi::note_on(MidiChannel::FIRST, 64, widen_velocity(U7::of(100)).get()),
             ),
             at(
                 256,
                 midi::cc(
-                    MidiGroup::FIRST,
                     MidiChannel::FIRST,
                     CCNumber::VOLUME,
-                    tutti_fixtures::midi::wide_value(64),
+                    widen_value(U7::of(64)).get(),
                 ),
             ),
         ]

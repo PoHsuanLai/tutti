@@ -9,6 +9,7 @@ use std::num::NonZeroUsize;
 use tutti_curve::Law;
 use tutti_fixtures::midi;
 use tutti_midi_protocol::{bend_to_signed_f32, velocity_to_unit_f32};
+use tutti_midi_protocol::{widen_bend, widen_value, widen_velocity};
 use tutti_types::{Amplitude, Hz, Resonance, Seconds, Spread};
 use tutti_ump::{
     Address, Attribute, CCNumber, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, U7,
@@ -169,49 +170,43 @@ fn queue_midi_at(synth: &mut Hand, events: &[(usize, Ump)]) {
 
 fn ev_note_on(channel: u8, note: u8, vel: u8) -> Ump {
     midi::note_on(
-        MidiGroup::FIRST,
         MidiChannel::of(channel),
         note,
-        tutti_fixtures::midi::wide_velocity(vel),
+        widen_velocity(U7::of(vel)).get(),
     )
 }
 
 fn ev_note_off(channel: u8, note: u8) -> Ump {
-    midi::note_off(MidiGroup::FIRST, MidiChannel::of(channel), note, 0)
+    midi::note_off(MidiChannel::of(channel), note, 0)
 }
 
 fn ev_cc(channel: u8, cc_num: CCNumber, value: u8) -> Ump {
     midi::cc(
-        MidiGroup::FIRST,
         MidiChannel::of(channel),
         cc_num,
-        tutti_fixtures::midi::wide_value(value),
+        widen_value(U7::of(value)).get(),
     )
 }
 
 fn ev_bend(channel: u8, bend14: u16) -> Ump {
-    midi::pitch_bend(
-        MidiGroup::FIRST,
-        MidiChannel::of(channel),
-        tutti_fixtures::midi::wide_bend(bend14),
-    )
+    midi::pitch_bend(MidiChannel::of(channel), widen_bend(U14::of(bend14)).get())
 }
 
 fn ev_per_note_management(channel: u8, note: u8, detach: bool, reset: bool) -> Ump {
-    midi::per_note_management(
-        MidiGroup::FIRST,
+    Ump::from(Message::midi2(
         MidiChannel::of(channel),
-        note,
-        detach,
-        reset,
-    )
+        Voice2::PerNoteManagement {
+            note: NoteNumber::of(note),
+            detach,
+            reset,
+        },
+    ))
 }
 
 fn ev_aftertouch(channel: u8, pressure: u8) -> Ump {
     midi::channel_pressure(
-        MidiGroup::FIRST,
         MidiChannel::of(channel),
-        tutti_fixtures::midi::wide_value(pressure),
+        widen_value(U7::of(pressure)).get(),
     )
 }
 
@@ -514,7 +509,6 @@ fn test_note_off_respects_channel() {
     });
 
     // Play same note (C4=60) on channel 0 and channel 1
-    // note_on(MidiGroup::of(0), MidiChannel::of(channel), note, velocity)
     let note_on_ch0 = ev_note_on(0, 60, 100);
     let note_on_ch1 = ev_note_on(1, 60, 100);
     queue_midi(&mut synth, &[note_on_ch0, note_on_ch1]);
@@ -525,7 +519,6 @@ fn test_note_off_respects_channel() {
     assert_eq!(synth.active_voice_count(), 2, "Should have 2 active voices");
 
     // Note off on channel 0 only
-    // note_off(MidiGroup::of(0), MidiChannel::of(channel), note, velocity)
     let note_off_ch0 = ev_note_off(0, 60);
     queue_midi(&mut synth, &[note_off_ch0]);
     synth.tick(&[], &mut output);
@@ -1064,7 +1057,7 @@ fn test_mpe_per_voice_pitch_bend() {
     // only that voice. Classic-MPE channel bends are rewritten to this native
     // form at the input edge (`MpeIngest`); the synth is zone-agnostic and only
     // ever sees native per-note messages.
-    let bend = midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
+    let bend = midi::per_note_pitch_bend(MidiChannel::of(1), 60, u32::MAX);
     queue_midi(&mut synth, &[bend]);
     synth.tick(&[], &mut output);
 
@@ -1102,7 +1095,7 @@ fn the_per_note_bend_range_is_48_semitones() {
     queue_midi(&mut synth, &[ev_note_on(1, 60, 100)]);
     let mut output = [0.0f32; 2];
     synth.tick(&[], &mut output);
-    let bend = midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, u32::MAX);
+    let bend = midi::per_note_pitch_bend(MidiChannel::of(1), 60, u32::MAX);
     queue_midi(&mut synth, &[bend]);
     synth.tick(&[], &mut output);
     let bent = synth
@@ -1143,7 +1136,7 @@ fn test_midi2_per_note_pitch_bend_addresses_one_voice() {
     assert_eq!(synth.active_voice_count(), 2);
 
     // Native per-note pitch bend addressed to note 60 only (full positive).
-    let bend = midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
+    let bend = midi::per_note_pitch_bend(MidiChannel::of(1), 60, u32::MAX);
     queue_midi(&mut synth, &[bend]);
     synth.tick(&[], &mut output);
 
@@ -1200,8 +1193,8 @@ fn test_midi2_per_note_management_reset_zeroes_only_addressed_voice() {
     queue_midi(
         &mut synth,
         &[
-            midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF),
-            midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 64, 0xFFFF_FFFF),
+            midi::per_note_pitch_bend(MidiChannel::of(1), 60, u32::MAX),
+            midi::per_note_pitch_bend(MidiChannel::of(1), 64, u32::MAX),
         ],
     );
     synth.tick(&[], &mut output);
@@ -1261,15 +1254,16 @@ fn test_pitch_7_25_retunes_only_the_addressed_note() {
 
     // Pitch 7.25 for note 60 = 69.0 (A440). Q7.25: 69 << 25. Registered
     // per-note controller index 3 (Pitch 7.25).
-    let pitch = midi::per_note_controller(
-        MidiGroup::FIRST,
+    // M2-115 §3: 69 as a 7-bit value, left-justified (shift 25).
+    let value = ControlValue::new(69u32 << 25);
+    let pitch = Ump::from(Message::midi2(
         MidiChannel::of(1),
-        60,
-        3,
-        // M2-115 §3: 69 as a 7-bit value, left-justified (shift 25).
-        69u32 << 25,
-        true,
-    );
+        Voice2::RegisteredPerNote {
+            note: NoteNumber::of(60),
+            controller: RegisteredPerNoteController::from(3),
+            value,
+        },
+    ));
     queue_midi(&mut synth, &[pitch]);
     synth.tick(&[], &mut output);
 
@@ -1319,12 +1313,7 @@ fn test_per_note_management_detach_freezes_the_note() {
     // Bend fully, then Detach.
     queue_midi(
         &mut synth,
-        &[midi::per_note_pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            60,
-            0xFFFF_FFFF,
-        )],
+        &[midi::per_note_pitch_bend(MidiChannel::of(1), 60, u32::MAX)],
     );
     synth.tick(&[], &mut output);
     let bent = |synth: &PolySynth| {
@@ -1347,7 +1336,6 @@ fn test_per_note_management_detach_freezes_the_note() {
     queue_midi(
         &mut synth,
         &[midi::per_note_pitch_bend(
-            MidiGroup::FIRST,
             MidiChannel::of(1),
             60,
             0x8000_0000,
@@ -1381,8 +1369,7 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
 
     // Sensitivity RPN: 12 semitones (7.25 fixed-point).
     let sens = tutti_midi_protocol::PitchBendSensitivity::of(12);
-    let rpn = midi::registered_rpn(
-        MidiGroup::FIRST,
+    let rpn = midi::registered(
         MidiChannel::of(1),
         tutti_ump::Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
         sens.to_rpn_bits(),
@@ -1394,12 +1381,7 @@ fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
     // Full per-note bend up — now clamped to the 12-semitone range.
     queue_midi(
         &mut synth,
-        &[midi::per_note_pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            60,
-            0xFFFF_FFFF,
-        )],
+        &[midi::per_note_pitch_bend(MidiChannel::of(1), 60, u32::MAX)],
     );
     synth.tick(&[], &mut output);
     let bend = synth
@@ -1440,14 +1422,14 @@ fn pitch_60(channel: u8, note: u8) -> Ump {
 }
 
 fn pitch_of(channel: u8, note: u8, hcu: u32) -> Ump {
-    midi::per_note_controller(
-        MidiGroup::FIRST,
+    Ump::from(Message::midi2(
         MidiChannel::of(channel),
-        note,
-        3,
-        hcu << 25,
-        true,
-    )
+        Voice2::RegisteredPerNote {
+            note: NoteNumber::of(note),
+            controller: RegisteredPerNoteController::from(3),
+            value: ControlValue::new(hcu << 25),
+        },
+    ))
 }
 
 /// M2-104 Appendix C.3, Method 1: Per-Note Management sets Pitch 60.0 before Note
@@ -1507,8 +1489,7 @@ fn a_pitch_after_a_detach_reaches_the_next_note_and_not_the_old_one() {
 fn the_per_note_bend_sensitivity_is_one_channels() {
     let mut synth = hand_mpe();
     let mut out = [0.0f32; 2];
-    let rpn = midi::registered_rpn(
-        MidiGroup::FIRST,
+    let rpn = midi::registered(
         MidiChannel::of(1),
         tutti_ump::Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
         tutti_midi_protocol::PitchBendSensitivity::of(12).to_rpn_bits(),
@@ -1522,10 +1503,9 @@ fn the_per_note_bend_sensitivity_is_one_channels() {
         queue_midi(
             &mut synth,
             &[midi::per_note_pitch_bend(
-                MidiGroup::FIRST,
                 MidiChannel::of(channel),
                 60,
-                0xFFFF_FFFF,
+                u32::MAX,
             )],
         );
     }
@@ -1566,12 +1546,7 @@ fn test_reset_all_controllers_spares_per_note() {
     // Set a per-note bend.
     queue_midi(
         &mut synth,
-        &[midi::per_note_pitch_bend(
-            MidiGroup::FIRST,
-            MidiChannel::of(1),
-            60,
-            0xFFFF_FFFF,
-        )],
+        &[midi::per_note_pitch_bend(MidiChannel::of(1), 60, u32::MAX)],
     );
     synth.tick(&[], &mut output);
 
@@ -1625,14 +1600,14 @@ fn test_midi2_registered_per_note_controller_brightness_sets_only_addressed_slid
     // Registered per-note Brightness (index 74) addressed to note 60, full value.
     queue_midi(
         &mut synth,
-        &[midi::per_note_controller(
-            MidiGroup::FIRST,
+        &[Ump::from(Message::midi2(
             MidiChannel::of(1),
-            60,
-            74,
-            0xFFFF_FFFF,
-            true,
-        )],
+            Voice2::RegisteredPerNote {
+                note: NoteNumber::of(60),
+                controller: RegisteredPerNoteController::from(74),
+                value: ControlValue::MAX,
+            },
+        ))],
     );
     synth.tick(&[], &mut output);
 
@@ -1702,14 +1677,14 @@ fn test_midi2_per_note_gain_addresses_only_one_voice() {
     // Assignable per-note CC7 (the clip Gain-lane encoding) → half gain on 60.
     queue_midi(
         &mut synth,
-        &[midi::per_note_controller(
-            MidiGroup::FIRST,
+        &[Ump::from(Message::midi2(
             MidiChannel::of(1),
-            60,
-            7,
-            0x8000_0000,
-            false,
-        )],
+            Voice2::AssignablePerNote {
+                note: NoteNumber::of(60),
+                controller: 7,
+                value: ControlValue::CENTER,
+            },
+        ))],
     );
     synth.tick(&[], &mut output);
     assert!(
@@ -1748,7 +1723,7 @@ fn test_mpe_per_voice_pressure() {
 
     // Native per-note pressure addressed to the ch1 note (60) only. Classic-MPE
     // channel pressure is rewritten to this form at the input edge.
-    let pressure = midi::poly_pressure(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
+    let pressure = midi::poly_pressure(MidiChannel::of(1), 60, u32::MAX);
     queue_midi(&mut synth, &[pressure]);
     synth.tick(&[], &mut output);
 
@@ -1800,14 +1775,14 @@ fn test_mpe_per_voice_slide() {
 
     // Native per-note CC74 (slide) addressed to the ch1 note (60). Classic-MPE
     // channel CC74 is rewritten to this form at the input edge.
-    let slide = midi::per_note_controller(
-        MidiGroup::FIRST,
+    let slide = Ump::from(Message::midi2(
         MidiChannel::of(1),
-        60,
-        74,
-        0xFFFF_FFFF,
-        false,
-    );
+        Voice2::AssignablePerNote {
+            note: NoteNumber::of(60),
+            controller: 74,
+            value: ControlValue::MAX,
+        },
+    ));
     queue_midi(&mut synth, &[slide]);
     synth.tick(&[], &mut output);
 
@@ -1892,7 +1867,7 @@ fn test_mpe_pressure_affects_amplitude() {
     }
 
     // Apply full pressure as a native per-note pressure on the note (60).
-    let pressure = midi::poly_pressure(MidiGroup::FIRST, MidiChannel::of(1), 60, 0xFFFF_FFFF);
+    let pressure = midi::poly_pressure(MidiChannel::of(1), 60, u32::MAX);
     queue_midi(&mut synth, &[pressure]);
 
     let mut max_with_pressure = 0.0f32;
@@ -2351,7 +2326,7 @@ fn poly_synth() -> PolySynth {
 /// scales to.
 #[test]
 fn a_midi1_and_a_midi2_note_on_claim_the_same_voice() {
-    let wide = tutti_fixtures::midi::wide_velocity(100);
+    let wide = widen_velocity(U7::of(100)).get();
     let m1 = Message::Midi1(
         address(3),
         Voice1::NoteOn {
@@ -2457,7 +2432,7 @@ fn a_midi_2_note_on_at_velocity_0_holds_its_key() {
 #[test]
 fn midi1_and_midi2_controllers_reach_the_same_state() {
     let bend14 = 12_288u16;
-    let wide_bend = tutti_fixtures::midi::wide_bend(bend14);
+    let wide_bend = widen_bend(U14::of(bend14)).get();
     let expected = bend_to_signed_f32(BendValue::new(wide_bend));
     for message in [
         Message::Midi1(address(0), Voice1::PitchBend(U14::of(bend14))),
@@ -2505,7 +2480,7 @@ fn midi1_and_midi2_controllers_reach_the_same_state() {
         address(0),
         Voice2::ControlChange {
             controller: pedal,
-            value: ControlValue::new(tutti_fixtures::midi::wide_value(127))
+            value: widen_value(U7::of(127))
         }
     )));
     assert!(!sustain(Message::Midi1(
@@ -2604,7 +2579,7 @@ fn a_reserved_attribute_type_does_not_stop_a_note() {
         address(0),
         Voice2::NoteOn {
             note: NoteNumber::of(60),
-            velocity: NoteVelocity::new(0x8000),
+            velocity: NoteVelocity::CENTER,
             attribute: reserved,
         },
     )));
@@ -2630,7 +2605,7 @@ fn an_assignable_per_note_index_is_a_whole_byte() {
             address(1),
             Voice2::NoteOn {
                 note: NoteNumber::of(60),
-                velocity: NoteVelocity::new(0x8000),
+                velocity: NoteVelocity::CENTER,
                 attribute: Attribute::None,
             },
         )));
@@ -2640,7 +2615,7 @@ fn an_assignable_per_note_index_is_a_whole_byte() {
             Voice2::AssignablePerNote {
                 note: NoteNumber::of(60),
                 controller,
-                value: ControlValue::new(u32::MAX),
+                value: ControlValue::MAX,
             },
         )));
         (before, voice_of(&synth, 60).mpe_state().slide.get())
@@ -2736,7 +2711,7 @@ fn a_channels_bend_reaches_no_other_channel() {
     let mut synth = poly_synth();
     synth.apply_midi(ump(Message::Midi2(
         address(0),
-        Voice2::PitchBend(BendValue::new(u32::MAX)),
+        Voice2::PitchBend(BendValue::MIN),
     )));
     assert_ne!(synth.bends[0].0, 0.0, "channel 0 moved");
     assert_eq!(synth.bends[5].0, 0.0, "channel 5 did not");
@@ -2797,10 +2772,9 @@ fn a_synth_plays_its_own_groups_channels_only() {
     let group2 = MidiGroup::of(1);
     let note = |group: MidiGroup| {
         midi::note_on(
-            group,
-            MidiChannel::FIRST,
+            Address::new(group, MidiChannel::FIRST),
             60,
-            tutti_fixtures::midi::wide_velocity(100),
+            widen_velocity(U7::of(100)).get(),
         )
     };
     let mut first = synth(SynthConfig::default());
@@ -3140,14 +3114,14 @@ fn a_per_note_pitch_survives_a_glide() {
     queue_midi(&mut s, &[ev_note_on(2, 72, 100)]);
     s.tick(&[], &mut out);
     // Mid-glide the second note is told its pitch, 74.
-    let pitch = midi::per_note_controller(
-        MidiGroup::FIRST,
+    let pitch = Ump::from(Message::midi2(
         MidiChannel::of(2),
-        72,
-        3,
-        74u32 << 25,
-        true,
-    );
+        Voice2::RegisteredPerNote {
+            note: NoteNumber::of(72),
+            controller: RegisteredPerNoteController::from(3),
+            value: ControlValue::new(74u32 << 25),
+        },
+    ));
     queue_midi(&mut s, &[pitch]);
     for _ in 0..4000 {
         s.tick(&[], &mut out);
@@ -3178,14 +3152,14 @@ fn a_legato_move_returns_the_voice_to_the_new_keys_own_pitch() {
         &[ev_cc(1, CCNumber::LEGATO, 127), ev_note_on(1, 60, 100)],
     );
     s.tick(&[], &mut out);
-    let pitch = midi::per_note_controller(
-        MidiGroup::FIRST,
+    let pitch = Ump::from(Message::midi2(
         MidiChannel::of(1),
-        60,
-        3,
-        70u32 << 25,
-        true,
-    );
+        Voice2::RegisteredPerNote {
+            note: NoteNumber::of(60),
+            controller: RegisteredPerNoteController::from(3),
+            value: ControlValue::new(70u32 << 25),
+        },
+    ));
     queue_midi(&mut s, &[pitch]);
     s.tick(&[], &mut out);
     let freq = |s: &PolySynth| {

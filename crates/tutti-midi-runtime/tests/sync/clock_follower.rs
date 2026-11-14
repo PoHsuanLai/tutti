@@ -9,13 +9,17 @@
 use tutti_fixtures::midi;
 use tutti_midi_runtime::{ClockEvent, ClockFollower, ClockKind, ClockPosition, MidiClockDecoder};
 use tutti_types::{Bpm, Seconds};
-use tutti_ump::{MidiGroup, System, U7, Ump};
+use tutti_ump::{Message, MidiGroup, Sysex7Packets, System, U7, U14, Ump};
 
 fn at(seconds: f64) -> Seconds {
     Seconds::new(seconds)
 }
 
 const G: MidiGroup = MidiGroup::FIRST;
+
+fn system(message: System) -> Ump {
+    Message::System(G, message).into()
+}
 
 /// What a follower said to the messages fed to it.
 struct Rig {
@@ -60,7 +64,7 @@ impl Rig {
 fn ticks(rig: &mut Rig, start: f64, period: f64, count: usize) -> f64 {
     let mut t = start;
     for _ in 0..count {
-        rig.feed(midi::timing_clock(G), t);
+        rig.feed(system(System::TimingClock), t);
         t += period;
     }
     t
@@ -107,7 +111,7 @@ fn it_locks_on_the_lock_ticks_th_consistent_tick() {
     assert!(!rig.follower.locked());
     assert!(rig.take().is_empty(), "nothing before the lock");
     rig.feed(
-        midi::timing_clock(G),
+        system(System::TimingClock),
         p * (MidiClockDecoder::LOCK_TICKS - 1) as f64,
     );
     assert!(rig.follower.locked());
@@ -195,7 +199,7 @@ fn a_missed_tick_unlocks_and_the_clock_locks_again() {
     let t = ticks(&mut rig, 0.0, p, 30);
     assert!(rig.follower.locked());
     rig.take();
-    rig.feed(midi::timing_clock(G), t + p);
+    rig.feed(system(System::TimingClock), t + p);
     assert!(!rig.follower.locked());
     assert_eq!(rig.take(), [ClockEvent::Unlocked]);
     ticks(&mut rig, t + 2.0 * p, p, MidiClockDecoder::LOCK_TICKS);
@@ -210,7 +214,7 @@ fn a_missed_tick_unlocks_and_the_clock_locks_again() {
 fn a_dropout_unlocks_and_stops_a_started_transport() {
     let mut rig = Rig::new(ClockKind::BeatClock);
     let p = period_of(120.0);
-    rig.feed(midi::start(G), 0.0);
+    rig.feed(system(System::Start), 0.0);
     let t = ticks(&mut rig, 0.0, p, 48);
     let last = t - p;
     assert!(rig.follower.locked());
@@ -238,7 +242,7 @@ fn song_position_pointer_sixteenths_map_to_beats() {
         (0x3FFF, 4095.75),
     ] {
         let mut rig = Rig::new(ClockKind::BeatClock);
-        rig.feed(midi::song_position(G, sixteenths), 0.0);
+        rig.feed(system(System::SongPosition(U14::of(sixteenths))), 0.0);
         let located: Vec<f64> = rig.heard.iter().filter_map(beat_locate).collect();
         assert_eq!(located, [beats], "pointer {sixteenths}");
         assert_eq!(rig.heard.len(), 1, "a locate and no play");
@@ -251,21 +255,21 @@ fn song_position_pointer_sixteenths_map_to_beats() {
 #[test]
 fn start_continue_and_stop_drive_play_state() {
     let mut rig = Rig::new(ClockKind::BeatClock);
-    rig.feed(midi::song_position(G, 16), 0.0);
+    rig.feed(system(System::SongPosition(U14::of(16))), 0.0);
     rig.take();
-    rig.feed(midi::continue_msg(G), 0.1);
+    rig.feed(system(System::Continue), 0.1);
     let located: Vec<f64> = rig.heard.iter().filter_map(beat_locate).collect();
     assert_eq!(located, [4.0]);
     assert_eq!(rig.heard.last(), Some(&ClockEvent::Play));
     let t = ticks(&mut rig, 0.2, period_of(120.0), 24);
     rig.take();
-    rig.feed(midi::stop(G), t);
+    rig.feed(system(System::Stop), t);
     assert_eq!(rig.take(), [ClockEvent::Stop]);
-    rig.feed(midi::continue_msg(G), t + 1.0);
+    rig.feed(system(System::Continue), t + 1.0);
     let located: Vec<f64> = rig.heard.iter().filter_map(beat_locate).collect();
     assert_eq!(located, [5.0], "a beat of 24 ticks past the pointer's 4");
     rig.take();
-    rig.feed(midi::start(G), t + 2.0);
+    rig.feed(system(System::Start), t + 2.0);
     let located: Vec<f64> = rig.heard.iter().filter_map(beat_locate).collect();
     assert_eq!(located, [0.0]);
     assert_eq!(rig.heard.last(), Some(&ClockEvent::Play));
@@ -277,14 +281,14 @@ fn start_continue_and_stop_drive_play_state() {
 fn messages_of_the_other_kind_are_ignored() {
     let mut clock = Rig::new(ClockKind::BeatClock);
     clock.feed(
-        midi::note_on(G, tutti_ump::MidiChannel::FIRST, 60, midi::MID_VELOCITY),
+        midi::note_on(tutti_ump::MidiChannel::FIRST, 60, 0x8000),
         0.0,
     );
     clock.feed(quarter(0, 0), 0.0);
     assert!(clock.heard.is_empty());
     let mut mtc = Rig::new(ClockKind::Mtc);
     ticks(&mut mtc, 0.0, period_of(120.0), 48);
-    mtc.feed(midi::start(G), 2.0);
+    mtc.feed(system(System::Start), 2.0);
     assert!(mtc.heard.is_empty());
 }
 
@@ -420,7 +424,9 @@ fn a_jump_while_playing_locates_and_a_steady_run_does_not() {
 }
 
 fn full_frame(h: u8, m: u8, s: u8, f: u8, rate: u8) -> Vec<Ump> {
-    midi::sysex7_packets(&[0x7F, 0x7F, 0x01, 0x01, rate << 5 | h, m, s, f])
+    Sysex7Packets::from_payload(G, &[0x7F, 0x7F, 0x01, 0x01, rate << 5 | h, m, s, f])
+        .expect("a 7-bit payload")
+        .collect()
 }
 
 /// **A Full Message locates** to its position exactly (no two-frame offset,
@@ -509,7 +515,7 @@ fn stepping_a_follower_allocates_nothing() {
     let mut mtc = ClockFollower::new(ClockKind::Mtc);
     let mut n = 0usize;
     let p = period_of(120.0);
-    let tick = midi::timing_clock(G);
+    let tick = system(System::TimingClock);
     let pieces: Vec<(Ump, f64)> = cycle(0, 0, 1, 0, 1, 25.0, 0.0)
         .into_iter()
         .chain(cycle(0, 0, 1, 2, 1, 25.0, 0.08))

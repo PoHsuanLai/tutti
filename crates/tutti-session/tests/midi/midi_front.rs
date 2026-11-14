@@ -12,8 +12,10 @@ use tutti_graph::{
 };
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_session::{MidiError, Session, SessionNode, TakePlacement};
-use tutti_types::{Beat, ChannelLayout, Frame, MaxBlock, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity, Voice2};
+use tutti_types::{Beat, ChannelLayout, Frame, SampleRate, Samples};
+#[cfg(feature = "serde")]
+use tutti_ump::MidiGroup;
+use tutti_ump::{MidiChannel, NoteNumber, NoteVelocity, Voice2};
 
 /// Plays as an instrument (five outputs and an event input).
 struct Probe(ForkByClone<Five>);
@@ -77,7 +79,7 @@ fn a_take_records_the_live_input_on_its_frames_and_the_target_still_hears_it() {
     let mut live = s.midi().input(target).expect("the take left the keys");
     let _ = s.update();
     let (c, k) = (MidiChannel::of(2), NoteNumber::of(60));
-    live.note_on(Frame::new(600), c, k, NoteVelocity::new(0x8000))
+    live.note_on(Frame::new(600), c, k, NoteVelocity::CENTER)
         .unwrap();
     live.note_off(Frame::new(900), c, k).unwrap();
     blocks(&s, 3);
@@ -86,11 +88,8 @@ fn a_take_records_the_live_input_on_its_frames_and_the_target_still_hears_it() {
     assert_eq!(
         got,
         [
-            (
-                Frame::new(600),
-                midi::note_on(MidiGroup::FIRST, c, 60, 0x8000)
-            ),
-            (Frame::new(900), midi::note_off(MidiGroup::FIRST, c, 60, 0)),
+            (Frame::new(600), midi::note_on(c, 60, 0x8000)),
+            (Frame::new(900), midi::note_off(c, 60, 0)),
         ]
     );
     assert_eq!(take.drain().count(), 0, "a second drain is empty");
@@ -117,7 +116,7 @@ fn a_take_of_an_instrument_records_what_its_handle_plays() {
     let (c, k) = (MidiChannel::of(2), NoteNumber::of(60));
     synth
         .keys_mut()
-        .note_on(Frame::new(600), c, k, NoteVelocity::new(0x8000))
+        .note_on(Frame::new(600), c, k, NoteVelocity::CENTER)
         .unwrap();
     synth.keys_mut().note_off(Frame::new(900), c, k).unwrap();
     blocks(&s, 3);
@@ -125,11 +124,8 @@ fn a_take_of_an_instrument_records_what_its_handle_plays() {
     assert_eq!(
         got,
         [
-            (
-                Frame::new(600),
-                midi::note_on(MidiGroup::FIRST, c, 60, 0x8000)
-            ),
-            (Frame::new(900), midi::note_off(MidiGroup::FIRST, c, 60, 0)),
+            (Frame::new(600), midi::note_on(c, 60, 0x8000)),
+            (Frame::new(900), midi::note_off(c, 60, 0)),
         ]
     );
 }
@@ -153,6 +149,31 @@ fn an_instrument_has_its_handles_keys_and_no_second_live_input() {
             .feed(key, tutti_session::Feeder::LiveInput)
             .is_empty(),
         "no second inlet was opened"
+    );
+}
+
+/// **A node's keys have one owner, whichever was asked first**: a node whose
+/// live input handed out its keys ([`Midi::input`](tutti_session::Midi::input))
+/// is not made an instrument with a second pair, and an instrument's node
+/// hands out no live keys (the test above). Nothing is opened by the refusal.
+#[test]
+fn a_node_whose_live_input_has_its_keys_is_not_made_an_instrument() {
+    let mut s = offline();
+    let (node, ()) = s.graph().add(Probe(ForkByClone(Five)));
+    let key = node.erase();
+    let _keys = s.midi().input(key).expect("the live input's keys");
+    assert!(matches!(
+        s.instrument(key),
+        Err(tutti_session::Error::NotInstrument {
+            why: tutti_session::NotInstrument::LiveInput,
+            ..
+        })
+    ));
+    assert!(
+        s.graph_ref()
+            .feed(key, tutti_session::Feeder::Instrument)
+            .is_empty(),
+        "no instrument queue was opened"
     );
 }
 
@@ -241,18 +262,13 @@ fn voices(seen: &Seen) -> Vec<(u8, Voice2)> {
 /// A member channel's note and bend, then the manager's Damper Pedal, of a
 /// lower zone of three members: what the session's mode makes of a clip.
 fn mpe_clip() -> Vec<TimedMidiEvent> {
-    let (g, member) = (MidiGroup::FIRST, MidiChannel::of(1));
+    let member = MidiChannel::of(1);
     clip([
-        (0.0, midi::note_on(g, member, 60, 0x8000)),
-        (0.1, midi::pitch_bend(g, member, 0xC000_0000)),
+        (0.0, midi::note_on(member, 60, 0x8000)),
+        (0.1, midi::pitch_bend(member, 0xC000_0000)),
         (
             0.2,
-            midi::cc(
-                g,
-                MidiChannel::FIRST,
-                tutti_ump::CCNumber::SUSTAIN,
-                u32::MAX,
-            ),
+            midi::cc(MidiChannel::FIRST, tutti_ump::CCNumber::SUSTAIN, u32::MAX),
         ),
     ])
 }
@@ -272,11 +288,8 @@ fn play_for(s: &mut Session, blocks: usize) {
 fn a_clip_plays_through_the_sessions_mpe_mode() {
     let mut s = Session::builder()
         .mpe_mode(midi::lower_zone(3))
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::SR_48K)
+        .build()
         .expect("builds");
     assert_eq!(s.midi().mpe(), midi::lower_zone(3));
     let (target, seen) = crate::common::tap(&mut s);
@@ -403,11 +416,8 @@ mod hardware {
         let (backend, fake) = FakeBackend::build_with(vec![], vec![], usize::MAX);
         let s = Session::builder()
             .midi_hardware_over(backend)
-            .build_offline(
-                SampleRate::SR_48K,
-                ChannelLayout::STEREO,
-                MaxBlock::of(Samples(1_024)),
-            )
+            .sample_rate(SampleRate::SR_48K)
+            .build()
             .expect("builds");
         (s, fake)
     }

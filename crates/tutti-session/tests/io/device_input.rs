@@ -81,6 +81,7 @@ fn live(record: &Arc<Mutex<Record>>) -> (LiveSession, ManualStream) {
     let (driver, stream) = ManualStreamDriver::new();
     let live = Session::builder()
         .input_opener(Capture(Arc::clone(record)))
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .expect("builds with no device");
     (live, stream)
@@ -274,4 +275,42 @@ fn device_latency_is_the_reported_delay_in_frames_and_none_before_a_report() {
     new.render_block_delayed(64, Duration::from_millis(10))
         .expect("open");
     assert_eq!(device.latency().output, Some(Samples(441)));
+}
+
+/// **Removing an input's node closes its capture and forgets it**, whether
+/// by `Session::remove` or the graph's own removal: the stream's owner is
+/// dropped, and a restart does not reopen it.
+#[test]
+fn removing_an_inputs_node_closes_the_capture_and_a_restart_does_not_reopen_it() {
+    for through_graph in [false, true] {
+        let record = Arc::new(Mutex::new(Record::default()));
+        let (live, _stream) = live(&record);
+        let (mut session, mut device) = live.into_parts();
+        let input = session.add_input(InputConfig::default()).expect("opens");
+        if through_graph {
+            session.graph().remove(input.node()).unwrap();
+        } else {
+            session.remove(input.node()).unwrap();
+        }
+        for _ in 0..4 {
+            let _ = session.update();
+        }
+        let log = record.lock().unwrap().log.clone();
+        assert_eq!(
+            log,
+            ["open 48000", "closed"],
+            "the capture closed (through the graph: {through_graph})"
+        );
+
+        let (driver, _new) = ManualStreamDriver::new();
+        session
+            .restart_on(&mut device, spec_at(44_100.0), driver, None)
+            .expect("restarts");
+        let log = record.lock().unwrap().log.clone();
+        assert_eq!(
+            log,
+            ["open 48000", "closed"],
+            "a restart does not reopen a removed input"
+        );
+    }
 }

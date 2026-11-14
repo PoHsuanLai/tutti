@@ -5,7 +5,10 @@ fn parse(bytes: &[u8]) -> Vec<Message> {
 }
 
 fn on(ch: u8, note: u8, vel: u8) -> Message {
-    Message::note_on(MidiChannel::of(ch), NoteNumber::of(note), U7::of(vel))
+    Message::midi1(
+        MidiChannel::of(ch),
+        Voice1::note_on(NoteNumber::of(note), U7::of(vel)),
+    )
 }
 
 fn sysex(status: SysexStatus, data: &[u8]) -> Message {

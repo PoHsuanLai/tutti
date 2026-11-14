@@ -8,25 +8,18 @@
 
 use std::sync::Arc;
 use tutti_graph::ForkByClone;
-use tutti_types::MaxBlock;
 
 use tutti_graph::NodeKey;
 use tutti_nodes::testing::{Const, Through};
 use tutti_session::{Edge, EdgeGainError, InPort, OutPort, Root, Session};
-use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Amplitude, ChannelLayout, InterleavedMut};
 
 const A: f32 = 0.25;
 const B: f32 = 0.5;
 const BLOCK: usize = 64;
 
 fn offline() -> Session {
-    Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds")
+    Session::builder().build().expect("builds")
 }
 
 fn amp(x: f32) -> Amplitude {

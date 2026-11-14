@@ -1,4 +1,4 @@
-//! A hosted plugin's parameters as views (design 029 section 2.3):
+//! A hosted plugin's parameters as views:
 //! [`Params`], [`Param`], [`TypedParam`] and [`ParamGesture`].
 //!
 //! Every one of them borrows the session through [`Plugin`](crate::Plugin), so
@@ -66,7 +66,10 @@
 //! plugin to the host, VST2 has none, AU's are notifications to listeners), so a
 //! plugin hears only the values.
 
+use std::marker::PhantomData;
+
 use tutti_graph::NodeKey;
+
 use tutti_plugin_host::{Notice, ParamReporter, PluginHandle};
 use tutti_plugin_types::{
     AutomationMode, AutomationModeError, Normalized, ParamEdit, ParamId, ParamUnit, ParameterInfo,
@@ -120,10 +123,12 @@ pub enum PluginParamError {
     /// crossfade or a reload) or stopped declaring the parameter (a rescan).
     #[error("the plugin of the gesture on parameter {0} is gone")]
     Gone(ParamId),
-    /// The value lies outside the range the parameter declares, or is not
-    /// finite.
+    /// The value is finite and lies outside the range the parameter declares.
     #[error("the value lies outside the range parameter {0} declares")]
     OutOfRange(ParamId),
+    /// The value is NaN or infinite.
+    #[error("the value for parameter {0} is not finite")]
+    NotFinite(ParamId),
     /// The format has no plain value for the parameter (VST2 without an integer
     /// range, a plugin that no longer answers).
     #[error("the format has no plain value for parameter {0}")]
@@ -230,7 +235,6 @@ impl<'a> Params<'a> {
             declared,
             wanted,
         };
-        let default = U::from_plain(declared, info.default_value()).ok_or(unfit.clone())?;
         // Every type here is an interval: if both ends read, so does
         // everything between them.
         for end in [min, max] {
@@ -241,7 +245,7 @@ impl<'a> Params<'a> {
             unit: declared,
             min,
             max,
-            default,
+            unit_type: PhantomData,
         })
     }
 
@@ -372,8 +376,8 @@ impl<'a> Param<'a> {
         Ok(value)
     }
 
-    /// The value now in the plugin's own units, through the format's own map
-    /// (design 029 section 6.1); `None` where the format has none.
+    /// The value now in the plugin's own units, through the format's own map;
+    /// `None` where the format has none.
     ///
     /// A bare `f64`, on purpose: a plugin's plain value has no tutti unit unless
     /// the plugin declares one, and [`Params::typed`] is the typed door for that.
@@ -512,9 +516,7 @@ pub struct TypedParam<'a, U> {
     unit: ParamUnit,
     min: f64,
     max: f64,
-    /// The declared default, read at the check: what [`get`](Self::get) answers
-    /// when the plugin answers no plain value.
-    default: U,
+    unit_type: PhantomData<U>,
 }
 
 impl<'a, U: PlainUnit> TypedParam<'a, U> {
@@ -526,15 +528,19 @@ impl<'a, U: PlainUnit> TypedParam<'a, U> {
     }
 
     /// The value now, in `U`: the mirror's position through the format's own
-    /// map. A plugin that stops answering the map reads as the declared
-    /// default.
-    #[must_use]
-    pub fn get(&self) -> U {
+    /// map.
+    ///
+    /// # Errors
+    ///
+    /// [`PluginParamError::NoPlainValue`] when the plugin does not answer the
+    /// map (the format has none, or the plugin stopped answering).
+    pub fn get(&self) -> Result<U, PluginParamError> {
+        let id = self.param.id();
         self.param
             .plain()
             .map(|plain| plain.clamp(self.min, self.max))
             .and_then(|plain| U::from_plain(self.unit, plain))
-            .unwrap_or(self.default)
+            .ok_or(PluginParamError::NoPlainValue(id))
     }
 
     /// Sets the parameter to `value`, through the declared range and the
@@ -542,12 +548,16 @@ impl<'a, U: PlainUnit> TypedParam<'a, U> {
     ///
     /// # Errors
     ///
+    /// [`PluginParamError::NotFinite`] for a NaN or an infinity,
     /// [`PluginParamError::OutOfRange`] for a value outside the declared range,
     /// [`ReadOnly`](PluginParamError::ReadOnly), and
     /// [`NoPlainValue`](PluginParamError::NoPlainValue) where the format has no
     /// plain value.
     pub fn set(&self, value: U) -> Result<(), PluginParamError> {
         let plain = value.to_plain(self.unit);
+        if !plain.is_finite() {
+            return Err(PluginParamError::NotFinite(self.param.id()));
+        }
         if !(self.min..=self.max).contains(&plain) {
             return Err(PluginParamError::OutOfRange(self.param.id()));
         }

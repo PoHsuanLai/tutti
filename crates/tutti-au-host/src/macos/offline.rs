@@ -232,7 +232,7 @@ pub use tutti_au_ffi::{PushScratch, output_byte_sizes};
 ///
 /// # Errors
 /// [`AuError::InvalidBuffer`] if `frames` exceeds the scratch's block size, or
-/// [`AuError::RenderFailed`] with the unit's `LastRenderError` attached.
+/// [`AuError::RenderFailed`] with the unit's `LastRenderStatus` attached.
 pub fn process_push(
     unit: &Unit,
     scratch: &mut PushScratch,

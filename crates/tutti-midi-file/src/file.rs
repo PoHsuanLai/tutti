@@ -34,6 +34,7 @@ use crate::{ConfigError, Error, OutOfOrder, Refusal, Result, clip_file, smf};
 mod to_clip;
 
 pub use to_clip::{Converted, DropReason, Dropped, ToClipError};
+use tutti_ump::Voice1;
 
 /// A position in a file, in ticks of its division: whole numbers, so a file
 /// written back lands every event on the tick it was read at.
@@ -382,10 +383,13 @@ impl Track {
         velocity: U7,
     ) -> Self {
         let address = channel.into();
-        self.place(tick, Message::note_on(address, note, velocity).into());
+        self.place(
+            tick,
+            Message::midi1(address, Voice1::note_on(note, velocity)).into(),
+        );
         self.place(
             tick + len,
-            Message::note_off(address, note, U7::of(64)).into(),
+            Message::midi1(address, Voice1::note_off(note, U7::of(64))).into(),
         );
         self
     }
@@ -413,7 +417,7 @@ impl Track {
         self
     }
 
-    /// Appends `event` at `tick`: a message ([`Message::note_on`] and its
+    /// Appends `event` at `tick`: a message (a [`Message`] built with [`Message::midi1`] and its
     /// kin), a [`Meta`], or any [`FileEvent`]. Where [`note`](Self::note)
     /// places an event by its tick, this one is the strict door: the track's
     /// events do not go back in time. The track's end moves to `tick` if it is

@@ -104,7 +104,8 @@ std only. A rule the compiler already enforces is not a gate.
   `Graph::connect(from, to)` over ports taken from keys; params are methods of the key.
 - **One failure rule:** a call that names a node or port that does not exist fails at the
   call with a named error, never later and never as a default. A port that goes missing
-  after a successful call reads silence. Removal returns a `#[must_use] Result`.
+  after a successful call reads silence, except a tap whose every source was removed:
+  it ends (`Pull::Ended`) once drained. Removal returns a `#[must_use] Result`.
 - The session graph declicks wiring (`connect` fades in unless `.hard()`); a test that
   renders a session wire for another reason wires `.hard()`.
 - An inlet whose rate is not the graph's is refused, never resampled.
@@ -155,6 +156,8 @@ std only. A rule the compiler already enforces is not a gate.
   agreeing with `new`, serde through `try_from`, and named `clamped`/`masked` only where a
   hot path or the wire needs them. No public field, no infallible `From<Raw>`. Test it with
   `tutti_fixtures::check_range_contract`.
+- Write a new range-checked type with `tutti_types::ranged!`, never by hand or with a
+  crate-local macro; a hand-written one moves to it when its file is touched.
 - Make a wrong value unwritable before adding a runtime check for it.
 
 ### Edges and buffers
@@ -219,7 +222,8 @@ adapter is [tutti-audio/bevy-tutti](https://github.com/tutti-audio/bevy-tutti).
 
 0. `tutti-alsa-ffi`, `tutti-coremidi-ffi`, `tutti-ump`, `tutti-types`,
    `tutti-plugin-ipc-ffi`
-1. `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-curve`
+1. `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-curve`,
+   `tutti-buffers`
 2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-metering`, `tutti-codec`,
    `tutti-tempo`, `tutti-voicing`, `tutti-sf2`
 3. `tutti-transport`, `tutti-plugin-types`, `tutti-measure`

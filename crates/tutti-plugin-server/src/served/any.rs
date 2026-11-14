@@ -5,8 +5,8 @@
 //! [`Served`], which is bounded by
 //! [`OutOfProcess`](tutti_plugin_types::OutOfProcess) (through
 //! [`ServerSide`](super::ServerSide)), so a row for a format that cannot be
-//! served from another process (VST2: its `AEffect` fuses editor and audio,
-//! design 021 §4) does not compile. Adding a format is one row and, if it
+//! served from another process (VST2: its `AEffect` fuses editor and audio)
+//! does not compile. Adding a format is one row and, if it
 //! differs from the defaults in what this process does, a `ServerSide` impl.
 
 use std::path::Path;

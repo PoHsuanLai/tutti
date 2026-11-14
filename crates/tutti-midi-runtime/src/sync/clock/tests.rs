@@ -1,7 +1,6 @@
 use super::*;
 use tutti_fixtures::midi;
-use tutti_ump::MidiChannel;
-use tutti_ump::MidiGroup;
+use tutti_ump::{MidiChannel, MidiGroup, U14};
 
 /// Any time: only the differences between arrivals matter.
 fn base() -> Seconds {
@@ -47,18 +46,33 @@ fn test_basic_beat_counting() {
 #[test]
 fn song_position_then_continue_resumes_at_spp_times_six_ticks() {
     let mut clock = MidiClockDecoder::new();
-    assert!(clock.feed(&midi::song_position(MidiGroup::FIRST, 0x0123), base()));
+    assert!(clock.feed(
+        &Ump::from(Message::System(
+            MidiGroup::FIRST,
+            System::SongPosition(U14::of(0x0123))
+        )),
+        base()
+    ));
     // 0x0123 sixteenths = 291 × 6 ticks.
     assert!((clock.beat_position().get() - 291.0 * 6.0 / 24.0).abs() < 1e-9);
-    assert!(clock.feed(&midi::continue_msg(MidiGroup::FIRST), base()));
+    assert!(clock.feed(
+        &Ump::from(Message::System(MidiGroup::FIRST, System::Continue)),
+        base()
+    ));
     let mut ts = base();
     for _ in 0..24 {
-        clock.feed(&midi::timing_clock(MidiGroup::FIRST), ts);
+        clock.feed(
+            &Ump::from(Message::System(MidiGroup::FIRST, System::TimingClock)),
+            ts,
+        );
         ts += us_per_tick(120.0);
     }
     assert!((clock.beat_position().get() - (291.0 * 6.0 / 24.0 + 1.0)).abs() < 1e-9);
     // A Start begins at zero whatever the pointer said.
-    clock.feed(&midi::start(MidiGroup::FIRST), ts);
+    clock.feed(
+        &Ump::from(Message::System(MidiGroup::FIRST, System::Start)),
+        ts,
+    );
     assert_eq!(clock.beat_position().get(), 0.0);
 }
 
@@ -66,25 +80,31 @@ fn song_position_then_continue_resumes_at_spp_times_six_ticks() {
 fn feed_dispatches_transport_events_like_the_direct_methods() {
     let mut clock = MidiClockDecoder::new();
     // Start via a real System packet, then advance a beat of clock ticks.
-    assert!(clock.feed(&midi::start(MidiGroup::FIRST), base()));
+    assert!(clock.feed(
+        &Ump::from(Message::System(MidiGroup::FIRST, System::Start)),
+        base()
+    ));
     assert_eq!(clock.transport_state(), ClockTransportState::Playing);
 
     let interval = us_per_tick(120.0);
     let mut ts = base();
     for _ in 0..24 {
-        assert!(clock.feed(&midi::timing_clock(MidiGroup::FIRST), ts));
+        assert!(clock.feed(
+            &Ump::from(Message::System(MidiGroup::FIRST, System::TimingClock)),
+            ts
+        ));
         ts += interval;
     }
     assert!((clock.beat_position().get() - 1.0).abs() < 0.001);
 
-    assert!(clock.feed(&midi::stop(MidiGroup::FIRST), ts));
+    assert!(clock.feed(
+        &Ump::from(Message::System(MidiGroup::FIRST, System::Stop)),
+        ts
+    ));
     assert_eq!(clock.transport_state(), ClockTransportState::Stopped);
 
     // A non-transport event is ignored and reported as unrecognised.
-    assert!(!clock.feed(
-        &midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, midi::MID_VELOCITY),
-        ts
-    ));
+    assert!(!clock.feed(&midi::note_on(MidiChannel::FIRST, 60, 0x8000), ts));
 }
 
 /// The decoder recovers the sender's tempo from the tick spacing alone.

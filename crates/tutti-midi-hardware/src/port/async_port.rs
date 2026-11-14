@@ -114,7 +114,8 @@ impl InputProducerHandle {
     /// discards the event and is `Diverted`. Lock-free and allocation-free, so
     /// it is safe to call from a driver callback.
     #[inline]
-    pub fn push(&mut self, event: Ump, timestamp: Instant) -> Pushed {
+    pub fn push(&mut self, event: impl Into<Ump>, timestamp: Instant) -> Pushed {
+        let event = event.into();
         if !self.active.load(Ordering::Acquire) {
             return Pushed::Diverted;
         }

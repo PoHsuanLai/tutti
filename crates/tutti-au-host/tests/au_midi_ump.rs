@@ -17,13 +17,15 @@ use std::sync::Mutex;
 
 use tutti_au_ffi::{EventList, Pushed, Wire};
 use tutti_au_host::AuMidiMapping;
-use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 
 mod support;
 use support::au::Au;
 use support::corpus::SAMPLER;
+use tutti_fixtures::midi;
+use tutti_midi_protocol::widen_value;
+use tutti_ump::U7;
 
 static AU_LOCK: Mutex<()> = Mutex::new(());
 
@@ -53,8 +55,7 @@ fn cc(group: u8, value: u32) -> tutti_graph::UmpAt {
     (
         Offset::ZERO,
         midi::cc(
-            MidiGroup::of(group),
-            MidiChannel::FIRST,
+            tutti_ump::Address::new(MidiGroup::of(group), MidiChannel::FIRST),
             CCNumber::of(CC),
             value,
         ),
@@ -78,7 +79,7 @@ fn the_legacy_path_drops_another_group_and_counts_it() {
     let _g = AU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mut au, before) = mapped_sampler();
 
-    au.send_midi(&[cc(1, midi::wide_value(127))]);
+    au.send_midi(&[cc(1, widen_value(U7::of(127)).get())]);
     render(&mut au);
     assert_eq!(au.groups_dropped(), 1);
     assert_eq!(
@@ -87,7 +88,7 @@ fn the_legacy_path_drops_another_group_and_counts_it() {
         "a Group 1 controller must not be heard on Group 0's channels"
     );
 
-    au.send_midi(&[cc(0, midi::wide_value(127))]);
+    au.send_midi(&[cc(0, widen_value(U7::of(127)).get())]);
     render(&mut au);
     assert_eq!(au.groups_dropped(), 1, "Group 0 is not dropped");
     assert_ne!(au.get_parameter(GAIN).unwrap(), before, "Group 0 is heard");
@@ -101,7 +102,7 @@ fn the_legacy_path_counts_a_message_it_cannot_narrow() {
     let (au, _) = mapped_sampler();
     au.send_midi(&[(
         Offset::ZERO,
-        midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000_0000),
+        midi::per_note_pitch_bend(MidiChannel::FIRST, 60, 0x8000_0000),
     )]);
     assert_eq!(au.unsendable_dropped(), 1);
     assert_eq!(au.groups_dropped(), 0);

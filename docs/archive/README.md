@@ -10,7 +10,7 @@ first; come here for the history behind a decision.
 | `004-plugin-host-gap-audit.md` | The audit of what the plugin hosts lacked (the D-, C- and A- items); its gaps are closed. |
 | `005-plugin-presets.md` | The design for plugin presets (D-9), shipped. |
 | `007-channel-topology.md` | The design for speaker arrangement and channel topology (D-11), reporting built, the proposal deferred. |
-| `008-plugin-lifecycle-strategies.md` | Why the four hosts model their lifecycles differently; its rule, the fifth-format checklist and the AU pinned pointer now live in `docs/design/016-plugin-hosts.md` §2.3. |
+| `008-plugin-lifecycle-strategies.md` | Why the four hosts model their lifecycles differently; its rule, the fifth-format checklist and the AU pinned pointer now live in `tutti-plugin`'s crate docs, under *The plugin state machine*. |
 | `009-plugin-crash-notification.md` | The design for telling the app a plugin crashed, built. |
 | `010-parameter-grouping.md` | The design for parameter groups across the four formats, built. |
 | `011-outcome-types.md` | The design for `Result` and enum outcomes on the plugin surface, built. |

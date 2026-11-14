@@ -322,7 +322,7 @@ impl ClapLoaded {
     /// period restarts from the fire instant. An instant earlier than a timer's
     /// last fire is treated as not due. Useful for driving timers
     /// deterministically in tests; production code calls `poll_timers`.
-    pub fn poll_timers_at(&mut self, main: &MainThread, now: std::time::Instant) -> usize {
+    pub(crate) fn poll_timers_at(&mut self, main: &MainThread, now: std::time::Instant) -> usize {
         if !self.plugin.has_on_timer() {
             // Nothing can fire, so nothing is due: the per-block pass need not
             // come back for these timers.

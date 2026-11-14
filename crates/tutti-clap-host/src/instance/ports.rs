@@ -96,7 +96,7 @@ impl ClapLoaded {
     /// notes to it go out as `clap_event_midi`: the same question as
     /// [`sends_midi_notes`](Self::sends_midi_notes), asked of every port.
     /// Empty for a plugin with no input note port.
-    pub fn midi_note_ports(&self, main: &MainThread) -> Vec<bool> {
+    pub(crate) fn midi_note_ports(&self, main: &MainThread) -> Vec<bool> {
         let count = self.note_port_count(main, true).min(16);
         (0..count)
             .map(|index| {
@@ -354,7 +354,7 @@ impl ClapLoaded {
     /// channels. Nothing is lost in the conversion — a position this crate
     /// cannot name arrives as [`Speaker::Unknown`](tutti_types::Speaker::Unknown)
     /// and keeps its channel's slot.
-    pub fn surround_topology(
+    pub(crate) fn surround_topology(
         &self,
         main: &MainThread,
         is_input: bool,

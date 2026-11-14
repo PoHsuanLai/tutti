@@ -200,7 +200,7 @@ impl ClapNoteExpression {
     /// shared form carries no voice addressing, so `port`/`channel`/`key`
     /// default to port 0 / any-channel / any-key.
     #[must_use]
-    pub fn from_shared(expr: &tutti_plugin_types::NoteExpressionValue) -> Self {
+    pub(crate) fn from_shared(expr: &tutti_plugin_types::NoteExpressionValue) -> Self {
         Self::new(expr.expression_type, expr.note_id, expr.value).at(expr.sample_offset)
     }
 }

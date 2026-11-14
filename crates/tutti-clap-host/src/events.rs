@@ -894,9 +894,6 @@ pub struct InputEventList {
     /// `clap_event_midi`: every port until
     /// [`set_midi_capable_ports`](Self::set_midi_capable_ports) says otherwise.
     midi_capable: u16,
-    /// MIDI messages left unsent because their port declares no MIDI dialect:
-    /// see [`midi_refused`](Self::midi_refused).
-    midi_refused: u64,
     /// Messages of a Group the plugin has no note port for: see
     /// [`groups_dropped`](Self::groups_dropped).
     groups_dropped: u64,
@@ -921,7 +918,6 @@ impl InputEventList {
             ports: 1,
             midi_ports: 0,
             midi_capable: u16::MAX,
-            midi_refused: 0,
             groups_dropped: 0,
             sysex: SysexAssembler::new(Box::default(), 0, 0),
         }
@@ -978,11 +974,10 @@ impl InputEventList {
     /// (`note-ports.h`: `CLAP_NOTE_DIALECT_MIDI`, "uses clap_event_midi").
     /// `clap_event_midi` and `clap_event_midi_sysex` go only to such a port:
     /// to any other, a controller, bend, program change, pressure, system
-    /// message or SysEx is dropped and counted
-    /// ([`midi_refused`](Self::midi_refused)). A port past the end of the
+    /// message or SysEx is dropped. A port past the end of the
     /// list does not; before this is called every port does. Takes effect for
     /// events added after.
-    pub fn set_midi_capable_ports(&mut self, capable: &[bool]) {
+    pub(crate) fn set_midi_capable_ports(&mut self, capable: &[bool]) {
         self.midi_capable = capable
             .iter()
             .take(usize::from(tutti_ump::MidiGroup::COUNT))
@@ -990,16 +985,9 @@ impl InputEventList {
             .fold(0, |mask, (port, &yes)| mask | (u16::from(yes) << port));
     }
 
-    /// MIDI messages dropped since the list was built because the note port
-    /// they belong to declares no MIDI dialect
-    /// ([`set_midi_capable_ports`](Self::set_midi_capable_ports)).
-    pub fn midi_refused(&self) -> u64 {
-        self.midi_refused
-    }
-
     /// Whether notes to the first input note port go out as `clap_event_midi`:
     /// see [`set_midi_notes`](Self::set_midi_notes).
-    pub fn supports_midi_notes(&self) -> bool {
+    pub(crate) fn supports_midi_notes(&self) -> bool {
         self.midi_ports & 1 != 0
     }
 
@@ -1029,7 +1017,6 @@ impl InputEventList {
             ports: 1,
             midi_ports: 0,
             midi_capable: u16::MAX,
-            midi_refused: 0,
             groups_dropped: 0,
             sysex: SysexAssembler::new(Box::default(), 0, 0),
         }
@@ -1097,7 +1084,7 @@ impl InputEventList {
     /// activation. Until then every SysEx message is dropped and counted
     /// ([`sysex_dropped`](Self::sysex_dropped)). A list already reserved
     /// keeps its buffer, and any message open in it.
-    pub fn reserve_sysex(&mut self) {
+    pub(crate) fn reserve_sysex(&mut self) {
         if self.sysex.max_message() < SYSEX_MESSAGE_CAPACITY {
             self.sysex = sysex_assembler();
         }
@@ -1196,7 +1183,6 @@ impl InputEventList {
                     return self;
                 }
                 if self.midi_capable >> port & 1 == 0 {
-                    self.midi_refused += 1;
                     return self;
                 }
                 let bytes = self.sysex.message(message).bytes();
@@ -1354,7 +1340,6 @@ impl InputEventList {
     fn push_bytes(&mut self, time: u32, port: u16, bytes: &[[u8; 3]]) -> bool {
         // `clap_event_midi` only to a port that declared the MIDI dialect.
         if self.midi_capable >> port & 1 == 0 {
-            self.midi_refused += bytes.len() as u64;
             return false;
         }
         if self.midi_room() < bytes.len() {
@@ -1568,7 +1553,7 @@ impl InputEventList {
     ///
     /// An edit does not count against the parameter room: the ring that carried
     /// it is bounded, and the list reserves room for as many on top of it.
-    pub fn add_param_edit(
+    pub(crate) fn add_param_edit(
         &mut self,
         param_id: u32,
         value: f64,
@@ -1593,7 +1578,7 @@ impl InputEventList {
     /// Appends each [`ClapNoteExpression`] as a CLAP `NOTE_EXPRESSION` event.
     /// A `Custom` dimension is skipped — CLAP has no id for one, and
     /// [`ClapEvent::note_expression`] says why substituting would be worse.
-    pub fn add_note_expressions(&mut self, expressions: &[ClapNoteExpression]) -> &mut Self {
+    pub(crate) fn add_note_expressions(&mut self, expressions: &[ClapNoteExpression]) -> &mut Self {
         if self.supports_midi_notes() {
             return self;
         }
@@ -1619,7 +1604,7 @@ impl InputEventList {
     /// already added at the same frame. Room is the caller's
     /// ([`reserve`](Self::reserve)): at most the graph's
     /// `MAX_TRANSPORT_CHANGES` a block.
-    pub fn add_transport(&mut self, time: u32, mut event: clap_event_transport) -> &mut Self {
+    pub(crate) fn add_transport(&mut self, time: u32, mut event: clap_event_transport) -> &mut Self {
         event.header.time = time;
         self.events.push(ClapEvent::Transport(event));
         self
@@ -2098,7 +2083,7 @@ impl OutputEventList {
     /// caller-supplied [`RtNoteExpressions`], an `RtVec` of fixed inline
     /// capacity: it never allocates, and expressions past the capacity are
     /// dropped and reported by `out`.
-    pub fn fill_note_expressions(&self, out: &mut RtNoteExpressions) {
+    pub(crate) fn fill_note_expressions(&self, out: &mut RtNoteExpressions) {
         out.clear();
         for event in &self.events {
             if let Some(ne) = clap_event_to_note_expression(event)
@@ -3128,7 +3113,7 @@ mod tests {
 
     /// `note-ports.h`: `clap_event_midi` is for a port that declares
     /// `CLAP_NOTE_DIALECT_MIDI`. A controller for a port that does not is
-    /// dropped and counted, and a port that does still gets its own.
+    /// dropped, and a port that does still gets its own.
     #[test]
     fn a_controller_is_not_sent_to_a_port_without_the_midi_dialect() {
         let mut list = InputEventList::new();
@@ -3137,7 +3122,6 @@ mod tests {
 
         list.add_midi(&cc_message(0));
         assert!(list.events().is_empty(), "port 0 declared no MIDI");
-        assert_eq!(list.midi_refused(), 1);
 
         list.add_midi(&cc_message(1));
         assert_eq!(list.events().len(), 1);
@@ -3178,7 +3162,6 @@ mod tests {
 
         list.add_midi(&sysex(0));
         assert_eq!(list.events().len(), 1, "port 0 declared no MIDI");
-        assert_eq!(list.midi_refused(), 1);
     }
 
     // --- event time is bounded to the block ---

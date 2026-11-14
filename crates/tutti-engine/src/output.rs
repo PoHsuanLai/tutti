@@ -19,14 +19,15 @@
 //! mono, stereo, quad, 5.1, 7.1, 7.1.4), so a 5.1 root plays folded on a stereo
 //! device and a 7.1 root plays on a 5.1 one by position. Where either has none
 //! (3, 5, 7, 9 to 11, 13 and up) no speaker can be named, and channels go by
-//! index ([`Fold::by_index`](tutti_types::Fold::by_index)): zero-filled when the
+//! index ([`Fold::by_index`](tutti_buffers::Fold::by_index)): zero-filled when the
 //! device is wider, and a pair that would drop a channel has no fold, so that
 //! root renders a silent, counted block into that device.
 
 use std::sync::{Arc, Mutex, PoisonError};
+use tutti_buffers::{Fold, FoldError};
 use tutti_graph::MAX_ROOT_CHANNELS;
 use tutti_rt::ArcLend;
-use tutti_types::{ChannelLayout, ChannelTopology, Fold, FoldError};
+use tutti_types::{ChannelLayout, ChannelTopology};
 
 /// The widest device an engine can render into without being told
 /// ([`Engine::support_output`](crate::Engine::support_output)).
@@ -95,7 +96,7 @@ impl OutputFolds {
     /// [`FoldError::Empty`] for a device of no channels.
     pub(crate) fn support(&mut self, device: ChannelLayout) -> Result<(), FoldError> {
         let Some(slot) = usize::from(device.count()).checked_sub(1) else {
-            return Err(FoldError::Empty(tutti_types::FoldEnd::Destination));
+            return Err(FoldError::Empty(tutti_buffers::FoldEnd::Destination));
         };
         if self.by_device.len() <= slot {
             self.by_device.resize(slot + 1, None);

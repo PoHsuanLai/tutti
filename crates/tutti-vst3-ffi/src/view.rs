@@ -19,18 +19,22 @@ use crate::com::HostPlugFrame;
 use crate::error::{Vst3Error, check, is_ok};
 
 /// Why an editor could not be opened.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum EditorError {
     /// The plugin has no edit controller to ask for a view.
+    #[error("the plugin has no edit controller")]
     NoController,
     /// `createView` returned nothing.
+    #[error("createView returned nothing")]
     NoView,
     /// `isPlatformTypeSupported` refused this platform's window type; the field
     /// is its name.
+    #[error("the plugin view does not support platform type {0}")]
     PlatformRefused(String),
     /// `IPlugView::attached` failed.
-    Attach(Vst3Error),
+    #[error("IPlugView::attached failed")]
+    Attach(#[source] Vst3Error),
 }
 
 /// The editor of an open plugin: its view and the frame it was handed.

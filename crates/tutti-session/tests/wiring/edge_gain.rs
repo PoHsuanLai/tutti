@@ -8,25 +8,19 @@
 
 use std::sync::Arc;
 use tutti_graph::ForkByClone;
-use tutti_types::MaxBlock;
 
+use tutti_buffers::InterleavedMut;
 use tutti_graph::NodeKey;
 use tutti_nodes::testing::{Const, Through};
 use tutti_session::{Edge, EdgeGainError, InPort, OutPort, Root, Session};
-use tutti_types::{Amplitude, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Amplitude, ChannelLayout};
 
 const A: f32 = 0.25;
 const B: f32 = 0.5;
 const BLOCK: usize = 64;
 
 fn offline() -> Session {
-    Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds")
+    Session::builder().build().expect("builds")
 }
 
 fn amp(x: f32) -> Amplitude {
@@ -39,7 +33,7 @@ fn settled(s: &mut Session, ch: usize) -> Vec<f32> {
     let _ = s.update();
     let mut block = vec![f32::NAN; BLOCK * 2];
     for _ in 0..2 {
-        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
     }
     block.iter().skip(ch).step_by(2).copied().collect()
 }

@@ -26,9 +26,10 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use tutti_buffers::{FiniteSource, InterleavedMut, Pull, Source};
 use tutti_codec::{FileOut, Format, Pcm, Spec};
 use tutti_session::{Recorder, RecorderError};
-use tutti_types::{ChannelLayout, FiniteSource, Pull, SampleRate, Samples, Source};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 fn wav(path: &std::path::Path) -> FileOut {
     FileOut::create(
@@ -101,11 +102,14 @@ struct Ramp {
 impl FiniteSource for Ramp {}
 
 impl Source for Ramp {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn pull(&mut self, out: &mut [f32]) -> Pull {
+    fn pull(&mut self, mut out: InterleavedMut<'_>) -> Pull {
+        let out = out.samples_mut();
         self.polls.fetch_add(1, Ordering::Release);
         if !self.delay.is_zero() {
             std::thread::sleep(self.delay);
@@ -136,11 +140,14 @@ struct HalfStarving {
 }
 
 impl Source for HalfStarving {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn pull(&mut self, out: &mut [f32]) -> Pull {
+    fn pull(&mut self, mut out: InterleavedMut<'_>) -> Pull {
+        let out = out.samples_mut();
         let n = self.polls.fetch_add(1, Ordering::Release) + 1;
         if n.is_multiple_of(2) {
             return Pull::Starved;
@@ -159,11 +166,13 @@ struct Exploding {
 }
 
 impl Source for Exploding {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn pull(&mut self, _out: &mut [f32]) -> Pull {
+    fn pull(&mut self, _out: InterleavedMut<'_>) -> Pull {
         self.polled.fetch_add(1, Ordering::Release);
         panic!("the source fell over mid-take");
     }
@@ -512,11 +521,14 @@ struct Dead {
 impl FiniteSource for Dead {}
 
 impl Source for Dead {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn pull(&mut self, out: &mut [f32]) -> Pull {
+    fn pull(&mut self, mut out: InterleavedMut<'_>) -> Pull {
+        let out = out.samples_mut();
         let n = self.left.min(out.len() / 2);
         if n == 0 {
             return Pull::Failed;
@@ -566,11 +578,14 @@ struct AlwaysLive {
 }
 
 impl Source for AlwaysLive {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
 
-    fn pull(&mut self, out: &mut [f32]) -> Pull {
+    fn pull(&mut self, mut out: InterleavedMut<'_>) -> Pull {
+        let out = out.samples_mut();
         self.polls.fetch_add(1, Ordering::Release);
         let frames = Samples::from_interleaved_len(out.len(), ChannelLayout::STEREO);
         out[..frames.interleaved_len(ChannelLayout::STEREO)].fill(0.5);

@@ -197,7 +197,7 @@ pub(super) enum AudioResponse {
 }
 
 /// Plugin-originated, unsolicited events observed on the control stream.
-/// Delivered to a listener installed on [`super::AudioBridge`] via
+/// Delivered to a listener installed on `super::AudioBridge` via
 /// `set_listener`; the bridge thread invokes it after draining replies.
 #[derive(Debug, Clone)]
 pub enum BridgeEvent {

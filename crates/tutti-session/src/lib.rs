@@ -11,21 +11,22 @@
 //!
 //! ```
 //! use tutti_types::MaxBlock;
-//! use tutti_types::{ChannelLayout, Hz, InterleavedMut, SampleRate, Samples};
+//! use tutti_types::{ChannelLayout, Hz, SampleRate, Samples};
+//! use tutti_buffers::InterleavedMut;
 //! use tutti_graph::ForkByClone;
 //! use tutti_nodes::testing::Osc;
 //! use tutti_session::{Root, Session};
 //!
 //! let mut s = Session::builder()
 //!     .outputs_floor(ChannelLayout::MONO)
-//!     .build_offline(SampleRate::SR_48K, ChannelLayout::MONO, MaxBlock::of(Samples(512)))
+//!     .outputs(ChannelLayout::MONO).max_block(MaxBlock::of(Samples(512))).build()
 //!     .unwrap();
 //! let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
 //! s.graph().connect(osc, Root).unwrap();
 //! s.update(); // commits: the graph was edited
 //!
 //! let mut block = vec![0.0f32; 512];
-//! s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::MONO));
+//! s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::MONO).unwrap());
 //! assert!(block.iter().any(|&x| x > 0.9));
 //! ```
 //!
@@ -67,6 +68,8 @@ mod fork;
 #[cfg(feature = "soundfont")]
 mod general_midi;
 mod graph;
+#[cfg(feature = "plugin")]
+mod hang;
 #[cfg(all(feature = "device", feature = "audio-io"))]
 mod input;
 #[cfg(feature = "midi")]
@@ -113,13 +116,17 @@ pub use bounce::{
     BounceLatency, BounceRendered, BounceTail, Bounced, BufferMaster, BufferStem, ExportClock,
     FileMaster, FileStem, Master, NoMaster, PrepareEdit, PreparedGraph, Range, Stem, StemGain,
 };
-pub use builder::{SessionBuilder, Workers, root_width};
+#[cfg(feature = "device")]
+pub use builder::OnDevice;
+pub use builder::{Offline, SessionBuilder, Workers, root_width};
 #[cfg(feature = "device")]
 pub use device::{
     Device, DeviceEvent, DeviceLatency, DeviceRestart, DeviceRestarted, LiveSession, RestartError,
     RestartOutcome,
 };
 pub use edge::EdgeGainError;
+#[cfg(feature = "plugin")]
+pub use error::HostPluginError;
 pub use error::{
     ConnectError, Error, HeardTapError, InletError, NoSuchNode, RemoveError, Result, ScheduleError,
     TempoError,
@@ -140,9 +147,7 @@ pub use graph::{
 #[cfg(all(feature = "device", feature = "audio-io"))]
 pub use input::{Input, InputConfig, InputOpener, OpenedInput, Trim};
 #[cfg(feature = "midi")]
-pub use instrument::{
-    AddedInstrument, AnyNode, InstrumentHandle, NotInstrument, SessionInstrument,
-};
+pub use instrument::{AddedInstrument, AnyNode, InstrumentHandle, NotInstrument};
 pub use jobs::{Job, JobFailed};
 pub use key::{
     Bus, BusSink, Channel, Connection, Edge, Event, EventInPort, EventOutPort, EventTapPort, Fanin,
@@ -178,6 +183,10 @@ pub use plugin::{
 };
 
 #[cfg(feature = "plugin")]
+use hang::HangDetector;
+#[cfg(feature = "plugin")]
+pub use hang::HangPolicy;
+#[cfg(feature = "plugin")]
 pub use plugin_diagnostics::{Diagnostics, PluginBuses};
 #[cfg(feature = "plugin")]
 pub use plugin_params::{Param, ParamGesture, Params, PluginParamError, TypedParam};
@@ -199,8 +208,8 @@ pub use session::ModInput;
 pub use session::{PHASES, Phase, PhaseCx, RootTopologyStatus, Session, SessionEvent};
 #[cfg(all(feature = "device", feature = "audio-io"))]
 pub use take::{
-    Armed, InFlight, Placement, Punch, PunchError, Recorded, Rolling, Start, Take, TakeError,
-    TakeEvent, TakeId, TakeTarget, Terms, Window,
+    Armed, InFlight, Placement, Punch, PunchError, Recorded, Rolling, Start, Take, TakeEnd,
+    TakeError, TakeEvent, TakeId, TakeTarget, Terms, Window,
 };
 #[cfg(any(feature = "record", feature = "export"))]
 pub use tutti_dsp::DitherShape;

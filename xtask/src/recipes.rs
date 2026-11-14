@@ -237,6 +237,11 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "a platform cfg stands only on a mod declaration, bar the temporary rows",
     ),
     (
+        "check-buffers",
+        "",
+        "a public item names audio with a fixed sample format only as a row of xtask/buffers-fixed.txt",
+    ),
+    (
         "check-conformance",
         "",
         "spec inventories are well formed, test tags name rows, the CLAP inventory matches clap-sys and the VST3 one the SDK",
@@ -545,6 +550,7 @@ impl Planner<'_> {
             "check-passive-tests" => self.out.push(Step::Gate(Gate::PassiveTests)),
             "check-comments" => self.out.push(Step::Gate(Gate::Comments)),
             "check-platform-seam" => self.out.push(Step::Gate(Gate::PlatformSeam)),
+            "check-buffers" => self.out.push(Step::Gate(Gate::Buffers)),
             "check-conformance" => self.out.push(Step::Gate(Gate::Conformance)),
             "conformance" => {
                 let o = options(name, args, &["--results", "--out"])?;
@@ -653,7 +659,7 @@ impl Planner<'_> {
                     "check-layout", "check-range-types", "check-hosting", "check-lints",
                     "check-value-traits", "check-submodule-pins", "check-doc-refs",
                     "check-pointers", "check-comments", "check-platform-seam", "check-doc-idents",
-                    "check-passive-tests", "check-alloc-binaries",
+                    "check-passive-tests", "check-alloc-binaries", "check-buffers",
                 ] {
                     self.dep(d)?;
                 }

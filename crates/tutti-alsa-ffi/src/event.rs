@@ -29,6 +29,14 @@ impl Received {
         }
     }
 
+    /// Whether the event holds a UMP message in [`ump`](Self::ump). A UMP client
+    /// also reads the sequencer's own notices (a port subscribed to, an Endpoint
+    /// changed), whose words are not a message.
+    #[must_use]
+    pub fn is_ump(&self) -> bool {
+        self.kind == sys::SND_SEQ_EVENT_UMP_PACKET
+    }
+
     /// What this event announces, if it came from the system announce port and
     /// says a client or port started, exited or changed. The event's data
     /// begins with the address of the client (and port) it is about.

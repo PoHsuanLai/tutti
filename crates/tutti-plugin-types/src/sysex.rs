@@ -12,7 +12,7 @@
 
 use tutti_ump::{MidiGroup, SYSEX7_MAX_PAYLOAD, Sysex7Packets, SysexAssembler};
 
-use crate::{MIDI_STACK_CAPACITY, MidiEventVec, RtMidiEvents, WireMidi};
+use crate::{MIDI_STACK_CAPACITY, RtMidiEvents, WireMidi};
 
 /// The longest complete message a plugin is handed, in bytes: the engine's
 /// [`SYSEX7_MAX_PAYLOAD`] and its two delimiters. No input produces a longer
@@ -90,28 +90,10 @@ pub fn push_sysex(out: &mut RtMidiEvents, frame_offset: u32, message: &[u8]) -> 
     true
 }
 
-/// [`push_sysex`] for an inline [`MidiEventVec`] (a stack batch), with the
-/// same whole-or-nothing rule: a message whose packets do not all fit in
-/// `out`'s remaining room is dropped and `false` is returned. Never allocates.
-pub fn push_sysex_stack(out: &mut MidiEventVec, frame_offset: u32, message: &[u8]) -> bool {
-    let Some(packets) = sysex_packets(message) else {
-        return false;
-    };
-    if packets.len() > out.remaining_capacity() {
-        return false;
-    }
-    for packet in packets {
-        out.push(WireMidi {
-            offset: frame_offset,
-            ump: packet,
-        });
-    }
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_fixtures::midi;
     use tutti_ump::{MidiChannel, SysexStep, Ump, frame};
 
     fn packets(group: MidiGroup, payload: &[u8]) -> Vec<Ump> {
@@ -224,12 +206,7 @@ mod tests {
         let mut out = RtMidiEvents::new();
         assert!(out.push(WireMidi {
             offset: 0,
-            ump: tutti_fixtures::midi::note_on(
-                MidiGroup::FIRST,
-                MidiChannel::of(0),
-                60,
-                tutti_fixtures::midi::MID_VELOCITY
-            )
+            ump: midi::note_on(MidiChannel::of(0), 60, 0x8000)
         }));
         assert!(!push_sysex(
             &mut out,

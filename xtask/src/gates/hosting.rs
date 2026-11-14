@@ -1,5 +1,5 @@
 //! `check-hosting`: every hosting marker a format implements is listed in the
-//! plugin contract (design 021 section 3.3).
+//! plugin contract.
 //!
 //! `impl InProcess for X` or `impl OutOfProcess for X` in a crate's `src/`
 //! needs a contract suite whose format's loaded type is `X` and whose

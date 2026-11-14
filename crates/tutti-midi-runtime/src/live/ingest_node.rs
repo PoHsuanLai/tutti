@@ -643,12 +643,7 @@ impl Node for MidiIngestNode {
         // A note-off may use the room past the capacity (the port's own
         // `note_off_room`), so a block full of other messages (a bend range
         // fanned out over a zone) cannot keep it out.
-        let mut staging = Staging {
-            out: &mut self.out,
-            capacity: self.capacity,
-            kept: 0,
-            dropped: 0,
-        };
+        let mut staging = Staging::new(&mut self.out, self.capacity);
         // A host-set mode's ranges, at frame 0, ahead of the block's events
         // (the sort below is stable). Once, whatever the devices: they are
         // the receiver's, not a device's.
@@ -758,18 +753,37 @@ impl Node for MidiIngestNode {
 }
 
 /// The block's translated events, as they are made.
-struct Staging<'a> {
+pub(super) struct Staging<'a> {
     out: &'a mut [UmpAt],
     capacity: usize,
-    kept: usize,
-    dropped: u64,
+    /// How many of `out` are kept.
+    pub(super) kept: usize,
+    /// How many events were dropped for want of room.
+    pub(super) dropped: u64,
+}
+
+impl<'a> Staging<'a> {
+    /// Staging into `out`, of which a note-off may use all and any other
+    /// event the first `capacity`.
+    pub(super) fn new(out: &'a mut [UmpAt], capacity: usize) -> Self {
+        Self {
+            out,
+            capacity,
+            kept: 0,
+            dropped: 0,
+        }
+    }
 }
 
 impl Staging<'_> {
     /// Keeps everything `make` sends, or, if it does not all fit, none of it
     /// and counts it dropped; whether it all fit. A `note_off`'s may use the
     /// room past the capacity.
-    fn whole(&mut self, note_off: bool, make: impl FnOnce(&mut dyn FnMut(UmpAt))) -> bool {
+    pub(super) fn whole(
+        &mut self,
+        note_off: bool,
+        make: impl FnOnce(&mut dyn FnMut(UmpAt)),
+    ) -> bool {
         let limit = if note_off {
             self.out.len()
         } else {

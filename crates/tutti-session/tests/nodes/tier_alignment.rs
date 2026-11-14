@@ -20,15 +20,15 @@
 
 use std::path::Path;
 use std::time::{Duration, Instant};
-use tutti_types::MaxBlock;
 
+use tutti_buffers::InterleavedMut;
 use tutti_graph::ForkByClone;
 use tutti_nodes::testing::Const;
 use tutti_nodes::{LimiterControls, LimiterNode};
 use tutti_sampler::{DiskVoice, MemorySource, Placement, StreamPhase, VoiceWindow};
 use tutti_session::{InPort, OutPort, Root, SamplerEvent, Session, SessionEvent};
 use tutti_transport::MotionEvent;
-use tutti_types::{Beat, ChannelLayout, Db, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Beat, ChannelLayout, Db, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 /// Beat 1 at 120 BPM and `RATE`.
@@ -74,11 +74,9 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
     write_ramp(&path);
 
     let mut s = Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::QUAD,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .outputs(ChannelLayout::QUAD)
+        .build()
         .expect("builds");
 
     // The latent path, on output 2.
@@ -188,7 +186,7 @@ fn render(tier: Tier) -> (Vec<f32>, Vec<f32>, Samples) {
     let (mut left, mut right) = (Vec::new(), Vec::new());
     let mut block = vec![0.0f32; BLOCK * 4];
     while left.len() < frames {
-        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::QUAD));
+        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::QUAD).unwrap());
         left.extend(block.as_chunks::<4>().0.iter().map(|f| f[0]));
         right.extend(block.as_chunks::<4>().0.iter().map(|f| f[1]));
     }

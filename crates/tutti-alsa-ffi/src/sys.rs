@@ -232,6 +232,10 @@ pub const SND_SEQ_EVENT_PORT_CHANGE: u8 = 65;
 /// `-EINVAL`.
 pub const SND_SEQ_ADDRESS_SUBSCRIBERS: u8 = 254;
 
+/// The type a UMP packet is delivered as (`SND_SEQ_EVENT_SYSTEM`, 0): every
+/// other event a UMP client reads (a subscription notice, an Endpoint change)
+/// has a type of its own and its data in the words.
+pub const SND_SEQ_EVENT_UMP_PACKET: u8 = 0;
 /// `SND_SEQ_TIME_STAMP_MASK`: the bit of an event's `flags` that says whether
 /// `time` is a tick or a real time.
 pub const SND_SEQ_TIME_STAMP_MASK: u8 = 1 << 0;
@@ -477,6 +481,9 @@ unsafe extern "C" {
 unsafe extern "C" {
     /// Set the port's `SND_SEQ_PORT_CAP_*` bits.
     pub fn snd_seq_port_info_set_capability(info: *mut snd_seq_port_info_t, capability: c_uint);
+}
+
+unsafe extern "C" {
     /// Publish this client's endpoint record.
     pub fn snd_seq_set_ump_endpoint_info(seq: *mut snd_seq_t, info: *const c_void) -> c_int;
     /// Publish this client's block `blk`.
@@ -498,6 +505,9 @@ unsafe extern "C" {
     pub fn snd_ump_block_info_set_first_group(info: *mut snd_ump_block_info_t, group: c_uint);
     pub fn snd_ump_block_info_set_num_groups(info: *mut snd_ump_block_info_t, n: c_uint);
     pub fn snd_ump_block_info_set_ui_hint(info: *mut snd_ump_block_info_t, hint: c_uint);
+    pub fn snd_ump_block_info_set_flags(info: *mut snd_ump_block_info_t, flags: c_uint);
+    pub fn snd_ump_block_info_set_midi_ci_version(info: *mut snd_ump_block_info_t, version: c_uint);
+    pub fn snd_ump_block_info_set_sysex8_streams(info: *mut snd_ump_block_info_t, streams: c_uint);
     pub fn snd_ump_block_info_set_name(info: *mut snd_ump_block_info_t, name: *const c_char);
 }
 

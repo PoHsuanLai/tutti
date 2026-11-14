@@ -8,7 +8,6 @@ use std::sync::Arc;
 use tutti_fixtures::signal::plane_bits as bits;
 use tutti_types::MaxBlock;
 
-use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
 use tutti_graph::WorkerPool;
 use tutti_graph::{
@@ -19,7 +18,7 @@ use tutti_graph::{OutPort, Source};
 use tutti_midi_runtime::{MidiClipNode, TimedMidiEvent};
 use tutti_polysynth::{OscillatorType, PolySynth, SynthConfig, UnisonConfig, UnisonVoices};
 use tutti_types::{Beat, Bpm, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::{Message, MidiChannel, NoteNumber, NoteVelocity, Voice2};
 
 const SR: f64 = 48_000.0;
 const BPM: f64 = 120.0;
@@ -66,11 +65,12 @@ fn notes(k: u64) -> Vec<TimedMidiEvent> {
         .map(|i| {
             TimedMidiEvent::new(
                 Beat(0.001 * (k + 3 * i) as f64),
-                midi::note_on(
-                    MidiGroup::FIRST,
+                Message::midi2(
                     MidiChannel::FIRST,
-                    48 + (k * 5 + i * 7) as u8,
-                    0xFFFF,
+                    Voice2::note_on(
+                        NoteNumber::of(48 + (k * 5 + i * 7) as u8),
+                        NoteVelocity::MAX,
+                    ),
                 ),
             )
             .unwrap()

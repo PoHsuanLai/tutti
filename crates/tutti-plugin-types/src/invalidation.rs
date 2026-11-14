@@ -15,7 +15,7 @@ use crate::{PluginFailure, PluginTail, Samples};
 /// view) and [`PluginInvalidation`] (structural, re-plan the graph) — see
 /// [`ResyncKind::classify`].
 ///
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResyncKind {
     /// Re-read all parameter values (plugin loaded a preset / wrote them back).
     ParamValues,
@@ -60,7 +60,7 @@ pub enum ResyncClass {
 /// Re-read the state; the audio graph is unaffected. Delivered via
 /// `tutti-plugin`'s `PluginHandle::subscribe`.
 /// Mirrors CLAP `params.rescan(flags)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PluginRefresh {
     /// Re-read all parameter values (a preset load / internal write-back).
     ParamValues,

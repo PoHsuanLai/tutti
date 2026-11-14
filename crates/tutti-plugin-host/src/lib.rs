@@ -1,5 +1,5 @@
 #![doc = include_str!("../README.md")]
-//! The format-generic half of plugin hosting (design 021, step 4a).
+//! The format-generic half of plugin hosting.
 //!
 //! What a loaded plugin's host side needs whatever process the plugin runs in,
 //! and whatever its format: the main-thread control surface
@@ -47,8 +47,8 @@ pub use param_input::take as take_param_input;
 pub use param_values::{ParamRead, ParamReporter, ParamSnapshot, PluginParamValues};
 pub use render_mode::needs_announcement;
 pub use segment_points::SegmentPoints;
-pub use transport_source::{
-    BlockTransport, ProjectTime, Snapshot, SteadyTime, TransportSource, transport_info,
-};
-pub use transport_walk::{Call, TransportWalk};
+pub(crate) use transport_source::TransportSource;
+pub use transport_source::{BlockTransport, ProjectTime, Snapshot, SteadyTime, transport_info};
+pub use transport_walk::Call;
+pub(crate) use transport_walk::TransportWalk;
 pub use wakeups::service_now;

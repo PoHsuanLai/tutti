@@ -1,17 +1,20 @@
 //! A pump over a decoded file: `FileIn` is a `Source` whose end (`Ended`) and
 //! whose fault (`Failed`) the pump must tell apart.
 
+use tutti_buffers::{Interleaved, Sink, SinkFailed, Source};
 use tutti_codec::FileIn;
 use tutti_session::{PumpLoop, PumpPass};
-use tutti_types::{ChannelLayout, Samples, Sink, SinkFailed, Source};
+use tutti_types::{ChannelLayout, Samples};
 
 struct Discard(ChannelLayout);
 
 impl Sink for Discard {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         self.0
     }
-    fn write(&mut self, _: &[f32]) -> Result<(), SinkFailed> {
+    fn write(&mut self, _: Interleaved<'_>) -> Result<(), SinkFailed> {
         Ok(())
     }
     fn finalize(self) -> std::io::Result<()> {

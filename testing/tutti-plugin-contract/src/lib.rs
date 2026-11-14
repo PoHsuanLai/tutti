@@ -7,7 +7,7 @@
 //! expected figures are in [`spec`], not imported from the plugin. A case a
 //! format cannot pass is a [`Gap`]: it must fail with the stated text, and `N`
 //! must equal the number of gaps, so none is added unnoticed. `hostings` names
-//! the markers the format's loaded type implements (design 021 §3.3): each one
+//! the markers the format's loaded type implements: each one
 //! listed is checked at compile time, and `cargo xtask check-hosting` fails an
 //! impl the list leaves out.
 
@@ -62,6 +62,7 @@ macro_rules! contract {
             unlisted_parameter_is_none,
             active_write_applied,
             automation_point_offset,
+            automation_segment_and_step,
             note_at_offset,
             arrival_is_ordered_and_sized,
             transport_reaches_the_plugin,

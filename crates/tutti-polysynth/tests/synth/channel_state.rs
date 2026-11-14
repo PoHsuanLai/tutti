@@ -7,6 +7,8 @@
 //! Detailed Specification and of Recommended Practice RP-015.
 
 use crate::support;
+use tutti_midi_protocol::{widen_value, widen_velocity};
+use tutti_ump::U7;
 
 use std::num::NonZeroUsize;
 use support::{BLOCK, Hand};
@@ -18,8 +20,7 @@ use tutti_polysynth::{
     Adsr, AllocationStrategy, OscillatorType, PolySynth, SynthConfig, VoiceMode,
 };
 use tutti_types::{Amplitude, Seconds, Semitones};
-use tutti_ump::Rpn;
-use tutti_ump::{CCNumber, MidiChannel, MidiGroup, Ump};
+use tutti_ump::{CCNumber, MidiChannel, Rpn, Ump};
 
 const SR: f64 = 48_000.0;
 /// The envelope's release, seconds.
@@ -49,35 +50,32 @@ fn hand(config: SynthConfig) -> Hand {
 
 fn on(channel: u8, note: u8) -> Ump {
     midi::note_on(
-        MidiGroup::FIRST,
         MidiChannel::of(channel),
         note,
-        tutti_fixtures::midi::wide_velocity(100),
+        widen_velocity(U7::of(100)).get(),
     )
 }
 
 fn off(channel: u8, note: u8) -> Ump {
-    midi::note_off(MidiGroup::FIRST, MidiChannel::of(channel), note, 0)
+    midi::note_off(MidiChannel::of(channel), note, 0)
 }
 
 fn cc(channel: u8, number: CCNumber, value: u8) -> Ump {
     midi::cc(
-        MidiGroup::FIRST,
         MidiChannel::of(channel),
         number,
-        tutti_fixtures::midi::wide_value(value),
+        widen_value(U7::of(value)).get(),
     )
 }
 
 /// Full wheel up.
 fn bend_up(channel: u8) -> Ump {
-    midi::pitch_bend(MidiGroup::FIRST, MidiChannel::of(channel), u32::MAX)
+    midi::pitch_bend(MidiChannel::of(channel), u32::MAX)
 }
 
 /// Pitch Bend Sensitivity (RPN 0) of whole `semitones`.
 fn sensitivity(channel: u8, semitones: u8) -> Ump {
-    midi::registered_rpn(
-        MidiGroup::FIRST,
+    midi::registered(
         MidiChannel::of(channel),
         Rpn::PITCH_BEND_SENSITIVITY,
         PitchBendSensitivity::of(semitones).to_rpn_bits(),
@@ -287,39 +285,16 @@ fn reset_all_controllers_centres_its_own_wheel() {
     assert_hz(&play(&mut h, &[], 0.5), 2.0 * A4);
 }
 
-/// Under MPE the master channel's bend is the zone's: it reaches a note on a
-/// member channel, and the note's own per-note bend multiplies it, so the two
-/// add in semitones.
+/// A channel's bend and a note's own per-note bend add in semitones. This is
+/// how a zone's master bend meets a member's: the MPE transform copies the
+/// master's bend onto the member channel, where it is the channel's own.
 #[test]
-fn under_mpe_the_master_bend_and_the_per_note_bend_add() {
-    let mut h = hand(SynthConfig {
-        mpe: support::lower_zone(),
-        ..config()
-    });
+fn a_channels_bend_and_the_notes_per_note_bend_add() {
+    let mut h = hand(config());
     // Per-note bend of a quarter of the wheel's travel: 12 of 48 semitones.
-    let per_note = midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 69, 0xA000_0000);
-    play(&mut h, &[on(1, 69), bend_up(0), per_note], 0.2);
+    let per_note = midi::per_note_pitch_bend(MidiChannel::of(1), 69, 0xA000_0000);
+    play(&mut h, &[on(1, 69), bend_up(1), per_note], 0.2);
     assert_hz(&play(&mut h, &[], 0.5), A4 * ratio(14.0));
-}
-
-/// Under MPE only the master channel's Reset All Controllers reaches the
-/// zone; a member's touches that member (RP-015 per channel).
-#[test]
-fn under_mpe_a_members_reset_touches_only_the_member() {
-    let mut h = hand(SynthConfig {
-        mpe: support::lower_zone(),
-        ..config()
-    });
-    play(&mut h, &[bend_up(0), on(1, 69)], 0.2);
-    assert_hz(&play(&mut h, &[], 0.5), A4 * ratio(2.0));
-
-    // Another member's reset leaves channel 1 bent.
-    play(&mut h, &[cc(2, CCNumber::RESET_ALL, 0)], 0.2);
-    assert_hz(&play(&mut h, &[], 0.5), A4 * ratio(2.0));
-
-    // The master's centres the zone.
-    play(&mut h, &[cc(0, CCNumber::RESET_ALL, 0)], 0.2);
-    assert_hz(&play(&mut h, &[], 0.5), A4);
 }
 
 /// `Node::reset` is a freshly prepared synth's state: a raised wheel and a
@@ -340,12 +315,8 @@ fn reset_returns_the_wheel_and_the_range_to_their_defaults() {
 /// configured one.
 #[test]
 fn reset_returns_the_per_note_range_to_its_default() {
-    let mut h = hand(SynthConfig {
-        mpe: support::lower_zone(),
-        ..config()
-    });
-    let rpn7 = midi::registered_rpn(
-        MidiGroup::FIRST,
+    let mut h = hand(config());
+    let rpn7 = midi::registered(
         MidiChannel::of(1),
         Rpn::PER_NOTE_PITCH_BEND_SENSITIVITY,
         PitchBendSensitivity::of(12).to_rpn_bits(),
@@ -353,7 +324,7 @@ fn reset_returns_the_per_note_range_to_its_default() {
     play(&mut h, &[rpn7], 0.01);
     Node::reset(&mut *h);
     // A quarter of the travel: 12 of 48 semitones.
-    let per_note = midi::per_note_pitch_bend(MidiGroup::FIRST, MidiChannel::of(1), 69, 0xA000_0000);
+    let per_note = midi::per_note_pitch_bend(MidiChannel::of(1), 69, 0xA000_0000);
     play(&mut h, &[on(1, 69), per_note], 0.2);
     assert_hz(&play(&mut h, &[], 0.5), A4 * ratio(12.0));
 }

@@ -1,5 +1,5 @@
-//! A hosted plugin's diagnostics and its buses (design 029 sections 2.7 and
-//! 3.5): the counts and figures a host shows beside a plugin, and the graph's
+//! A hosted plugin's diagnostics and its buses: the counts and figures a host shows beside a
+//! plugin, and the graph's
 //! bus handles for wiring it.
 //!
 //! Neither depends on where the plugin runs: a figure that exists only out of

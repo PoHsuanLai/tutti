@@ -560,7 +560,7 @@ pub fn transport_info(s: &Snapshot, meter: &MeterMap) -> TransportInfo {
 ///
 /// Public for `tutti-plugin`'s node of a served plugin, which drives the same piece.
 #[derive(Clone)]
-pub struct TransportSource {
+pub(crate) struct TransportSource {
     /// A reader of the node's meter cell, registered when the source was
     /// built: installing or clearing a meter publishes into it.
     meter: MeterSlotReader,
@@ -624,7 +624,7 @@ impl TransportSource {
     }
 }
 
-/// One block's lend of a [`TransportSource`]. Dropped before the block ends:
+/// One block's lend of a `TransportSource`. Dropped before the block ends:
 /// it holds the meter's loan.
 ///
 /// Public for `tutti-plugin`'s node of a served plugin, which drives the same piece.

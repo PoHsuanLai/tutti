@@ -36,8 +36,10 @@ use crate::unique_socket_path;
 use crate::{AudioSlab, RING_SLOTS, SlabWriter};
 use crate::{BridgeMessage, HostMessage, PROTOCOL_VERSION, SlabLayout};
 use std::sync::Arc;
+use tutti_fixtures::midi;
 use tutti_plugin_types::{BlockStatus, ChannelLayout, ChunkCounters, MidiEventVec, SampleFormat};
 use tutti_types::SampleRate;
+use tutti_ump::MidiChannel;
 
 /// The bridge's editor loader: these peers never open an editor, and one that
 /// tried is refused (the suite loads no plugin format).
@@ -371,7 +373,7 @@ fn drive_blocks_with_gap(blocks: usize, gap: std::time::Duration) -> Vec<Vec<Vec
     // output region must not alias the input region.
     let layout = stereo_layout();
     assert!(
-        layout.input_ring_bytes() > 0 && layout.output_ring_bytes() > 0,
+        layout.input_ring_bytes() > 0 && layout.ring_bytes(layout.output_channels()) > 0,
         "both directions must have their own region"
     );
     let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE, slab);
@@ -1536,7 +1538,7 @@ impl crate::Chunks for StatusProbe {
 }
 
 /// **The status a server replies with crosses the wire and reaches the host
-/// with the chunk it belongs to** (doc 023 step 2). The server says a
+/// with the chunk it belongs to**. The server says a
 /// different status for each of blocks 1, 2 and 3 (continue, tail, sleep);
 /// the batcher collects block `n` as it starts chunk `n + 1`, and hands the
 /// host block `n`'s status then: nothing's before any chunk is in flight
@@ -1614,12 +1616,7 @@ impl crate::Chunks for LossProbe {
     fn payload(&mut self, _frames: usize) -> BlockPayload {
         let note = tutti_plugin_types::WireMidi {
             offset: 0,
-            ump: tutti_fixtures::midi::note_on(
-                tutti_ump::MidiGroup::FIRST,
-                tutti_ump::MidiChannel::FIRST,
-                60,
-                tutti_fixtures::midi::MID_VELOCITY,
-            ),
+            ump: midi::note_on(tutti_ump::MidiChannel::FIRST, 60, 0x8000),
         };
         BlockPayload {
             midi: std::iter::repeat_n(note, self.midi).collect(),
@@ -1719,14 +1716,12 @@ fn a_refused_chunk_reports_its_midi_lost() {
 /// message after it, and a note, arrive.
 #[test]
 fn a_stale_block_never_lets_a_sysex_through_with_a_gap() {
-    use tutti_ump::{MidiChannel, MidiGroup};
-
     let _lock = machine_lock();
     let cut = sysex_fragments(60); // 10 packets
     let next = sysex_fragments(12); // 2 packets
     let note = tutti_plugin_types::WireMidi {
         offset: 0,
-        ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
+        ump: midi::note_on(MidiChannel::FIRST, 60, 1),
     };
     let (three, four, dropped) = two_stale_blocks([
         cut[..3].to_vec(),
@@ -1755,14 +1750,12 @@ fn a_stale_block_never_lets_a_sysex_through_with_a_gap() {
 /// open messages cut, or the message's `END` in the next block sent passes.
 #[test]
 fn a_stale_block_holding_only_a_start_cuts_its_message() {
-    use tutti_ump::{MidiChannel, MidiGroup};
-
     let _lock = machine_lock();
     let lost = sysex_fragments(12); // a START and an END
     let other = sysex_fragments(20);
     let note = tutti_plugin_types::WireMidi {
         offset: 0,
-        ump: tutti_fixtures::midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 1),
+        ump: midi::note_on(MidiChannel::FIRST, 60, 1),
     };
     // The `START` in the last stale block: an earlier one's `lost` would
     // cut it anyway.

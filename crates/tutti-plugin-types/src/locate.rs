@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 /// One of the host's helper executables.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Helper {
     /// The out-of-process host (`plugin-server`, `TUTTI_PLUGIN_SERVER`).
     Server,
@@ -23,7 +23,7 @@ pub enum Helper {
 impl Helper {
     /// The environment variable that names the binary outright.
     #[must_use]
-    pub const fn env_var(self) -> &'static str {
+    pub(crate) const fn env_var(self) -> &'static str {
         match self {
             Self::Server => "TUTTI_PLUGIN_SERVER",
             Self::Probe => "TUTTI_PLUGIN_PROBE",

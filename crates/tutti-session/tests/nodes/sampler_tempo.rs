@@ -3,22 +3,19 @@
 //! feature (`SessionNode` for the sampler's nodes).
 
 use std::sync::Arc;
-use tutti_types::MaxBlock;
 
+use tutti_buffers::InterleavedMut;
 use tutti_session::{OutPort, Root, Session};
 use tutti_transport::MotionEvent;
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate};
 
 const RATE: f64 = 48_000.0;
 
 /// An offline session at `RATE`, stereo, graph blocks of up to 1 024 frames.
 fn offline() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds")
 }
 
@@ -32,7 +29,7 @@ fn run(s: &Session, frames: usize, block: usize) -> Vec<f32> {
     let mut out = Vec::with_capacity(frames * 2);
     let mut buf = vec![0.0f32; block * 2];
     while out.len() < frames * 2 {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         out.extend_from_slice(&buf);
     }
     out.truncate(frames * 2);

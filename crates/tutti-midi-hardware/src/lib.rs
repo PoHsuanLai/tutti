@@ -65,6 +65,19 @@
 //! A [`DeviceId`] built on the UMP Product Instance Id is in the types, but no
 //! backend reads one yet: alsa-lib exposes none, and CoreMIDI's unique id stands in.
 //!
+//! ## Virtual endpoints
+//!
+//! A [`VirtualSource`] is an endpoint this process publishes for other
+//! applications to read from, and a [`VirtualDestination`] one they write to; a
+//! [`VirtualSpec`] gives the name, the [`VirtualProtocol`] and the Function
+//! Blocks. A destination delivers into an [`InputProducerHandle`], so its events
+//! take the path a device input's do. Where the platform cannot publish what the
+//! spec asks, opening says so: [`Error::Unsupported`] with no backend (Windows),
+//! [`Error::VirtualBlocksUnsupported`] for Function Blocks on macOS, where an
+//! endpoint carries a name and a protocol only. On Linux the sequencer is
+//! opened as a MIDI 2.0 client when the kernel has that mode and as a MIDI 1.0
+//! client otherwise; the endpoint reports the protocol it got.
+//!
 //! ## Quick start
 //!
 //! [`MidiSession`] is the whole OS edge. Inbound events never pass *through* it:
@@ -80,9 +93,9 @@
 //! ```rust,no_run
 //! use std::sync::Arc;
 //! use tutti_midi_hardware::{DeviceInlets, MidiSession};
-//! use tutti_fixtures::midi::note_on;
 //! use tutti_graph::Offset;
-//! use tutti_ump::{MidiChannel, MidiGroup};
+//! use tutti_fixtures::midi;
+//! use tutti_ump::{MidiChannel, NoteVelocity};
 //!
 //! // The inlets inbound events land in (four devices, 1024 events each, placed
 //! // 10 ms after they arrive), then a session over this platform's backend.
@@ -105,7 +118,7 @@
 //! // Outbound: the output is a value the caller owns; `queue` returns how many
 //! // events the device accepted.
 //! let mut output = session.connect_output("iac")?;
-//! let note = note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x8000);
+//! let note = midi::note_on(MidiChannel::FIRST, 60, 0x8000);
 //! assert_eq!(output.queue(&[(Offset::ZERO, note)]), 1);
 //! # Ok::<(), tutti_midi_hardware::Error>(())
 //! ```
@@ -224,6 +237,7 @@ mod stamp;
 mod stream;
 #[cfg(test)]
 mod testing;
+mod virtual_endpoint;
 mod wire;
 
 // A backend with no OS behind it, for testing the session layer. See the
@@ -232,7 +246,7 @@ mod wire;
 pub mod test_support;
 
 pub use capability::{EndpointInfo, UmpCapability};
-pub use ci::{CiChange, CiPeerInfo};
+pub use ci::{CiChange, CiPeerInfo, PeerId};
 pub use devices::{
     ChangeSink, DeviceEvents, Devices, OpenInput, OpenOutput, Pending, RecvTimeoutError, SeedError,
     WatchFailure,
@@ -252,14 +266,7 @@ pub use tutti_midi_device::{
     FunctionBlock, Identity, Learned, Match, OsChange, OsDevice, PortDirection, Resolved,
     SavedDevice,
 };
-
-// What the platform's backend exports beyond the common surface (CoreMIDI's
-// virtual endpoints); the other platforms export nothing here.
-#[allow(
-    unused_imports,
-    reason = "only the CoreMIDI platform exports public types of its own"
-)]
-pub use backend::*;
+pub use virtual_endpoint::{VirtualDestination, VirtualProtocol, VirtualSource, VirtualSpec};
 
 // --- Runtime delivery (the graph's MIDI border) ---
 //

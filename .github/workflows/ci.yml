@@ -112,6 +112,8 @@ jobs:
       - run: cargo xtask check-paths tutti_midi_protocol midi1 narrow scale voice
       # And `tutti-midi-device`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_midi_device id table
+      # And `tutti-midi-network`, which keeps its modules private.
+      - run: cargo xtask check-paths tutti_midi_network auth command config datagram discovery endpoint event link policy sequence session text udp
       # And `tutti-midi-hardware`: its modules are private but `test_support`.
       - run: cargo xtask check-paths tutti_midi_hardware backend capability devices endpoints error port session
       # And `tutti-plugin-db`, which keeps its modules private.
@@ -145,6 +147,8 @@ jobs:
       - run: cargo xtask check-paths tutti_tempo error grid map point segment
       # And `tutti-curve`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_curve envelope law
+      # And `tutti-buffers`, which keeps its modules private.
+      - run: cargo xtask check-paths tutti_buffers convert error i24 interleaved mono planes sample
       # And `tutti-voicing`, which keeps its modules private.
       - run: cargo xtask check-paths tutti_voicing controller holds phase voicing
       # And `tutti-rt`, which keeps its modules private: the root names every item.
@@ -200,6 +204,9 @@ jobs:
       - run: cargo xtask check-passive-tests
       - run: cargo xtask check-comments
       - run: cargo xtask check-alloc-binaries
+      # A public item names audio with a fixed sample format only as a row of
+      # `xtask/buffers-fixed.txt`; a ratchet like the baselines above.
+      - run: cargo xtask check-buffers
       # A platform cfg stands only on a `mod` declaration; the `-ffi` crates are
       # exempt and the temporary rows in the gate are a ratchet.
       - run: cargo xtask check-platform-seam

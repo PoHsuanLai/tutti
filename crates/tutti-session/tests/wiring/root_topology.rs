@@ -5,13 +5,12 @@
 //! where a fold is involved the expected frame is written out from the ITU
 //! rules (`M3DB`), not read from another render.
 
+use tutti_buffers::{FoldError, InterleavedMut, M3DB};
 use tutti_graph::ForkByClone;
 use tutti_nodes::testing::Const;
 use tutti_session::{Error, OutPort, Root, RootTopologyStatus, Session, SessionBuilder};
 use tutti_types::MaxBlock;
-use tutti_types::{
-    ChannelLayout, ChannelTopology, FoldError, InterleavedMut, M3DB, SampleRate, Samples, Speaker,
-};
+use tutti_types::{ChannelLayout, ChannelTopology, SampleRate, Samples, Speaker};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 
@@ -33,13 +32,17 @@ fn heard(session: &mut Session, device: u16) -> Vec<f32> {
     let layout = ChannelLayout::from(device);
     let mut out = vec![-9.0f32; usize::from(device) * 64];
     for _ in 0..2 {
-        session.render(&mut InterleavedMut::new(&mut out, layout));
+        session.render(&mut InterleavedMut::new(&mut out, layout).unwrap());
     }
     out[..usize::from(device)].to_vec()
 }
 
 fn offline(builder: SessionBuilder, device: u16) -> Result<Session, Error> {
-    builder.build_offline(RATE, ChannelLayout::from(device), MaxBlock::of(Samples(64)))
+    builder
+        .sample_rate(RATE)
+        .outputs(ChannelLayout::from(device))
+        .max_block(MaxBlock::of(Samples(64)))
+        .build()
 }
 
 fn buses(n: u16) -> ChannelTopology {

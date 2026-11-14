@@ -24,6 +24,7 @@ use crate::capability::EndpointInfo;
 use crate::devices::ChangeSink;
 use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, NoWatch, Watch};
 use crate::error::{Error, Result};
+use crate::virtual_endpoint::{SourceBackend, VirtualProtocol, VirtualSpec};
 use tutti_midi_device::EndpointId;
 
 /// Why every call here fails, in the error a caller will surface.
@@ -65,6 +66,24 @@ impl MidiEndpoints for StubEndpoints {
     fn open_output(&self, _id: EndpointId) -> Result<Box<dyn DeviceOut>> {
         Err(Error::Unsupported(REASON))
     }
+}
+
+/// Why no virtual endpoint can be published here.
+const VIRTUAL_REASON: &str = "no virtual MIDI endpoints on this platform (no native-UMP backend; Windows MIDI Services is not bound)";
+
+/// Refuses: there is no virtual source to publish.
+pub(crate) fn open_virtual_source(
+    _spec: &VirtualSpec,
+) -> Result<(Box<dyn SourceBackend>, VirtualProtocol)> {
+    Err(Error::Unsupported(VIRTUAL_REASON))
+}
+
+/// Refuses: there is no virtual destination to publish.
+pub(crate) fn open_virtual_destination(
+    _spec: &VirtualSpec,
+    _producer: InputProducerHandle,
+) -> Result<(Box<dyn InputConnection>, VirtualProtocol)> {
+    Err(Error::Unsupported(VIRTUAL_REASON))
 }
 
 #[cfg(test)]

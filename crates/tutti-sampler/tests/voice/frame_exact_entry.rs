@@ -32,6 +32,7 @@ use tutti_sampler::VoiceWindow;
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
+use tutti_buffers::InterleavedMut;
 use tutti_codec::Wave;
 use tutti_engine::Engine;
 use tutti_graph::NodeKey;
@@ -40,9 +41,7 @@ use tutti_graph::{OutPort, Source};
 use tutti_sampler::{MemorySource, SlotId, VoicePool};
 use tutti_tempo::TempoMap;
 use tutti_transport::{MotionEvent, OfflineTimeline, OfflineTimelineConfig, Transport};
-use tutti_types::{
-    Beat, Bpm, ChannelLayout, Frame, FrameClock, InterleavedMut, SampleRate, Samples,
-};
+use tutti_types::{Beat, Bpm, ChannelLayout, Frame, FrameClock, SampleRate, Samples};
 
 const SR: f64 = 48_000.0;
 const TEMPO: Bpm = Bpm::of(90.0);
@@ -110,7 +109,7 @@ fn play(engine: &Engine, t: &Transport) -> Vec<f32> {
     let mut left = Vec::with_capacity(FRAMES);
     let mut buf = vec![0.0f32; DEVICE * 2];
     while left.len() < FRAMES {
-        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         left.extend(buf.iter().step_by(2));
     }
     left

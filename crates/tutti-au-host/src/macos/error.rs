@@ -1,7 +1,7 @@
 //! What only the macOS build constructs or converts from: `AuError`'s
 //! constructors over AudioToolbox failures and the `tutti-au-ffi` conversions.
 
-use crate::error::{AuError, LoadFailedError, LoadStage, PresetFileError};
+use crate::error::{AuError, LoadFailure, LoadStage, PresetFileFailure};
 
 impl AuError {
     /// Constructs a [`AuError::RenderFailed`] from a failed `AudioUnitRender`
@@ -24,7 +24,7 @@ impl AuError {
         stage: LoadStage,
         reason: impl Into<String>,
     ) -> Self {
-        AuError::LoadFailed(Box::new(LoadFailedError {
+        AuError::LoadFailed(Box::new(LoadFailure {
             component: component.into(),
             stage,
             reason: reason.into(),
@@ -33,11 +33,11 @@ impl AuError {
 
     /// Constructs an [`AuError::InvalidPreset`] for `path`.
     ///
-    /// A helper rather than an inline `Box::new(PresetFileError { .. })` at each of
+    /// A helper rather than an inline `Box::new(PresetFileFailure { .. })` at each of
     /// the eight construction sites, matching what
     /// [`AuError::render_failed`](Self::render_failed) does for the render path.
     pub(crate) fn invalid_preset(path: impl Into<String>, message: impl Into<String>) -> Self {
-        AuError::InvalidPreset(Box::new(PresetFileError {
+        AuError::InvalidPreset(Box::new(PresetFileFailure {
             path: path.into(),
             message: message.into(),
         }))
@@ -45,7 +45,7 @@ impl AuError {
 
     /// Constructs an [`AuError::PresetIo`] for `path`.
     pub(crate) fn preset_io(path: impl Into<String>, message: impl Into<String>) -> Self {
-        AuError::PresetIo(Box::new(PresetFileError {
+        AuError::PresetIo(Box::new(PresetFileFailure {
             path: path.into(),
             message: message.into(),
         }))

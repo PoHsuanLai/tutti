@@ -61,7 +61,7 @@
 /// There is no prefetch variant (VST3 `kPrefetch`, VST2
 /// `ProcessLevel::Prefetch`): it is a live-playback mode that no mainstream
 /// host selects, and a plugin treats it like realtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RenderMode {
     /// Blocks arrive at a realtime cadence; the plugin should process as fast
@@ -84,20 +84,6 @@ impl RenderMode {
     pub fn is_offline(self) -> bool {
         matches!(self, RenderMode::Offline)
     }
-
-    /// Returns the mode implied by whether the caller is rendering offline.
-    ///
-    /// The inverse of [`is_offline`](Self::is_offline), for the call sites that
-    /// hold a bool — an export driver, or an engine reporting that it is
-    /// freewheeling.
-    #[must_use]
-    pub fn from_offline(offline: bool) -> Self {
-        if offline {
-            RenderMode::Offline
-        } else {
-            RenderMode::Realtime
-        }
-    }
 }
 
 /// How a plugin takes a change of [`RenderMode`], fixed for a loaded plugin.
@@ -108,7 +94,7 @@ impl RenderMode {
 /// [`OnActivation`](Self::OnActivation) one is deactivated and activated again
 /// in the new mode, and an [`Unsupported`](Self::Unsupported) one is left
 /// running.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RenderModeSupport {
     /// The plugin takes the mode while active: CLAP's `render.set`, or VST2's
     /// answer to `audioMasterGetCurrentProcessLevel`, which the host changes
@@ -137,14 +123,5 @@ mod tests {
     fn the_default_is_realtime() {
         assert_eq!(RenderMode::default(), RenderMode::Realtime);
         assert!(!RenderMode::default().is_offline());
-    }
-
-    /// The bool round-trip is what the format edges and the export driver both
-    /// use, so it has to be exact in both directions.
-    #[test]
-    fn offline_round_trips_through_a_bool() {
-        for mode in [RenderMode::Realtime, RenderMode::Offline] {
-            assert_eq!(RenderMode::from_offline(mode.is_offline()), mode);
-        }
     }
 }

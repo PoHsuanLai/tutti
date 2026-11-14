@@ -304,7 +304,7 @@ pub struct PresetFacts {
 pub(crate) type PresetDict = CFDictionary<CfCFString, CFType>;
 
 /// Why a byte string is not a preset dictionary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NotADictionary {
     /// Zero bytes.
     Empty,

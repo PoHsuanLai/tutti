@@ -82,7 +82,7 @@ impl Vst2Loaded {
     /// `PluginInstance`'s thread rules).
     ///
     /// [`Control::parameter_text`]: tutti_plugin_types::Control::parameter_text
-    pub fn display_if_current(&self, id: ParamId, value: Normalized) -> Option<String> {
+    pub(crate) fn display_if_current(&self, id: ParamId, value: Normalized) -> Option<String> {
         let current = self.parameter_value(id)?;
         (current.get() == value.get())
             .then(|| self.parameter_display(id))
@@ -336,7 +336,7 @@ fn declared_steps(
     }
 }
 
-/// What a VST2 parameter's label says it measures (doc 023 §5.2): the closed
+/// What a VST2 parameter's label says it measures: the closed
 /// list of [`ParamUnit::from_label`], and **only** over a plain range that fits,
 /// which is what `effGetParameterProperties` gives when the plugin answers it.
 /// VST2's native value is normalized, so a label without a range cannot be

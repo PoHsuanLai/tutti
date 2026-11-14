@@ -6,38 +6,32 @@
 //! the render calls the test makes.
 
 use std::time::Duration;
-use tutti_types::MaxBlock;
 
+use tutti_buffers::InterleavedMut;
 use tutti_graph::{Cx, ForkByClone, Io, Node, Prepare, Shape, Status};
 use tutti_session::{OutPort, Root, Session, SessionEvent};
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate};
 
 const RATE: f64 = 48_000.0;
 
 fn offline() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds")
 }
 
 /// A stereo block, rendered: the width the offline engine supports.
 fn good_block(s: &Session) {
     let mut buf = vec![0.0f32; 64 * 2];
-    s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
 }
 
 /// A block of a width the engine has no folds for (it builds them up to 16
 /// device channels): silenced.
 fn refused_block(s: &Session) {
     let mut buf = vec![1.0f32; 64 * 40];
-    s.render(&mut InterleavedMut::new(
-        &mut buf,
-        ChannelLayout::from(40u16),
-    ));
+    s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::from(40u16)).unwrap());
     assert!(buf.iter().all(|&x| x == 0.0), "a silenced block is silent");
 }
 

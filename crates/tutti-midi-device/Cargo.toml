@@ -15,7 +15,7 @@ workspace = true
 
 [features]
 default = []
-# `Serialize`/`Deserialize` on `DeviceId`, `Identity`, `SavedDevice` and `Learned`.
+# `Serialize`/`Deserialize` on `DeviceId`, `Identity`, `SavedDevice`, `Learned` and `SavedState`.
 serde = ["dep:serde", "tutti-ump/serde"]
 
 [dependencies]

@@ -39,13 +39,15 @@ pub struct LoadError {
 }
 
 /// Why a plugin could not be created from a class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum CreateError {
     /// `createInstance` refused or returned nothing.
-    Create(Vst3Error),
+    #[error("createInstance refused or returned nothing")]
+    Create(#[source] Vst3Error),
     /// The component does not implement `IAudioProcessor`, which a host
     /// cannot render without.
+    #[error("the component does not implement IAudioProcessor")]
     NoAudioProcessor,
 }
 

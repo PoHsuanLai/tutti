@@ -61,13 +61,6 @@ pub enum Vst2Category {
     Generator,
 }
 
-impl Vst2Category {
-    /// `true` when a plugin answered at all, whether or not the code is named.
-    pub fn was_answered(&self) -> bool {
-        !matches!(self, Self::Unasked)
-    }
-}
-
 /// One facet of a VST3 subcategory string.
 ///
 /// VST3's taxonomy is **not** a list of alternatives. `ivstaudioprocessor.h`
@@ -184,7 +177,7 @@ impl Vst3PlugType {
     /// Matching is exact and case-sensitive, as the SDK spells the constants —
     /// a plugin that writes `"instrument"` has not written `kInstrument`, and
     /// silently accepting it would let this table drift from the header.
-    pub fn parse_facet(facet: &str) -> Self {
+    pub(crate) fn parse_facet(facet: &str) -> Self {
         match facet {
             "Fx" => Self::Fx,
             "Instrument" => Self::Instrument,
@@ -661,7 +654,7 @@ impl ClapFeature {
 /// than one primary role. First-wins over the plugin's own ordering: that is
 /// the only ranking the format supplies, and inventing one here would override
 /// what the plugin chose to put first.
-pub fn clap_features_role(features: &[ClapFeature]) -> PluginRole {
+pub(crate) fn clap_features_role(features: &[ClapFeature]) -> PluginRole {
     features
         .iter()
         .find_map(ClapFeature::role)
@@ -677,9 +670,7 @@ mod tests {
     #[test]
     fn an_unasked_category_is_not_an_unrecognized_one() {
         assert_ne!(Vst2Category::Unasked, Vst2Category::Unrecognized(0));
-        assert!(!Vst2Category::Unasked.was_answered());
-        assert!(Vst2Category::Unrecognized(0).was_answered());
-        assert!(Vst2Category::Effect.was_answered());
+        assert_ne!(Vst2Category::Unasked, Vst2Category::Effect);
     }
 
     /// The raw code survives, so a caller can see what the plugin actually
@@ -702,7 +693,6 @@ mod tests {
     #[test]
     fn the_default_category_claims_nothing() {
         assert_eq!(Vst2Category::default(), Vst2Category::Unasked);
-        assert!(!Vst2Category::default().was_answered());
     }
 
     /// Both shapes survive the postcard wire, and an `Unrecognized` payload

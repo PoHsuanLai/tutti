@@ -29,6 +29,15 @@ pub enum Read {
     Skipped,
 }
 
+/// Whether a client's reads wait for an event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Blocking {
+    /// A read waits until an event arrives.
+    Block,
+    /// A read answers [`Read::Empty`] when nothing is queued.
+    NonBlock,
+}
+
 /// The MIDI protocol a UMP client asks the kernel to deliver (and to convert
 /// to, at the port boundary, from what a source sends).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -85,14 +94,14 @@ impl Client {
     ///    versa. Kernel 6.5 or newer. Almost no Linux machine has a native-UMP
     ///    device yet, so without this the backend would be correct and useless.
     ///
-    /// `nonblock` opens it so a read answers [`Read::Empty`] rather than
-    /// blocking.
+    /// [`Blocking::NonBlock`] opens it so a read answers [`Read::Empty`] rather
+    /// than blocking.
     ///
     /// # Errors
     ///
     /// The step that failed, with alsa-lib's code.
-    pub fn open(name: &str, nonblock: bool, version: UmpVersion) -> Result<Self> {
-        let client = Self::open_plain(name, nonblock)?;
+    pub fn open(name: &str, blocking: Blocking, version: UmpVersion) -> Result<Self> {
+        let client = Self::open_plain(name, blocking)?;
         client.set_ump_version(version)?;
         // SAFETY: `client.seq` is open.
         let rc = unsafe { sys::snd_seq_set_client_ump_conversion(client.seq, 1) };
@@ -114,7 +123,7 @@ impl Client {
     }
 
     /// `snd_seq_open` and the name: a client that is not yet a UMP client.
-    fn open_plain(name: &str, nonblock: bool) -> Result<Self> {
+    fn open_plain(name: &str, blocking: Blocking) -> Result<Self> {
         // `"hw"`, not `"default"`. The sequencer is a kernel device, and `hw`
         // addresses it directly; `default` routes through a config-file plugin
         // that, on at least Ubuntu, **cannot be opened non-blocking**: it
@@ -125,7 +134,10 @@ impl Client {
         // "no MIDI inputs" rather than as an open failure.
         let device = c"hw";
         let mut seq: *mut sys::snd_seq_t = std::ptr::null_mut();
-        let mode = if nonblock { sys::SND_SEQ_NONBLOCK } else { 0 };
+        let mode = match blocking {
+            Blocking::NonBlock => sys::SND_SEQ_NONBLOCK,
+            Blocking::Block => 0,
+        };
 
         // SAFETY: `seq` is a valid out-pointer; `device` is a NUL-terminated
         // literal that outlives the call.
@@ -402,8 +414,8 @@ impl Client {
     ///
     /// The step that failed, with alsa-lib's code.
     #[cfg(feature = "testing")]
-    pub fn open_legacy(name: &str, nonblock: bool) -> Result<Self> {
-        Self::open_plain(name, nonblock)
+    pub fn open_legacy(name: &str, blocking: Blocking) -> Result<Self> {
+        Self::open_plain(name, blocking)
     }
 
     /// Sends one legacy channel event to everything subscribed to `port`.

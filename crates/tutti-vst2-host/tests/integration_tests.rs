@@ -16,16 +16,16 @@ use std::sync::{Mutex, MutexGuard};
 use tutti_fixtures::main_thread;
 use tutti_graph::UmpAt;
 
-use tutti_fixtures::midi;
 use tutti_graph::Offset;
 use tutti_plugin_types::{ContentScale, Control, EditorWindow, Normalized, ParamId};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_ump::MidiChannel;
 use tutti_vst2_host::{Samples, TimeSignature, TransportInfo, Vst2ProcessContext};
 
 #[path = "support/active.rs"]
 mod active;
 
 use active::{Active, ActiveExt};
+use tutti_fixtures::midi;
 
 /// The id of the parameter at `index`.
 fn pid(index: i32) -> ParamId {
@@ -884,6 +884,37 @@ fn a_program_switch_is_bracketed_in_order() {
     reset_switches(&path);
 }
 
+/// **A program switch asks for the parameter values to be read again**: every
+/// value may have moved and VST2 reports none of them, so the host raises the
+/// rescan itself, once the switch is dispatched; an out-of-range index raises
+/// nothing.
+/// Spec: vst2.eff.SetProgram
+#[test]
+fn a_program_switch_raises_a_values_rescan() {
+    use tutti_plugin_types::{Request, RescanScope};
+    let _guard = lock_probe();
+    let path = tutti_fixtures::vst2_probe().to_path_buf();
+    reset_switches(&path);
+
+    let mut instance = Active::load(&path, SAMPLE_RATE, BLOCK).expect("probe should load");
+    let taken = |instance: &mut Active| {
+        let mut asked = Vec::new();
+        instance.take_requests(&main_thread(), &mut asked);
+        asked
+    };
+    let _ = taken(&mut instance);
+    assert!(!instance.loaded_mut().set_program(&main_thread(), 999));
+    assert!(
+        !taken(&mut instance).contains(&Request::RescanParams(RescanScope::Values)),
+        "a refused switch moved nothing"
+    );
+    assert!(instance.loaded_mut().set_program(&main_thread(), 1));
+    assert!(taken(&mut instance).contains(&Request::RescanParams(RescanScope::Values)));
+
+    drop(instance);
+    reset_switches(&path);
+}
+
 /// An out-of-range program dispatches nothing at all.
 ///
 /// Not merely "returns false": a rejected switch must not open a bracket it
@@ -1258,16 +1289,10 @@ fn process_forwards_midi_without_panicking() {
     let _guard = lock_probe();
     let mut instance = load_probe();
 
-    let note_on = [(
-        Offset::ZERO,
-        midi::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60, 100),
-    )];
+    let note_on = [(Offset::ZERO, midi::note_on(MidiChannel::of(1), 60, 100))];
     render_block(&mut instance, &note_on);
 
-    let note_off = [(
-        Offset::ZERO,
-        midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60, 0),
-    )];
+    let note_off = [(Offset::ZERO, midi::note_off(MidiChannel::of(1), 60, 0))];
     render_block(&mut instance, &note_off);
 }
 
@@ -1314,7 +1339,7 @@ fn many_midi_events_in_one_block() {
         .map(|i| {
             (
                 Offset::of(Samples(i), Samples(BLOCK)),
-                midi::note_on(MidiGroup::FIRST, MidiChannel::of(1), 60 + i as u8, 100),
+                midi::note_on(MidiChannel::of(1), 60 + i as u8, 100),
             )
         })
         .collect();
@@ -1324,7 +1349,7 @@ fn many_midi_events_in_one_block() {
         .map(|i| {
             (
                 Offset::ZERO,
-                midi::note_off(MidiGroup::FIRST, MidiChannel::of(1), 60 + i as u8, 0),
+                midi::note_off(MidiChannel::of(1), 60 + i as u8, 0),
             )
         })
         .collect();

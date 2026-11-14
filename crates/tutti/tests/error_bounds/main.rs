@@ -16,16 +16,14 @@ fn err<T: Error + Send + Sync + 'static>() {}
 fn types_errors_are_boxable() {
     use tutti::types::{
         BeatsPerCycleOutOfRange, BpmOutOfRange, BusTooWide, ChannelCountOutOfRange,
-        DepthOutOfRange, FoldError, InvalidBeatsPerBar, InvalidMaxBlock, InvalidNoteValue,
-        LoopRangeError, NotOnMidiScale, NoteNumberOutOfRange, SampleRateOutOfRange, SinkFailed,
-        UnitParamOutOfRange,
+        DepthOutOfRange, InvalidBeatsPerBar, InvalidMaxBlock, InvalidNoteValue, LoopRangeError,
+        NotOnMidiScale, NoteNumberOutOfRange, SampleRateOutOfRange, UnitParamOutOfRange,
     };
     err::<BeatsPerCycleOutOfRange>();
     err::<BpmOutOfRange>();
     err::<BusTooWide>();
     err::<ChannelCountOutOfRange>();
     err::<DepthOutOfRange>();
-    err::<FoldError>();
     err::<InvalidBeatsPerBar>();
     err::<InvalidMaxBlock>();
     err::<InvalidNoteValue>();
@@ -33,8 +31,14 @@ fn types_errors_are_boxable() {
     err::<NotOnMidiScale>();
     err::<NoteNumberOutOfRange>();
     err::<SampleRateOutOfRange>();
-    err::<SinkFailed>();
     err::<UnitParamOutOfRange>();
+}
+
+fn buffers_errors_are_boxable() {
+    err::<tutti::buffers::BufferError>();
+    err::<tutti::buffers::FoldError>();
+    err::<tutti::buffers::I24OutOfRange>();
+    err::<tutti::buffers::SinkFailed>();
 }
 
 fn rt_transport_and_engine_errors_are_boxable() {

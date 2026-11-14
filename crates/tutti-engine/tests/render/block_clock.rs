@@ -3,13 +3,14 @@
 //! it on a frame. Figures are
 //! analytic: the frame of call `k` is the frames rendered before it.
 
+use tutti_buffers::InterleavedMut;
 use tutti_engine::Engine;
 use tutti_graph::{Editor, Prepare};
 use tutti_transport::MotionEvent;
 use tutti_transport::Transport;
 use tutti_types::MaxBlock;
 use tutti_types::{Beat, Seconds};
-use tutti_types::{ChannelLayout, Frame, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, Frame, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 
@@ -46,7 +47,7 @@ fn motion(event: MotionEvent) {
 
 fn render(engine: &Engine, frames: usize, segment: bool) {
     let mut out = vec![0.0f32; frames * 2];
-    let mut block = InterleavedMut::new(&mut out, ChannelLayout::STEREO);
+    let mut block = InterleavedMut::new(&mut out, ChannelLayout::STEREO).unwrap();
     if segment {
         engine.process_segment(&mut block);
     } else {

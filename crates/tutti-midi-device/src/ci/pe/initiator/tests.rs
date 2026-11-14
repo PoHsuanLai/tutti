@@ -1183,6 +1183,7 @@ fn a_full_and_a_partial_update_are_answered_and_handed_out() {
                 subscribe_id: SubscribeId::new("sub1").unwrap(),
                 resource: name("ChannelList"),
                 change,
+                media_type: None,
             }]
         );
     }
@@ -1201,6 +1202,7 @@ fn a_notify_update_has_no_body() {
             subscribe_id: SubscribeId::new("sub1").unwrap(),
             resource: name("ChannelList"),
             change: PeChange::Notify,
+            media_type: None,
         }))
     );
 }
@@ -1340,4 +1342,156 @@ fn every_message_is_addressed_to_the_function_block_from_us_to_the_peer() {
             crate::Destination::Muid(Muid::of(PEER))
         );
     }
+}
+
+fn notify(request: PeRequestId, status: PeStatus) -> Decoded {
+    from_peer(PeCiMessage::Notify(PeChunk::notify(request, status)))
+}
+
+// M2-103 §12.1.3: a receiver terminates the request a Notify with status 144
+// names, whatever the transaction, and no NAK answers it.
+#[test]
+fn a_notify_terminate_ends_a_get_and_a_set_by_request_id() {
+    let (mut i, now) = ready(2);
+    let (get_id, _) = i.start(get("State"), now).unwrap();
+    let (set_id, _) = i.start(PeCall::Set(set(PeFlowControl::Off)), now).unwrap();
+    let actions = i.on_message(&notify(set_id, PeStatus::Terminate), now);
+    assert_eq!(
+        one_finished(&actions),
+        (
+            set_id,
+            PeKind::Set,
+            PeOutcome::Terminated(PeTerminator::Responder)
+        )
+    );
+    assert!(sent(&actions).is_empty());
+    let actions = i.on_message(&notify(get_id, PeStatus::Terminate), now);
+    assert_eq!(
+        one_finished(&actions),
+        (
+            get_id,
+            PeKind::Get,
+            PeOutcome::Terminated(PeTerminator::Responder)
+        )
+    );
+    assert_eq!(i.in_flight(), 0);
+    // Both IDs are free again.
+    assert!(i.start(get("State"), now).is_ok());
+}
+
+// M2-103 §12.2.4: status 408 is handled as the NAK for a timeout: the request
+// ends with that signal, and nothing is sent back.
+#[test]
+fn a_notify_timed_out_ends_the_request_as_a_timeout_nak() {
+    let (mut i, now) = ready(1);
+    let (request, _) = i.start(get("State"), now).unwrap();
+    let actions = i.on_message(&notify(request, PeStatus::TimedOut), now);
+    assert_eq!(
+        one_finished(&actions),
+        (
+            request,
+            PeKind::Get,
+            PeOutcome::Nak(PeSignal::TimedOut {
+                request_id: request
+            })
+        )
+    );
+    assert!(sent(&actions).is_empty());
+    assert_eq!(i.in_flight(), 0);
+}
+
+// M2-103 §12.2.2: status 100 is handled as the Timeout Wait ACK. A Notify names no
+// period, so the request is held one more timeout, and a reply that has begun is
+// held with it.
+#[test]
+fn a_notify_timeout_wait_holds_the_request_and_a_reply_that_has_begun() {
+    let (mut i, now) = ready(1);
+    let (request, _) = i.start(get("State"), now).unwrap();
+    assert!(
+        i.on_message(&notify(request, PeStatus::TimeoutWait), now + SECOND)
+            .is_empty()
+    );
+    assert_eq!(i.deadline(), Some(now + 6 * SECOND));
+    assert!(
+        i.on_timeout(now + 6 * SECOND - Duration::from_nanos(1))
+            .is_empty()
+    );
+
+    let mut reply = ok(PeStatus::Ok);
+    reply.mutual_encoding = Some(PeEncoding::Mcoded7);
+    let wire = encode_body(PeEncoding::Mcoded7, &[1u8; 200]).unwrap();
+    let chunks = reply_chunks(request, reply, &wire);
+    let (kind, first) = chunks[0].clone();
+    i.on_message(&chunk_from_peer(kind, first), now + 5 * SECOND);
+    i.on_message(&notify(request, PeStatus::TimeoutWait), now + 6 * SECOND);
+    assert_eq!(i.deadline(), Some(now + 11 * SECOND));
+    let last = deliver(&mut i, chunks[1..].to_vec(), now + 10 * SECOND);
+    assert_eq!(success(one_finished(&last).2).body.len(), 200);
+}
+
+// A Notify of another Request ID, from another device, to another device or with
+// a status other than the three of §12 changes nothing.
+#[test]
+fn a_notify_that_is_not_for_a_request_in_flight_changes_nothing() {
+    let (mut i, now) = ready(2);
+    let (request, _) = i.start(get("State"), now).unwrap();
+    let other = id(request.get() ^ 1);
+    for status in [
+        PeStatus::Terminate,
+        PeStatus::TimedOut,
+        PeStatus::TimeoutWait,
+    ] {
+        assert!(i.on_message(&notify(other, status), now).is_empty());
+    }
+    for status in [PeStatus::Ok, PeStatus::InternalError] {
+        assert!(i.on_message(&notify(request, status), now).is_empty());
+    }
+    let chunk = PeChunk::notify(request, PeStatus::Terminate);
+    for (source, to) in [(OTHER, OURS), (PEER, OTHER)] {
+        let message = Decoded::Message(CiMessage::PropertyExchange {
+            header: CiHeader::new(Muid::of(source)),
+            to: Muid::of(to),
+            message: PeCiMessage::Notify(chunk.clone()),
+        });
+        assert!(i.on_message(&message, now).is_empty());
+    }
+    assert_eq!(i.in_flight(), 1);
+    assert_eq!(i.deadline(), Some(now + 3 * SECOND));
+}
+
+// M2-103 §12.1.3: all inquiries of the Request ID cease, so a Subscription message
+// the peer was sending in chunks is dropped by a Notify Terminate and its later
+// chunks start nothing.
+#[test]
+fn a_notify_terminate_drops_a_subscription_message_the_peer_was_sending() {
+    let (mut i, now) = ready(2);
+    subscribed(&mut i, now, "ChannelList", "sub1");
+    let wire = encode_body(PeEncoding::Mcoded7, &[b'a'; 400]).unwrap();
+    let chunks = update_chunks(
+        40,
+        update(PeUpdateCommand::Full, "sub1", Some(PeEncoding::Mcoded7)),
+        &wire,
+    );
+    assert!(chunks.len() >= 3);
+    assert!(deliver(&mut i, chunks[..1].to_vec(), now).is_empty());
+    assert!(
+        i.on_message(&notify(id(40), PeStatus::Terminate), now)
+            .is_empty()
+    );
+    // The rest of the message continues nothing: no update is handed out, and
+    // the stray chunk is refused as out of sequence.
+    let mut told = Vec::new();
+    for (kind, chunk) in chunks[1..].iter().cloned() {
+        told.extend(i.on_message(&chunk_from_peer(kind, chunk), now));
+    }
+    assert!(
+        !told.iter().any(|a| matches!(a, PeAction::Notification(_))),
+        "{told:?}"
+    );
+    assert!(
+        naks(&told)
+            .iter()
+            .all(|nak| nak.status_code == Nak::STATUS_CHUNKS_OUT_OF_SEQUENCE),
+        "{told:?}"
+    );
 }

@@ -48,6 +48,7 @@ tutti-codec = { version = "0.0.1", path = "../tutti-codec" }
 # source over through `IntoNode`.
 tutti-graph = { version = "0.0.1", path = "../tutti-graph" }
 
+tutti-buffers = { version = "0.0.1", path = "../tutti-buffers" }
 tutti-types = { version = "0.0.1", path = "../tutti-types", default-features = false }
 
 # The project's tempo map, and the reader a placed voice lends it through: over

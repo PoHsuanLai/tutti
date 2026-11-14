@@ -78,9 +78,9 @@ impl TempoFollower {
     /// refuse (a tempo field of `0`, a numerator of `0` or above 64, a
     /// non-standard or too short denominator).
     #[must_use]
-    pub fn step(&self, ump: Ump) -> Option<Followed> {
+    pub fn step(&self, ump: impl Into<Ump>) -> Option<Followed> {
         let TempoSource::Flex(group) = self.source;
-        let Ok(Message::Flex(from, flex)) = ump.decode() else {
+        let Ok(Message::Flex(from, flex)) = ump.into().decode() else {
             return None;
         };
         if from != group {

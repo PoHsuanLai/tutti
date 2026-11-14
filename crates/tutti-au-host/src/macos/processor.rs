@@ -452,7 +452,7 @@ impl AuProcessor {
     /// the silence-flag read.
     ///
     /// Split out so the f32 and f64 entry points cannot drift on any of it:
-    /// notably the `LastRenderError` enrichment and the `OutputIsSilence`
+    /// notably the `LastRenderStatus` enrichment and the `OutputIsSilence`
     /// handling. Allocation-free on the success path.
     fn render_frames(&mut self, num_frames: u32) -> Result<Silence> {
         if num_frames > self.block_size {

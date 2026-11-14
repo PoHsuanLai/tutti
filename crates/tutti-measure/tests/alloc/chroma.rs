@@ -6,7 +6,7 @@
 
 use tutti_dsp::{FftScratch, StftGeometry};
 use tutti_fixtures::allocations;
-use tutti_measure::{ChromaConfig, ChromaState, Tuning, step_chroma};
+use tutti_measure::{ChromaConfig, ChromaState, Tuning, TuningOffset, step_chroma};
 use tutti_types::{Cents, SampleRate, Samples};
 
 /// After one step has built the buffers and planned the FFT, further steps, a
@@ -16,7 +16,7 @@ use tutti_types::{Cents, SampleRate, Samples};
 fn steps_after_the_first_do_not_allocate() {
     let geometry = StftGeometry::new(SampleRate::SR_22K05, Samples(2048), Samples(512)).unwrap();
     let cfg = ChromaConfig::new(geometry).unwrap();
-    let fixed = cfg.with_tuning(Tuning::Fixed(Cents(10.0))).unwrap();
+    let fixed = cfg.with_tuning(Tuning::Fixed(TuningOffset::of(Cents(10.0))));
     let frame: Vec<f32> = (0..2048)
         .map(|i| (std::f32::consts::TAU * 440.0 * i as f32 / 22_050.0).sin() * 0.5)
         .collect();

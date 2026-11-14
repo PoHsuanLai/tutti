@@ -57,89 +57,9 @@ pub(super) const ALLOW: &[(&str, &str, &str)] = &[
         "permanent: `Unfed` has a field named `source` that is a `SourceName`, not an `Error`, and `thiserror` takes that name as the source",
     ),
     (
-        "tutti-au-ffi",
-        "BundleError",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-au-ffi",
-        "OsError",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-au-ffi",
-        "Error",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-au-ffi",
-        "Status",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-clap-ffi",
-        "GuiError",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-clap-ffi",
-        "LoadError",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-plugin-types",
-        "PluginError",
-        "temporary: plugins session converts it",
-    ),
-    (
         "tutti-plugin-types",
         "PluginFailure",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-au-ffi",
-        "LastRenderError",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-au-host",
-        "LoadFailedError",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-au-host",
-        "PresetFileError",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-clap-ffi",
-        "ProcessError",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-clap-ffi",
-        "CallError",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-clap-ffi",
-        "ActivateError",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-plugin-ipc",
-        "ChunkError",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-vst3-ffi",
-        "CreateError",
-        "temporary: plugins session converts it",
-    ),
-    (
-        "tutti-vst3-ffi",
-        "EditorError",
-        "temporary: plugins session converts it",
+        "permanent: `source()` is the pointee of an `Arc<BridgeError>`; `#[source]` would expose the `Arc`, which a chain walker cannot downcast to `BridgeError`",
     ),
 ];
 

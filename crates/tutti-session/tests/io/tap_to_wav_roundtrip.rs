@@ -22,6 +22,7 @@
 //! `FRAMES` stays above the pump's scratch so a push that *exceeds* it forces
 //! a bad bound to be used.
 
+use tutti_buffers::{Sink, Source};
 use tutti_codec::{FileOut, Format, Pcm, Spec};
 use tutti_graph::{
     Cx, Editor, Executor, Io, Node, Prepare, Shape, Status, TapReader, TransportPosition,
@@ -31,7 +32,7 @@ use tutti_graph::{NodeKey, TapAlign, TapId};
 use tutti_graph::{OutPort, Source as Origin};
 use tutti_session::{PumpLoop, PumpPass};
 use tutti_types::MaxBlock;
-use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples, Sink, Source};
+use tutti_types::{Beat, Bpm, ChannelLayout, SampleRate, Samples};
 
 /// Frames rendered into the tap, as the audio callback would.
 const FRAMES: usize = 4096;
@@ -93,7 +94,10 @@ impl Graph {
 
 /// Runs passes until one writes nothing, or `budget` passes have run, and
 /// returns the total frames written.
-fn pump_until_dry<I: Source, O: Sink>(pump: &mut PumpLoop<I, O>, budget: usize) -> Samples {
+fn pump_until_dry<I: Source, O: Sink<Sample = I::Sample>>(
+    pump: &mut PumpLoop<I, O>,
+    budget: usize,
+) -> Samples {
     let mut total = Samples::ZERO;
     for _ in 0..budget {
         match pump.pump_once() {

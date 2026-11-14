@@ -31,6 +31,16 @@
 //! [`PeCall`], each ending in a [`PeOutcome`]. The messages it sends and reads are
 //! [`CiMessage::PropertyExchange`](crate::CiMessage::PropertyExchange).
 //!
+//! The Resources ride on that: [`PeData`] is the Property Data of a standard Resource
+//! (ResourceList, DeviceInfo, ChannelList, JSONSchema, ModeList, CurrentMode,
+//! ChannelMode, BasicChannelRx and Tx, ProgramList, LocalOn, ExternalSync, AllCtrlList,
+//! ChCtrlList, CtrlMapList, StateList, State), typed; [`ResourceInitiator`] makes checked Get, Set and
+//! Subscribe calls over [`PeInitiator`], walks paginated lists and keeps the data of a
+//! Subscription; [`ResourceResponder`] serves a [`ResourceStore`] and tells subscribers
+//! what changes. [`PartialUpdate`] is a Partial Set or `partial` update, applied to the data.
+//! A device's states are saved with [`ResourceInitiator::get_state`] as a [`SavedState`],
+//! which [`ResourceInitiator::restore_state`] sends back to the device it came from only.
+//!
 //! ```
 //! use tutti_midi_device::{PeHeader, MaxSysexSize, PeRequest, ResourceName};
 //!
@@ -86,14 +96,17 @@ mod initiator;
 mod json;
 mod limits;
 pub mod mcoded7;
+mod partial;
 mod reassemble;
+mod resource;
+mod tree;
 mod value;
 mod write;
 
 pub use body::{BodyLimit, PeBodyError, decode_body, encode_body};
 pub use capabilities::{
     PeCapabilities, PeCiMessage, PeVersion, SUB_ID2_PE_CAPABILITIES_INQUIRY,
-    SUB_ID2_PE_CAPABILITIES_REPLY, SimultaneousRequests,
+    SUB_ID2_PE_CAPABILITIES_REPLY, SUB_ID2_PE_NOTIFY, SimultaneousRequests,
 };
 pub use chunk::{
     ChunkNo, ChunkPosition, ChunkTotal, PE_MAX_CHUNK_DATA_LEN, PeChunk, PeChunkError, PeRequestId,
@@ -111,11 +124,31 @@ pub use initiator::{
 pub use limits::{
     MediaType, NotInRange, NotValid, PeMessage, PropertyName, ResourceId, ResourceName, SubscribeId,
 };
+pub use partial::{JsonPointer, PartialError, PartialUpdate};
 pub use reassemble::{
-    BufferLimit, PeBuffered, PeExpired, PeFlowControl, PeReassembler, PeReassemblyError,
+    BufferLimit, PeBuffered, PeExpired, PeFlowControl, PeHeld, PeReassembler, PeReassemblyError,
     PeReassemblyLimits, PeReceived, PeRefused, PeStep, StreamLimit,
 };
-pub use value::{PeDecimal, PeExtra, PeReservedProperty, PeValue};
+pub use resource::{
+    ActionError, Arrival, CallError, CallId, CanSet, CcIndex, ChangeKind, ClusterKind,
+    ColumnSource, CommonState, ConfirmIcon, ConfirmType, Confirmation, CtrlControl, CtrlKind,
+    CtrlRange, CtrlValueKind, CustomResource, DefaultMapNotCc, EntryError, GetStateError, LinkRole,
+    ListedTwice, MAX_LIST_ENTRIES, ModeId, NotVendorName, OpaqueBody, PaginationFault, ParamPath,
+    PeAllCtrlEntry, PeAllCtrlList, PeBankProgram, PeBasicChannelRx, PeBasicChannelTx,
+    PeChCtrlEntry, PeChCtrlList, PeChannel, PeChannelEntry, PeChannelList, PeChannelMode,
+    PeCluster, PeColumn, PeController, PeCtrl, PeCtrlMapEntry, PeCtrlMapList, PeCurrentMode,
+    PeData, PeDataError, PeDataFault, PeDeviceInfo, PeExtensions, PeExternalSync, PeJsonSchema,
+    PeLink, PeLocalOn, PeMidiMode, PeModeEntry, PeModeList, PeOpaque, PeProgramEntry,
+    PeProgramList, PeResource, PeResourceList, PeState, PeStateEntry, PeStateList, PeText,
+    Priority, PublishError, RefusedAt, RequestRefused, ResIdUse, ResourceAction, ResourceDefaults,
+    ResourceEntry, ResourceEvent, ResourceFailure, ResourceGet, ResourceInitiator,
+    ResourceResponder, ResourceSet, ResourceStore, ResourceTarget, ResponderAction, ResponderEvent,
+    ResponderSettings, RestoreError, RoleName, SavedState, SelectorAction, SetBody,
+    SignificantBits, SimpleAction, StateDevice, StateId, StateRev, StateSize, StateStamp,
+    StepCount, StoreError, TypeHint, UnixSeconds, UpdateKind, Verdict, WrongDevice,
+};
+pub use tree::{PE_JSON_MAX_DEPTH, PeDecimal, PeJson, PeJsonError, PeObject};
+pub use value::{PeExtra, PeExtraError};
 
 #[cfg(test)]
 mod tests;

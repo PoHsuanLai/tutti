@@ -10,13 +10,14 @@ use std::sync::Arc;
 use tutti_graph::ForkByClone;
 use tutti_types::MaxBlock;
 
+use tutti_buffers::InterleavedMut;
 use tutti_graph::Op;
 use tutti_graph::TapAlign;
 use tutti_nodes::MetronomeMode;
 use tutti_nodes::testing::Const;
 use tutti_session::{CloseError, MissingSource, OutPort, Root, Session};
 use tutti_transport::MotionEvent;
-use tutti_types::{Amplitude, Beat, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Amplitude, Beat, ChannelLayout, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 
@@ -24,11 +25,8 @@ const RATE: f64 = 48_000.0;
 /// (the live engine's `LIVE_MAX_BLOCK`).
 fn offline() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds")
 }
 
@@ -58,7 +56,7 @@ fn run(s: &Session, frames: usize, block: usize, seek: bool) -> Vec<f32> {
                 })
                 .expect("room");
         }
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         out.extend_from_slice(&buf);
     }
     out.truncate(frames * 2);
@@ -278,7 +276,7 @@ fn an_offline_render_feeds_the_load_meter() {
     let mut s = offline();
     let mut block = vec![0.0f32; 128 * 2];
     for _ in 0..4 {
-        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
     }
     let r = s.load_meter_mut().expect("an offline engine").take();
     assert_eq!(r.blocks, 4);
@@ -306,7 +304,7 @@ fn an_offline_render_feeds_the_master_meter() {
         .unwrap();
     let _ = s.update();
     let mut block = vec![0.0f32; 128 * 2];
-    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
     let r = meter.read();
     assert!((r[0].peak.get() - 0.5).abs() < 1e-6, "{r:?}");
     assert!((r[1].rms.get() - 0.5).abs() < 1e-6, "{r:?}");
@@ -412,7 +410,7 @@ fn a_track_meter_reads_a_nodes_port_and_goes_with_the_node() {
     other.enable();
     let _ = s.update();
     let mut block = vec![0.0f32; 64 * 2];
-    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
     assert_eq!(track.channels(), 1);
     assert_eq!(track.read()[0].peak.get(), 0.5);
     let o = other.read();
@@ -420,7 +418,7 @@ fn a_track_meter_reads_a_nodes_port_and_goes_with_the_node() {
 
     s.graph().remove(b).unwrap();
     let _ = s.update();
-    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
     let o = other.read();
     assert_eq!((o[0].peak.get(), o[1].peak.get()), (0.5, 0.0));
 }
@@ -550,7 +548,7 @@ fn an_offline_render_feeds_an_output_tap() {
     assert_eq!(tap.width(), 2);
     let _ = s.update();
     let mut block = vec![0.0f32; 64 * 2];
-    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
 
     assert_eq!(tap.available(), Samples(64));
     let mut got = vec![f32::NAN; 64 * 2];
@@ -579,12 +577,12 @@ fn an_output_tap_follows_a_rewired_output() {
         .expect("the sources exist");
     let _ = s.update();
     let mut block = vec![0.0f32; 64 * 2];
-    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
     s.graph()
         .set_sources_hard(Root::output(0), [OutPort::new(b, 0)])
         .unwrap();
     let _ = s.update();
-    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
 
     let mut got = vec![f32::NAN; 128 * 2];
     assert_eq!(tap.pop_into(&mut got), Samples(128));
@@ -720,7 +718,7 @@ fn a_tap_steps_at_a_transport_stop_where_the_output_fades() {
     let (mut heard, mut tapped) = (Vec::new(), Vec::new());
     let mut block = vec![0.0f32; 64 * 2];
     for _ in 0..100 {
-        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
         heard.extend(block.iter().step_by(2));
     }
     let mut got = vec![0.0f32; 6_400 * 2];
@@ -787,7 +785,7 @@ fn the_heard_tap_carries_the_fade_at_a_stop() {
     let mut device = Vec::new();
     let mut block = vec![0.0f32; 64 * 2];
     for _ in 0..100 {
-        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
         device.extend_from_slice(&block);
     }
     let mut tapped = vec![0.0f32; 6_400 * 2];
@@ -840,7 +838,7 @@ fn render_feeds_the_heard_tap_and_a_fork_does_not() {
         Some(tutti_session::HeardTapError::Busy)
     );
     let mut block = vec![0.0f32; 64 * 2];
-    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
     assert_eq!(tap.available(), Samples(64));
     // An export renders a fork, without the engine: nothing reaches the tap.
     let mut fork = s.graph_ref().testing().fork_live().expect("forks");
@@ -876,7 +874,7 @@ fn a_dropped_heard_reader_frees_the_tap() {
     drop(tap);
     let _ = s.update();
     let mut block = vec![0.0f32; 64 * 2];
-    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+    s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
     assert!(s.open_heard_tap(Samples(64)).is_ok());
 }
 
@@ -889,16 +887,15 @@ fn a_project_the_device_cannot_take_is_refused_at_build() {
     let build = |floor: usize, device: u16| {
         Session::builder()
             .outputs_floor(ChannelLayout::clamped(floor))
-            .build_offline(
-                SampleRate::of(RATE),
-                ChannelLayout::from(device),
-                MaxBlock::of(Samples(256)),
-            )
+            .sample_rate(SampleRate::of(RATE))
+            .outputs(ChannelLayout::from(device))
+            .max_block(MaxBlock::of(Samples(256)))
+            .build()
     };
     assert!(matches!(
         build(6, 5),
         Err(tutti_session::Error::Output(
-            tutti_types::FoldError::Unplaced { channel: 5, .. }
+            tutti_buffers::FoldError::Unplaced { channel: 5, .. }
         ))
     ));
     assert!(matches!(build(8, 7), Err(tutti_session::Error::Output(_))));

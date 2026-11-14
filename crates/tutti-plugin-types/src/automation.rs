@@ -2,8 +2,12 @@
 
 use crate::{Normalized, ParamId, PointBuf, PointPool};
 
-/// One automation sample: the value at a specific sample offset within
+/// One automation breakpoint: the value at a specific sample offset within
 /// the current process block.
+///
+/// The points of a [`ParameterQueue`] are linear breakpoints: between two
+/// points the value moves linearly from the first to the second, and a step is
+/// two points at one `sample_offset`.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParameterPoint {
@@ -41,6 +45,12 @@ fn point(sample_offset: i32, value: f64) -> ParameterPoint {
 }
 
 /// The automation points for one parameter within one process block.
+///
+/// The points are linear breakpoints, as VST3's `IParamValueQueue` reads them:
+/// between two consecutive points the value moves linearly, a step is two
+/// points at one `sample_offset`, and a lone point sets the value at its
+/// offset. A format that ramps natively (AU) receives each segment as a ramp;
+/// one that takes points (CLAP, VST3) receives the points.
 ///
 /// **Its point storage is fixed when it is built** ([`PointBuf`]): built
 /// [`with_capacity`](Self::with_capacity) off the audio thread, cleared
@@ -487,7 +497,7 @@ impl ParameterChanges {
     /// one when there is one (with its reserved point room), otherwise one
     /// with no point room (which does not allocate). Returns `false`,
     /// opening nothing, when `queues` has no room left
-    /// ([`has_room`](Self::has_room)). Allocation-free.
+    /// (`has_room`). Allocation-free.
     pub fn open_queue(&mut self, param_id: ParamId) -> bool {
         if !self.has_room() {
             return false;
@@ -530,7 +540,7 @@ impl ParameterChanges {
 
     /// Whether one more queue fits in the reserved capacity.
     #[must_use]
-    pub fn has_room(&self) -> bool {
+    pub(crate) fn has_room(&self) -> bool {
         self.queues.len() < self.queues.capacity()
     }
 
@@ -539,7 +549,7 @@ impl ParameterChanges {
     /// exist yet, within the set's room ([`push_point`](Self::push_point)).
     /// **Never grows the set**: past the queue's room with the pool spent the
     /// queue keeps its latest value, and an address past every queue
-    /// ([`has_room`](Self::has_room) false) is dropped. Either is counted in
+    /// (`has_room` false) is dropped. Either is counted in
     /// [`points_overflowed`](Self::points_overflowed), and `false` is
     /// returned. So a real-time producer may call it on a set it
     /// [`clear`](Self::clear)s between blocks; a set built
@@ -626,12 +636,6 @@ impl ParameterChanges {
     /// Returns the queue addressed by `param_id`, if one has been created.
     pub fn queue(&self, param_id: ParamId) -> Option<&ParameterQueue> {
         self.queues.iter().find(|q| q.param_id == param_id)
-    }
-
-    /// Returns the queue addressed by `param_id` for mutation, if one has been
-    /// created.
-    pub fn queue_mut(&mut self, param_id: ParamId) -> Option<&mut ParameterQueue> {
-        self.queues.iter_mut().find(|q| q.param_id == param_id)
     }
 }
 

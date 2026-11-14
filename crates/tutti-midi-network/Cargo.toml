@@ -1,0 +1,29 @@
+[package]
+name = "tutti-midi-network"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Network MIDI 2.0 over UDP: the wire format, the Client and Host session machines, and mDNS discovery"
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["midi", "network", "udp", "audio", "mdns"]
+categories = ["multimedia::audio", "network-programming"]
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+getrandom = { workspace = true }
+mdns-sd = { workspace = true }
+tutti-ump = { version = "0.0.1", path = "../tutti-ump", default-features = false }
+tutti-midi-device = { version = "0.0.1", path = "../tutti-midi-device", default-features = false }
+
+[dev-dependencies]
+proptest = "1.9.0"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

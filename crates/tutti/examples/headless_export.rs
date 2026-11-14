@@ -27,11 +27,9 @@ use tutti::{
 /// The rate every render below runs at.
 const RATE: SampleRate = SampleRate::SR_48K;
 
-/// A detached session whose outputs hear `node`, one second of a project.
+/// A session whose outputs hear `node`, one second of a project.
 fn session_with(node: impl tutti::graph::Node + Clone + 'static) -> Session {
-    let mut session = Session::builder()
-        .build_detached(RATE)
-        .expect("a detached session builds");
+    let mut session = Session::new(RATE).expect("a session builds");
     let (node, _) = session.graph().add(tutti::graph::ForkByClone(node));
     session.graph().connect(node, Root).unwrap();
     session
@@ -77,8 +75,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rendered = tone().bounce(first(1.0).master_buffers())?.into_master();
     let flat = rendered.interleaved();
     let cfg = LoudnessConfig::new(rendered.sample_rate(), ChannelLayout::STEREO);
-    let loudness = measure_loudness(&cfg, Interleaved::new(&flat, ChannelLayout::STEREO))
-        .expect("stereo is meterable");
+    let loudness = measure_loudness(
+        &cfg,
+        Interleaved::new(&flat, ChannelLayout::STEREO).unwrap(),
+    )
+    .expect("stereo is meterable");
     println!(
         "loudness: {:.1} LUFS, true peak {:.1} dBTP",
         loudness.lufs.get(),

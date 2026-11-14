@@ -10,8 +10,8 @@ use crate::common;
 
 use std::cell::Cell;
 use std::time::{Duration, Instant};
-use tutti_types::MaxBlock;
 
+use tutti_buffers::InterleavedMut;
 use tutti_graph::ForkByClone;
 use tutti_graph::NodeKey;
 use tutti_modulation::{
@@ -25,7 +25,7 @@ use tutti_session::{
 };
 use tutti_transport::MotionEvent;
 use tutti_types::{BeatsPerCycle, Depth, Hz, ParamAddr, UnitParam};
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 use common::probe::{ProbeUnit, Pulse};
 
@@ -38,11 +38,8 @@ const DECLICK: usize = 256;
 /// An offline session at 48 kHz, stereo.
 fn offline() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds")
 }
 
@@ -164,7 +161,7 @@ fn the_8_1_example_renders_its_analytic_values() {
     let mut all = [Vec::new(), Vec::new()];
     let mut buf = vec![0.0f32; block * 2];
     for _ in 0..total / block {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         for frame in buf.as_chunks::<2>().0 {
             all[0].push(frame[0]);
             all[1].push(frame[1]);
@@ -456,6 +453,32 @@ fn a_host_and_the_session_cannot_both_declare() {
     );
     assert_eq!(s.mod_state().problems().collect::<Vec<_>>(), [&refusal]);
     assert!(s.mod_state().lane(HOST_TARGET).is_none());
+}
+
+/// **The graph's own removal takes the session's declarations too**, as
+/// `Session::remove` does: a route into a node removed through
+/// `s.graph().remove` is gone after the next update, and nothing is reported
+/// for it (before, the route stayed and `Problem::Unresolved` repeated on
+/// every update).
+#[test]
+fn removing_a_node_through_the_graph_forgets_its_declarations() {
+    let mut s = offline();
+    let (probe, _) = s.graph().add(ProbeUnit::new(500.0));
+    let cutoff = ParamRef::unit(probe, UnitParam::Cutoff);
+    let mut m = s.mods_mut();
+    m.range_raw(cutoff, 0.0, 1_000.0).unwrap();
+    let lfo = m.lfo(Lfo::sine().rate(Hz(2.0)));
+    m.route(RouteSpec::new(lfo, cutoff, Depth::of(0.5)))
+        .unwrap();
+    settle(&mut s);
+
+    s.graph().remove(probe).unwrap();
+    for _ in 0..8 {
+        let _ = s.update();
+    }
+    assert_eq!(s.mods().routes().count(), 0, "the route into it went");
+    assert_eq!(s.mod_state().problems().next(), None, "nothing to warn of");
+    assert!(s.mod_state().lane(cutoff.key()).is_none(), "its lane went");
 }
 
 /// **A removed node takes the session's declarations on it**: its range

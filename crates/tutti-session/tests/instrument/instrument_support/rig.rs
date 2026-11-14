@@ -1,11 +1,12 @@
 //! A session with one instrument in it, played and rendered a block at a time.
 
+use tutti_buffers::InterleavedMut;
 use tutti_graph::NodeKey;
 use tutti_session::Root;
 use tutti_session::{InstrumentHandle, Session};
 use tutti_types::MaxBlock;
 use tutti_types::Moment;
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 use tutti_ump::Ump;
 
 pub const RATE: SampleRate = SampleRate::SR_48K;
@@ -29,7 +30,9 @@ pub struct Rig {
 
 pub fn offline_session() -> Session {
     Session::builder()
-        .build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(BLOCK)))
+        .sample_rate(RATE)
+        .max_block(MaxBlock::of(Samples(BLOCK)))
+        .build()
         .expect("an offline session builds")
 }
 
@@ -75,7 +78,7 @@ impl Rig {
     pub fn block(&mut self) {
         let mut buf = vec![0.0f32; BLOCK * 2];
         self.session
-            .render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+            .render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         let _ = self.session.update();
         std::thread::sleep(self.pace);
         for f in buf.as_chunks::<2>().0 {

@@ -37,9 +37,9 @@ use tutti_polysynth::UnisonVoices;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tutti_curve::Law;
-use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
+use tutti_midi_protocol::widen_velocity;
 use tutti_polysynth::{
     Adsr, FilterType, GlideTime, OscillatorType, PolySynth, PortamentoConfig, PortamentoMode,
     SvfMode, SynthConfig, UnisonConfig,
@@ -86,14 +86,17 @@ fn held(cfg: SynthConfig, n: usize) -> Direct<PolySynth> {
     let at = Offset::of(Samples(0), Samples(BLOCK));
     let events: Vec<Event> = (0..n)
         .map(|i| {
-            midi::note_on(
-                MidiGroup::FIRST,
+            Ump::from(Message::midi2(
                 MidiChannel::FIRST,
-                // Spread across the keyboard: identical pitches would let a
-                // voice allocator collapse them.
-                36 + (i as u8 % 60),
-                tutti_fixtures::midi::wide_velocity(100),
-            )
+                Voice2::note_on(
+                    NoteNumber::of(
+                        // Spread across the keyboard: identical pitches would let a
+                        // voice allocator collapse them.
+                        36 + (i as u8 % 60),
+                    ),
+                    widen_velocity(U7::of(100)),
+                ),
+            ))
         })
         .map(|e: Ump| Event::midi(at, e))
         .collect();
@@ -251,7 +254,7 @@ fn bench_events(c: &mut Criterion) {
             address,
             Voice2::ControlChange {
                 controller: CCNumber::of(1),
-                value: ControlValue::new(0x8000_0000),
+                value: ControlValue::CENTER,
             },
         ),
         Message::Midi1(address, Voice1::PitchBend(U14::of(9000))),

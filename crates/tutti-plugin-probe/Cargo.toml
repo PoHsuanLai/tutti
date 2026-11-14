@@ -15,7 +15,7 @@ workspace = true
 
 # `plugin-probe <path> <result-file>`: spawned by `tutti-plugin`'s `probe_metadata`,
 # never run by hand. Depends on the format hosts and the descriptor types, and on
-# no hosting (`-ipc`, `-host`, `tutti-plugin`): design 021 section 2.5.
+# no hosting (`-ipc`, `-host`, `tutti-plugin`).
 [[bin]]
 name = "plugin-probe"
 path = "src/main.rs"

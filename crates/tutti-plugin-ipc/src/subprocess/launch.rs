@@ -816,7 +816,10 @@ mod tests {
 
         assert_eq!(layout.input_channels(), 2);
         assert_eq!(layout.output_channels(), 2);
-        assert_eq!(layout.input_ring_bytes(), layout.output_ring_bytes());
+        assert_eq!(
+            layout.input_ring_bytes(),
+            layout.ring_bytes(layout.output_channels())
+        );
         // Both directions are counted. Half this total would mean the two
         // directions share one region, which is the aliasing.
         assert_eq!(
@@ -839,7 +842,7 @@ mod tests {
 
         assert_eq!(layout.input_channels(), 3);
         assert_eq!(layout.output_channels(), 2);
-        assert!(layout.input_ring_bytes() > layout.output_ring_bytes());
+        assert!(layout.input_ring_bytes() > layout.ring_bytes(layout.output_channels()));
     }
 
     /// A direction with no buses (an instrument's inputs) is one bus of no

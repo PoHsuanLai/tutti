@@ -10,6 +10,7 @@
 //! `tests/executor/contract.rs` (and the node crates'); this is the end-to-end case
 //! where the transport, the command queue and PDC all meet.
 
+use tutti_buffers::InterleavedMut;
 use tutti_engine::Engine;
 use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
@@ -18,8 +19,8 @@ use tutti_graph::{EventIn, EventKind, GraphBuilder, Prepare, Unforkable};
 use tutti_transport::{MotionEvent, Transport};
 use tutti_types::Latency;
 use tutti_types::MaxBlock;
-use tutti_types::{At, Beat, ChannelLayout, Frame, InterleavedMut, SampleRate, Samples};
-use tutti_ump::{MidiChannel, MidiGroup};
+use tutti_types::{At, Beat, ChannelLayout, Frame, SampleRate, Samples};
+use tutti_ump::MidiChannel;
 
 const SR: f64 = 48_000.0;
 /// Frames per beat at the transport's default 120 BPM.
@@ -28,12 +29,7 @@ const FPB: u64 = 24_000;
 const D: usize = 300;
 /// A MIDI 2.0 Note On, key 60, velocity 0xC800, group 0, channel 0.
 fn note_on() -> EventKind {
-    EventKind::Midi(midi::note_on(
-        MidiGroup::FIRST,
-        MidiChannel::FIRST,
-        60,
-        0xC800,
-    ))
+    EventKind::Midi(midi::note_on(MidiChannel::FIRST, 60, 0xC800))
 }
 
 /// An engine over a graph of two `Pulse`s — `(direct, pdc)` — whose global
@@ -69,7 +65,7 @@ fn onsets(engine: &Engine, blocks: &[usize]) -> [Vec<u64>; 2] {
     let mut done = 0u64;
     for &n in blocks {
         let mut buf = vec![0.0f32; n * 2];
-        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         for (i, frame) in buf.chunks(2).enumerate() {
             for c in 0..2 {
                 if frame[c] != 0.0 {

@@ -22,6 +22,8 @@ testing = []
 [dependencies]
 # The editor's sizes, which name their unit (`dpi::LogicalSize`: a Cocoa view is in points).
 dpi.workspace = true
+# The derive of every error type's `Display` and `Error`.
+thiserror.workspace = true
 # The MIDI 2.0 widening of what a plugin emits.
 tutti-midi-protocol = { version = "0.0.1", path = "../tutti-midi-protocol" }
 # `WindowHandle` (the parent window of an editor), `TransportInfo` and

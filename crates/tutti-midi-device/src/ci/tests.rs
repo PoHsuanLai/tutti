@@ -97,19 +97,19 @@ fn non_ci_sysex_is_not_ci() {
 
 // §5.3 and §5.11: a device owes a NAK to a message it does not understand, so a
 // message that is not read keeps the header it was addressed by. This is the
-// Unread of a Notify (0x3F), a kind this codec does not model.
+// Unread of a sub-ID#2 no message uses (0x3E), a kind this codec does not model.
 #[test]
 fn a_message_that_is_not_read_keeps_its_header() {
     let mut bytes = invalidate();
     bytes[1] = 0x03; // Device ID: channel 4
-    bytes[3] = 0x3F; // Notify
+    bytes[3] = 0x3E; // no message
     bytes[4] = 0x01;
     let got = unread(&bytes);
     assert_eq!(
         got,
         Unread {
             device_id: 0x03,
-            sub_id2: 0x3F,
+            sub_id2: 0x3E,
             version: 0x01,
             source: Some(Muid::of(SRC)),
             destination: Some(Destination::Broadcast),
@@ -128,7 +128,7 @@ fn a_message_that_is_not_read_keeps_its_header() {
                 source: Muid::of(0x77),
             },
             to: Muid::of(SRC),
-            nak: Nak::new(U7::of(0x3F), U7::of(0x01)),
+            nak: Nak::new(U7::of(0x3E), U7::of(0x01)),
         }
     );
     assert_eq!(decoded(&reply.encode()), reply);

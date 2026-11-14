@@ -35,7 +35,7 @@ fn a_controller_word_spans_the_range() {
 /// its centre, the gain at unity.
 #[test]
 fn reset_returns_the_controllers_to_their_defaults() {
-    let mut state = MpeVoiceState::new(true);
+    let mut state = MpeVoiceState::new();
     state.apply(MpeControl::Pressure(Expression::MAX));
     state.apply(MpeControl::Slide(Expression::MAX));
     state.apply(MpeControl::Gain(Expression::MIN));

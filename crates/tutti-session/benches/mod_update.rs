@@ -23,18 +23,15 @@ use tutti_types::MaxBlock;
 use tutti_modulation::{Follower, Lfo};
 use tutti_nodes::{SvfFilterNode, SvfType};
 use tutti_session::{InPort, Key, OutPort, Root, RouteSpec, Session};
+use tutti_types::Samples;
 use tutti_types::{BeatsPerCycle, Depth, Hz, Q};
-use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const UPDATES: usize = 2_000;
 
 fn scene(n: usize, modulated: bool) -> (Session, Vec<Key<SvfFilterNode<f32>>>) {
     let mut s = Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(512)),
-        )
+        .max_block(MaxBlock::of(Samples(512)))
+        .build()
         .expect("builds");
     let mut filters = Vec::with_capacity(n);
     for _ in 0..n {

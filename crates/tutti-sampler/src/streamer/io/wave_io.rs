@@ -43,7 +43,7 @@ pub(crate) fn wave_frame_into(wave: &Wave, place: &Place, idx: usize, out: &mut 
 /// floored at one), zero past its end: the whole-file source a region without
 /// a decoder reads, and the loop's reads of a resident file.
 ///
-/// It fills the whole buffer, so it is not a [`Source`](tutti_types::Source):
+/// It fills the whole buffer, so it is not a [`Source`](tutti_buffers::Source):
 /// it never ends and has no verdict to give. The caller owns the bound, by the
 /// size of the scratch buffer it hands in.
 pub(crate) fn read_wave(wave: &Wave, at: usize, out: &mut [f32], channels: ChannelLayout) {
@@ -144,7 +144,7 @@ mod tests {
         let mut narrow = [0.0f32; 2];
         frame_into(&six, 0, &mut narrow);
         // The ITU figures, in the fold's order of operations.
-        let m = tutti_types::M3DB;
+        let m = tutti_buffers::M3DB;
         assert_eq!(
             narrow,
             [1.0 + m * 3.0 + m * 5.0, 2.0 + m * 3.0 + m * 6.0],

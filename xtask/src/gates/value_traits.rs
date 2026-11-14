@@ -12,7 +12,7 @@
 //! An enum behind `pub(crate)` or no `pub` is not public. A derive written as a
 //! path (`std::hash::Hash`) counts by its last segment.
 
-use super::lex::{blank, line_of, matching};
+use super::lex::{blank, line_of, matching, test_ranges};
 use super::{Report, Tree};
 use std::collections::BTreeSet;
 
@@ -20,169 +20,7 @@ use std::collections::BTreeSet;
 pub(super) const MIN_FILES: usize = 100;
 
 /// `(file, type, reason)`.
-pub(super) const ALLOW: &[(&str, &str, &str)] = &[
-    // plugins (32)
-    (
-        "crates/tutti-au-ffi/src/bundle.rs",
-        "BundleError",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-au-ffi/src/cf.rs",
-        "NotADictionary",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-au-ffi/src/event_list.rs",
-        "Wire",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-au-ffi/src/event_list.rs",
-        "Pushed",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-au-host/src/macos/parameters.rs",
-        "DisplayCurve",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-clap-ffi/src/audio.rs",
-        "ProcessError",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-clap-ffi/src/gui.rs",
-        "GuiError",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-clap-ffi/src/library.rs",
-        "Stage",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-clap-ffi/src/plugin.rs",
-        "CallError",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-clap-ffi/src/plugin.rs",
-        "ActivateError",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-clap-ffi/src/plugin.rs",
-        "PortKind",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-clap-ffi/src/types.rs",
-        "StateContext",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-clap-ffi/src/types.rs",
-        "AutomationState",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-clap-host/src/types.rs",
-        "NoteDialect",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-clap-host/src/types.rs",
-        "AmbisonicOrdering",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-clap-host/src/types.rs",
-        "AmbisonicNormalization",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-ipc-ffi/src/header.rs",
-        "Direction",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-types/src/automation_mode.rs",
-        "AutomationMode",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-types/src/bundle.rs",
-        "ModuleKind",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-types/src/descriptor.rs",
-        "EditorPresence",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-types/src/error.rs",
-        "Delivered",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-types/src/error.rs",
-        "PresetError",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-types/src/invalidation.rs",
-        "ResyncKind",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-types/src/invalidation.rs",
-        "PluginRefresh",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-types/src/lifecycle.rs",
-        "RescanScope",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-types/src/load_stage.rs",
-        "LoadStage",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-types/src/locate.rs",
-        "Helper",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-types/src/measured.rs",
-        "NotChecked",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-types/src/process.rs",
-        "BlockStatus",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-types/src/render_mode.rs",
-        "RenderMode",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-types/src/render_mode.rs",
-        "RenderModeSupport",
-        "temporary: the plugins session adds Hash",
-    ),
-    (
-        "crates/tutti-plugin-types/src/sample_format.rs",
-        "SampleFormat",
-        "temporary: the plugins session adds Hash",
-    ),
-];
+pub(super) const ALLOW: &[(&str, &str, &str)] = &[];
 
 fn skipped(dir: &str) -> bool {
     matches!(dir, "target" | ".git")
@@ -190,29 +28,6 @@ fn skipped(dir: &str) -> bool {
 
 fn word(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
-}
-
-/// The byte ranges of items behind `#[cfg(test)]`, in blanked text.
-fn test_ranges(code: &str) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    let mut from = 0;
-    while let Some(p) = code[from..].find("#[cfg(test)]") {
-        let at = from + p;
-        let after = at + "#[cfg(test)]".len();
-        from = after;
-        let Some(stop) = code[after..].find(['{', ';']).map(|i| after + i) else {
-            continue;
-        };
-        if code.as_bytes()[stop] == b'{' {
-            if let Some(end) = matching(code, stop, b'{', b'}') {
-                out.push((at, end));
-                from = end;
-            }
-        } else {
-            out.push((at, stop));
-        }
-    }
-    out
 }
 
 /// The attribute bodies (`derive(Debug)`) written before `at`, and whether the

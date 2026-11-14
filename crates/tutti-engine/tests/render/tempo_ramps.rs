@@ -17,6 +17,7 @@
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
+use tutti_buffers::InterleavedMut;
 use tutti_engine::Engine;
 use tutti_graph::{
     Cx, Editor, Executor, Io, Node, NodeKey, OutPort, Prepare, Shape, Source, Status, Unforkable,
@@ -26,8 +27,7 @@ use tutti_transport::{
     FadeOut, LoopEdit, MotionEvent, OfflineTimeline, OfflineTimelineConfig, Then, Transport,
 };
 use tutti_types::{
-    At, Beat, Bpm, ChannelLayout, InterleavedMut, LoopRange, SampleRate, Samples, Tail,
-    first_frame_at_or_after,
+    At, Beat, Bpm, ChannelLayout, LoopRange, SampleRate, Samples, Tail, first_frame_at_or_after,
 };
 
 const SR: f64 = 48_000.0;
@@ -139,7 +139,7 @@ fn chord_bound() -> f64 {
 
 fn render(engine: &Engine, frames: usize) {
     let mut buf = vec![0.0f32; frames];
-    engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::MONO));
+    engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::MONO).unwrap());
 }
 
 /// The live engine over `map` from beat `start`, rendered in `blocks` (a

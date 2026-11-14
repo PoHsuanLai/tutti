@@ -85,7 +85,7 @@ impl NoteKey {
             channel: self.channel,
         };
         let off = Voice2::note_off(self.note, NoteVelocity::MIN);
-        Event::midi(at, Ump::from(Message::Midi2(address, off)))
+        Event::midi(at, Message::Midi2(address, off))
     }
 }
 
@@ -296,7 +296,8 @@ impl<T: Copy + PartialEq> Sending<'_, '_, T> {
     /// A note-on of a key that sounds ends the sounding note first, on the
     /// same frame, and takes the key. A tagged off ends the key only when its
     /// owner owns it, and is swallowed otherwise.
-    pub fn send(&mut self, at: Offset, ump: Ump, owner: Option<T>) {
+    pub fn send(&mut self, at: Offset, ump: impl Into<Ump>, owner: Option<T>) {
+        let ump = ump.into();
         match Class::of(ump) {
             Class::Other => {
                 if self.out.push(Event::midi(at, ump)).is_ok() {

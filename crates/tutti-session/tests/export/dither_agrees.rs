@@ -9,10 +9,11 @@
 
 #![cfg(all(feature = "record", feature = "export"))]
 
+use tutti_buffers::{FiniteSource, InterleavedMut, Pull, Source};
 use tutti_codec::{FileOut, Format, IntDepth, Pcm, Spec};
 use tutti_export::{EventLossPolicy, FileTarget, Rendered, write_buffers};
 use tutti_session::{DitherShape, DitherSink, DitherSpec, Recorder};
-use tutti_types::{ChannelLayout, FiniteSource, Pull, SampleRate, Samples, Source};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const RATE: SampleRate = SampleRate::SR_48K;
 const FRAMES: usize = 5_000;
@@ -36,10 +37,13 @@ struct Take {
 impl FiniteSource for Take {}
 
 impl Source for Take {
+    type Sample = f32;
+
     fn layout(&self) -> ChannelLayout {
         ChannelLayout::STEREO
     }
-    fn pull(&mut self, out: &mut [f32]) -> Pull {
+    fn pull(&mut self, mut out: InterleavedMut<'_>) -> Pull {
+        let out = out.samples_mut();
         let room = Samples::from_interleaved_len(out.len(), ChannelLayout::STEREO).get();
         let n = (FRAMES - self.pos).min(room);
         if n == 0 {

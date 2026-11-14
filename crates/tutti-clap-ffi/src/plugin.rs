@@ -255,34 +255,42 @@ impl std::fmt::Debug for Plugin {
 }
 
 /// An extension call that did not run to a result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum CallError {
     /// The plugin does not implement the extension.
+    #[error("the plugin does not implement the extension")]
     NoExtension,
     /// The plugin implements the extension but not this entry.
+    #[error("the plugin does not implement the entry")]
     NoFunction,
     /// The entry ran and answered `false`.
+    #[error("the entry answered false")]
     Failed,
     /// The entry is only legal in the other activation state (CLAP's
     /// `[!active]` and `[active ? audio-thread : main-thread]` annotations):
     /// nothing was called.
+    #[error("the entry is not legal in the current activation state")]
     WrongState,
 }
 
 /// Why [`Plugin::activate`] did not activate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum ActivateError {
     /// An [`AudioSide`](crate::AudioSide) of an earlier activation is still
     /// alive; drop it (rejoin the halves) first. The plugin was not called.
+    #[error("the audio half of the previous activation is still alive")]
     ProcessorStillAlive,
     /// The plugin is already active; `deactivate` it first. The plugin was
     /// not called.
+    #[error("the plugin is already active")]
     AlreadyActive,
     /// The sample rate is not finite and positive, `min_frames` is zero, or
     /// `min_frames` exceeds `max_frames`: CLAP forbids all three. The plugin
     /// was not called.
+    #[error("the sample rate or block range is one CLAP forbids")]
     BadConfig,
     /// The plugin has no `activate` entry or answered `false`.
+    #[error("the plugin has no activate entry or refused it")]
     Refused,
 }
 
@@ -1218,7 +1226,7 @@ pub struct AudioPortInfo {
 }
 
 /// A port type string, as CLAP names the ones it defines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PortKind {
     /// `CLAP_PORT_MONO`.
     Mono,

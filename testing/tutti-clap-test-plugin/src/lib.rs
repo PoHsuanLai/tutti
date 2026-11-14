@@ -129,6 +129,18 @@ pub mod holes;
 
 pub use holes::HOLE_NONE;
 
+/// HOST-EXTENSION probe: `clap.track-info` and `clap.transport-control`, from
+/// the plugin's side. Separate module for the
+/// same reason as the others: its own capture channel and commands.
+pub mod host_ext;
+
+pub use host_ext::{
+    CapturedTrack, HOSTEXT_CMD_CONTINUE, HOSTEXT_CMD_ENABLE_LOOP, HOSTEXT_CMD_JUMP,
+    HOSTEXT_CMD_LOOP_REGION, HOSTEXT_CMD_PAUSE, HOSTEXT_CMD_RECORD, HOSTEXT_CMD_START,
+    HOSTEXT_CMD_START_BURST, HOSTEXT_CMD_STOP, HOSTEXT_CMD_TOGGLE_LOOP, HOSTEXT_CMD_TOGGLE_PLAY,
+    HOSTEXT_CMD_TOGGLE_RECORD, HOSTEXT_CMD_TRACK_GET, HostExtCapture,
+};
+
 /// THREAD-POOL probe: `clap.thread-pool`, advertised only while a test asks
 /// for tasks; each `process` requests them and records what ran where.
 /// Separate module for the same reason as the others: its own capture
@@ -575,6 +587,9 @@ unsafe extern "C" fn plugin_process(
     // THREAD-POOL: ask the host to run this block's tasks, if a test armed it.
     unsafe { thread_pool::on_process(plugin, host) };
 
+    // HOST EXTENSIONS: a command a test latched for the audio thread's block.
+    unsafe { host_ext::on_process(host) };
+
     // RT-HAZARD: the status is the last thing decided, so the block counter the
     // alternating modes read advances exactly once per block regardless of
     // which branches above ran.
@@ -628,6 +643,12 @@ unsafe extern "C" fn plugin_get_extension(
     if !gui_ext.is_null() {
         return gui_ext;
     }
+    // HOST EXTENSION (`clap.track-info`) —
+    // see `host_ext.rs`.
+    let host_ext_ext = host_ext::get_extension(id);
+    if !host_ext_ext.is_null() {
+        return host_ext_ext;
+    }
     // THREAD-POOL extension — see `thread_pool.rs`. Null unless armed.
     let pool_ext = thread_pool::get_extension(id);
     if !pool_ext.is_null() {
@@ -652,6 +673,9 @@ unsafe extern "C" fn plugin_on_main_thread(plugin: *const clap_plugin) {
     unsafe { params_state::run_pending_param_command(host) };
     // AUDIO PORTS: `clap_host_audio_ports::rescan` is `[main-thread]` too.
     unsafe { run_pending_ports_rescan(host) };
+    // HOST EXTENSIONS: `track-info.get` and the transport requests are
+    // `[main-thread]` too.
+    unsafe { host_ext::run_pending_command(host) };
 }
 
 // ---------------------------------------------------------------------------

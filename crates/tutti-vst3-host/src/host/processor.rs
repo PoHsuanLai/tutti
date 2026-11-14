@@ -35,20 +35,13 @@ pub(super) const EDIT_CAPACITY: usize = 256;
 
 /// The plugin's `process` (or the call that readies it) failed: the status it
 /// returned, or why the host did not make the call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+#[error("the plugin's process failed: {error}")]
 pub struct ProcessFailed {
     /// What failed, by name; [`StatusError::code`](crate::StatusError::code) is
     /// the raw `tresult`.
     pub error: tutti_vst3_ffi::Vst3Error,
 }
-
-impl std::fmt::Display for ProcessFailed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the plugin's process failed: {}", self.error)
-    }
-}
-
-impl std::error::Error for ProcessFailed {}
 
 /// Sample rate / block size / channel counts captured at activation. Read by
 /// `apply_process_setup` to fill `ProcessSetup` and by `process` to size

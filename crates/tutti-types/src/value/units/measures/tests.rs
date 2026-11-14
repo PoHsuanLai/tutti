@@ -11,16 +11,16 @@ use super::*;
 ///   rescaling denormalizes it and it stops meaning "coherence".
 /// - `Correlation + Correlation` — coherence does not accumulate;
 ///   time-averaging it is meter ballistics, which smooths.
-/// - `Pan * f32`, `Pan + Pan` — a position on a segment, so the same
-///   argument `Mix` makes: half a pan position is not a pan position, and
-///   two of them do not sum. Interpolation is a `lerp`, not a `*`.
+/// - `StereoBalance * f32`, `StereoBalance + StereoBalance` — a ratio of
+///   measured energy: rescaled it is no longer that ratio, and two of them do
+///   not sum. Smoothing it over time is meter ballistics.
 /// - `Velocity * f32` — `scaled`, which clamps. The bare operator reads as
 ///   "half as loud", and velocity→loudness is the instrument's mapping, not
 ///   arithmetic's: a patch may be louder at low velocity.
 /// - `Velocity + Velocity` — two strikes do not sum into a harder one.
 ///
 /// And five *type* omissions, which the compiler enforces rather than a
-/// missing `impl`: `Correlation` and `Pan` are not `Depth`,
+/// missing `impl`: `Correlation` and `StereoBalance` are not `Depth`,
 /// `Confidence` is not `Mix`, and `Velocity` is not `Amplitude`, even
 /// though the ranges coincide. A control you set and a measurement
 /// reported back are different quantities — the same split `Q` and
@@ -97,14 +97,10 @@ fn correlation_derives_width_rather_than_storing_it() {
 }
 
 #[test]
-fn pan_saturates_and_orders() {
-    // Unlike `Azimuth`, this is a segment: past the end it stops rather
-    // than wrapping around to the opposite side.
-    assert_eq!(Pan::new_clamped(1.5), Pan::RIGHT);
-    assert_eq!(Pan::new_clamped(-1.5), Pan::LEFT);
-
-    // And unlike `Azimuth`, it orders — a segment has ends.
-    assert!(Pan::LEFT < Pan::CENTER);
-    assert!(Pan::CENTER < Pan::RIGHT);
-    assert_eq!(-Pan::LEFT, Pan::RIGHT);
+fn stereo_balance_saturates_and_orders() {
+    assert_eq!(StereoBalance::new_clamped(1.5), StereoBalance::RIGHT);
+    assert_eq!(StereoBalance::new_clamped(-1.5), StereoBalance::LEFT);
+    assert!(StereoBalance::LEFT < StereoBalance::CENTER);
+    assert!(StereoBalance::CENTER < StereoBalance::RIGHT);
+    assert_eq!(-StereoBalance::LEFT, StereoBalance::RIGHT);
 }

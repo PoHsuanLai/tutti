@@ -38,7 +38,7 @@ use winnow::token::{any, literal};
 
 use tutti_ump::{DeviceIdentity, ManufacturerId, NoteNumber, U7, U14};
 
-use super::{GeneralMidi, MtcFullMessage, Recipient, Universal};
+use super::{GeneralMidi, MtcFullMessage, Recipient, Universal, machine_control};
 use crate::tuning::{
     ChannelMask, KeyChange, KeyChanges, KeyTable, MAX_KEY_CHANGES, OctaveOffsets, Timing,
     TuningFrequency, TuningMessage, TuningName,
@@ -339,6 +339,27 @@ fn tuning(timing: Timing) -> impl FnMut(&mut &[u8]) -> Res<Tuned> {
     }
 }
 
+/// `06` and its commands, or `07` and its responses from `to`, the rest of the
+/// message (RP-013 p.2).
+fn machine_control(to: Recipient) -> impl FnMut(&mut &[u8]) -> Res<Universal> {
+    move |input: &mut &[u8]| {
+        let sub_id = u7.parse_next(input)?.get();
+        let rest = take_rest(input);
+        match (sub_id, to) {
+            (0x06, _) => machine_control::commands(rest).map(Universal::MachineControl),
+            (0x07, Recipient::Device(_)) => {
+                machine_control::fields(rest).map(Universal::MachineControlResponse)
+            }
+            _ => None,
+        }
+        .ok_or_else(|| winnow::error::ErrMode::Backtrack(ContextError::new()))
+    }
+}
+
+fn take_rest<'a>(input: &mut &'a [u8]) -> &'a [u8] {
+    std::mem::take(input)
+}
+
 /// The addressed form: the Universal message, who it names, and the checksum
 /// byte of a dump that has one to check.
 fn addressed(input: &mut &[u8]) -> Res<(Recipient, Universal, Option<U7>)> {
@@ -354,6 +375,7 @@ fn addressed(input: &mut &[u8]) -> Res<(Recipient, Universal, Option<U7>)> {
         .parse_next(input)?,
         REAL_TIME => alt((
             mtc_full.map(plain),
+            machine_control(to).map(plain),
             device_control.map(plain),
             tuning(Timing::RealTime).map(tuned),
         ))

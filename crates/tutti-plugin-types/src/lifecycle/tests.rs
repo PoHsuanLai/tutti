@@ -40,6 +40,7 @@ enum Fx {
     RefusedNotice,
     StuckNotice,
     LostNotice,
+    TransportNotice(TransportRequest),
 }
 
 fn tag(effect: &Effect) -> Fx {
@@ -67,6 +68,7 @@ fn tag(effect: &Effect) -> Fx {
         Effect::Notify(Notice::Refused { .. }) => Fx::RefusedNotice,
         Effect::Notify(Notice::Stuck { .. }) => Fx::StuckNotice,
         Effect::Notify(Notice::Lost { .. }) => Fx::LostNotice,
+        Effect::Notify(Notice::Transport(asked)) => Fx::TransportNotice(*asked),
     }
 }
 
@@ -133,6 +135,32 @@ fn refused(rules: RestartRules, p: Prepare) -> State {
 
 fn req(s: State, r: Request) -> State {
     go(s, Event::Request(r)).0
+}
+
+/// A plugin's transport request is the application's to answer, not the
+/// plugin's own affair: whatever the plugin is doing, it comes out as the one
+/// notice, with nothing planned and nothing left pending.
+/// Spec: clap.ext.transport_control.host.request_start
+#[test]
+fn a_transport_request_is_passed_on_as_one_notice_and_changes_nothing() {
+    let p = prep(0);
+    let asked = TransportRequest::Start;
+    let (after, fx) = go(
+        active(RESTARTS, p),
+        Event::Request(Request::Transport(asked)),
+    );
+    assert_eq!(fx, [Fx::TransportNotice(asked)]);
+    assert!(after.is_quiet(), "nothing is left for a tick to do");
+
+    let (_, fx) = go(
+        State::new(RESTARTS),
+        Event::Request(Request::Transport(asked)),
+    );
+    assert_eq!(
+        fx,
+        [Fx::TransportNotice(asked)],
+        "also before an activation"
+    );
 }
 
 const REST: RestartRules = RestartRules::NONE;
@@ -395,6 +423,7 @@ fn request() -> impl Strategy<Value = Request> {
         Just(Request::Callback),
         Just(Request::MidiCcAssignmentChanged),
         Just(Request::NoteExpressionChanged),
+        Just(Request::Transport(TransportRequest::TogglePlay)),
         (0u32..6).prop_map(|i| Request::Timer(TimerId(i))),
         (0i32..6).prop_map(|i| Request::Fd(FdId(i))),
     ]

@@ -31,7 +31,11 @@ fn dry(name: &str, args: &[&str]) -> Vec<String> {
 /// The fewest arguments `name` plans with: none, except the version
 /// `release` needs.
 fn least_args(name: &str) -> &'static [&'static str] {
-    if name == "release" { &["0.1.0"] } else { &[] }
+    match name {
+        "release" => &["0.1.0"],
+        "conformance" => &["--results", "r"],
+        _ => &[],
+    }
 }
 
 #[test]
@@ -92,6 +96,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         ("check-value-traits", "gate check-value-traits"),
         ("check-doc-refs", "gate check-doc-refs"),
         ("check-pointers", "gate check-pointers"),
+        ("check-platform-seam", "gate check-platform-seam"),
         ("check-conformance", "gate check-conformance"),
     ] {
         assert_eq!(dry(recipe, &[]), [gate]);
@@ -112,6 +117,7 @@ fn the_ported_gates_are_in_process_steps_and_ci_runs_them() {
         "gate check-value-traits",
         "gate check-doc-refs",
         "gate check-pointers",
+        "gate check-platform-seam",
         "gate check-conformance",
     ] {
         assert!(ci.iter().any(|l| l == want), "{want}");
@@ -344,4 +350,68 @@ fn a_dependency_asked_for_twice_runs_once() {
     p.dep("plugin-probe").unwrap();
     p.dep("plugin-probe").unwrap();
     assert_eq!(p.out.len(), 1);
+}
+
+#[test]
+fn conformance_reads_its_options_and_defaults_the_output() {
+    let s = dry("conformance", &["--results", "junit"]);
+    assert_eq!(s.len(), 1);
+    assert_eq!(
+        s[0],
+        "conformance: join /repo/junit/<os>.xml to the inventories, write /repo/site/conformance/index.html, ../index.html and ../badges/*.json"
+    );
+    let s = dry("conformance", &["--out", "o", "--results", "j"]);
+    assert!(s[0].contains("/repo/j/<os>.xml") && s[0].contains("write /repo/o/index.html"));
+}
+
+#[test]
+fn conformance_refuses_a_missing_repeated_or_unknown_option() {
+    let plan = |a: &[&str]| {
+        let a: Vec<String> = a.iter().map(|s| (*s).to_owned()).collect();
+        plan("conformance", &a, &ctx())
+    };
+    assert!(plan(&[]).unwrap_err().contains("--results"));
+    assert!(plan(&["--results"]).unwrap_err().contains("needs a value"));
+    assert!(
+        plan(&["--results", "a", "--results", "b"])
+            .unwrap_err()
+            .contains("twice")
+    );
+    assert!(plan(&["--nope", "a"]).is_err());
+}
+
+#[test]
+fn coverage_builds_the_plugins_under_llvm_cov_then_runs_it() {
+    let steps = plan("coverage", &[], &ctx()).unwrap();
+    assert_eq!(steps[0], Step::RequireLlvmCov);
+    assert_eq!(
+        steps[1].display(),
+        "(cargo llvm-cov show-env) cargo build --locked -p tutti-plugin-server --bin plugin-server"
+    );
+    assert!(
+        steps[2]
+            .display()
+            .ends_with("-p tutti-plugin-probe --bin plugin-probe")
+    );
+    let run = steps[3].display();
+    assert!(
+        run.starts_with("cargo llvm-cov nextest --locked --ignore-run-fail --workspace"),
+        "{run}"
+    );
+    assert!(run.ends_with("--html --output-dir site/coverage"), "{run}");
+    assert_eq!(steps.len(), 4);
+}
+
+#[test]
+fn coverage_takes_a_package_list_in_place_of_the_workspace() {
+    let s = dry(
+        "coverage",
+        &["--package", "tutti-clap-host,tutti-ump", "--out", "o"],
+    );
+    let run = s.last().unwrap();
+    assert!(
+        run.contains("-p tutti-clap-host -p tutti-ump --html --output-dir o"),
+        "{run}"
+    );
+    assert!(!run.contains("--workspace"));
 }

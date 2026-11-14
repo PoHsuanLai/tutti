@@ -32,6 +32,17 @@ pub(crate) enum Step {
     DocFeatures,
     /// `conformance-inventory <format>`: rewrite an inventory from its spec source.
     ConformanceInventory(String),
+    /// `conformance`: the dashboard and badges from per-OS JUnit files
+    /// (`gates/conformance_site.rs`).
+    Conformance {
+        results: PathBuf,
+        out: PathBuf,
+    },
+    /// Run the command with the environment `cargo llvm-cov show-env` prints,
+    /// so it builds into the target directory the instrumented tests run from.
+    InLlvmCovEnv(Cmd),
+    /// `coverage`'s probe: fails with the install hint when cargo-llvm-cov is missing.
+    RequireLlvmCov,
     /// `deny`'s probe: fails with the install hint when cargo-deny is missing.
     RequireCargoDeny,
     /// The release edits (`release.rs`): the workspace version, the path
@@ -51,6 +62,15 @@ impl Step {
             Step::Gate(g) => g.display(),
             Step::DocFeatures => "doc-features: cargo doc --locked -p <crate> --no-deps --features <fs>, each member with its features together (private items), then each feature of tutti-session and tutti alone".to_owned(),
             Step::ConformanceInventory(f) => format!("conformance-inventory {f}"),
+            Step::Conformance { results, out } => format!(
+                "conformance: join {}/<os>.xml to the inventories, write {}/index.html, ../index.html and ../badges/*.json",
+                results.display(),
+                out.display()
+            ),
+            Step::InLlvmCovEnv(c) => format!("(cargo llvm-cov show-env) {}", c.display()),
+            Step::RequireLlvmCov => {
+                "cargo llvm-cov --version || fail (cargo install cargo-llvm-cov --locked)".to_owned()
+            }
             Step::RequireCargoDeny => {
                 "cargo deny --version || fail (cargo install cargo-deny --version 0.20.2 --locked)"
                     .to_owned()
@@ -206,9 +226,24 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
         "no file:line pointer in code prose; one under docs/ names a line that exists",
     ),
     (
+        "check-platform-seam",
+        "",
+        "a platform cfg stands only on a mod declaration, bar the temporary rows",
+    ),
+    (
         "check-conformance",
         "",
         "spec inventories are well formed, test tags name rows, the CLAP inventory matches clap-sys and the VST3 one the SDK",
+    ),
+    (
+        "conformance",
+        "--results <dir> [--out site/conformance]",
+        "the spec conformance dashboard and badges (one table per inventory area) from per-OS nextest JUnit files (<dir>/linux.xml, macos.xml, windows.xml)",
+    ),
+    (
+        "coverage",
+        "[--out site/coverage] [--package a,b]",
+        "line coverage of the workspace as HTML (needs cargo-llvm-cov)",
     ),
     (
         "conformance-inventory",
@@ -275,6 +310,31 @@ pub(crate) const RECIPES: &[(&str, &str, &str)] = &[
     ),
     ("ci", "", "everything CI runs"),
 ];
+
+/// `--key value` pairs, each key one of `allowed` and given once.
+fn options(
+    recipe: &str,
+    args: &[String],
+    allowed: &[&str],
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut it = args.iter();
+    while let Some(key) = it.next() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(format!(
+                "`{recipe}` takes {}, got `{key}`",
+                allowed.join(", ")
+            ));
+        }
+        let value = it
+            .next()
+            .ok_or_else(|| format!("`{recipe}`: `{key}` needs a value"))?;
+        if out.insert(key.clone(), value.clone()).is_some() {
+            return Err(format!("`{recipe}`: `{key}` is given twice"));
+        }
+    }
+    Ok(out)
+}
 
 /// Plans `name` with `args`; an error is a usage error (exit 2).
 pub(crate) fn plan(name: &str, args: &[String], ctx: &Ctx) -> Result<Vec<Step>, String> {
@@ -355,6 +415,8 @@ impl Planner<'_> {
                 | "book"
                 | "release"
                 | "conformance-inventory"
+                | "conformance"
+                | "coverage"
         );
         if !takes_args && !args.is_empty() {
             return Err(format!(
@@ -450,7 +512,40 @@ impl Planner<'_> {
             "check-range-types" => self.out.push(Step::Gate(Gate::RangeTypes)),
             "check-doc-refs" => self.out.push(Step::Gate(Gate::DocRefs)),
             "check-pointers" => self.out.push(Step::Gate(Gate::Pointers)),
+            "check-platform-seam" => self.out.push(Step::Gate(Gate::PlatformSeam)),
             "check-conformance" => self.out.push(Step::Gate(Gate::Conformance)),
+            "conformance" => {
+                let o = options(name, args, &["--results", "--out"])?;
+                let results = o.get("--results").map(String::as_str).ok_or("`conformance` needs `--results <dir>`")?;
+                let out = o.get("--out").map_or("site/conformance", String::as_str);
+                self.out.push(Step::Conformance {
+                    results: self.ctx.root.join(results),
+                    out: self.ctx.root.join(out),
+                });
+            }
+            "coverage" => {
+                let o = options(name, args, &["--out", "--package"])?;
+                let out = o.get("--out").map_or("site/coverage", String::as_str);
+                self.out.push(Step::RequireLlvmCov);
+                // The fixtures look for the plugin binaries beside the running
+                // test binary, which llvm-cov builds under its own target
+                // directory: build them there.
+                for bin in ["plugin-server", "plugin-probe"] {
+                    self.out.push(Step::InLlvmCovEnv(Cmd::sh(&format!(
+                        "cargo build --locked -p tutti-{bin} --bin {bin}"
+                    ))));
+                }
+                let mut run = Cmd::sh("cargo llvm-cov nextest --locked --ignore-run-fail");
+                match o.get("--package") {
+                    Some(list) => {
+                        for p in list.split(',') {
+                            run = run.arg("-p").arg(p);
+                        }
+                    }
+                    None => run = run.arg("--workspace"),
+                }
+                self.run(run.arg("--html").arg("--output-dir").arg(out));
+            }
             "conformance-inventory" => {
                 let [f] = Self::params(name, args, ["clap"])?;
                 self.out.push(Step::ConformanceInventory(f));
@@ -521,7 +616,8 @@ impl Planner<'_> {
                     "lint", "deny", "check-paths", "check-session", "check-guards",
                     "check-ffi", "check-errors", "check-layout", "check-range-types", "check-hosting",
                     "check-lints", "check-value-traits",
-                    "check-submodule-pins", "check-doc-refs", "check-pointers", "check-conformance",
+                    "check-submodule-pins", "check-doc-refs", "check-pointers",
+                    "check-platform-seam", "check-conformance",
                     "check-features", "package",
                     "check-loom", "test", "test-features", "test-doc",
                     "test-release", "doc",

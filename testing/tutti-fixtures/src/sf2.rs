@@ -8,6 +8,8 @@
 /// Generator numbers, SF2 2.04 section 8.1.2: what a zone's generator list uses.
 pub mod generator {
 
+    pub const INITIAL_FILTER_FC: u16 = 8;
+    pub const INITIAL_FILTER_Q: u16 = 9;
     pub const PAN: u16 = 17;
     pub const RELEASE_VOL_ENV: u16 = 38;
     pub const INSTRUMENT: u16 = 41;
@@ -248,4 +250,54 @@ fn build(presets: &[Preset], insts: &[Inst], samples: &[SampleSpec], own: bool) 
     file.extend((payload.len() as u32).to_le_bytes());
     file.extend(payload);
     file
+}
+
+/// `file`, a fixture font, with its `ifil` version set to `version` (major,
+/// minor) and its `sdta` list holding `smpl` (when `Some`) and then `sm24`
+/// (when `Some`) as the bytes given: a chunk's size is its data's length, so a
+/// size the specification refuses is a slice of the wrong length.
+///
+/// # Panics
+///
+/// If `file` is not one of this module's fonts (an `INFO` list of one `ifil`
+/// chunk, then the `sdta` list).
+#[must_use]
+pub fn with_pool(
+    file: &[u8],
+    version: (u16, u16),
+    smpl: Option<&[u8]>,
+    sm24: Option<&[u8]>,
+) -> Vec<u8> {
+    const INFO_END: usize = 12 + 8 + 4 + 12;
+    assert_eq!(
+        &file[20..24],
+        b"INFO",
+        "an INFO list follows the RIFF header"
+    );
+    assert_eq!(&file[24..28], b"ifil");
+    assert_eq!(&file[INFO_END + 8..INFO_END + 12], b"sdta");
+    let sdta_size = u32::from_le_bytes(file[INFO_END + 4..INFO_END + 8].try_into().unwrap());
+    let pdta = INFO_END + 8 + sdta_size as usize;
+
+    // A chunk of an odd size is followed by its pad byte, which the size omits.
+    let padded = |id: &[u8; 4], data: &[u8]| {
+        let mut bytes = chunk(id, data);
+        bytes.resize(bytes.len() + data.len() % 2, 0);
+        bytes
+    };
+    let chunks: Vec<Vec<u8>> = smpl
+        .map(|d| padded(b"smpl", d))
+        .into_iter()
+        .chain(sm24.map(|d| padded(b"sm24", d)))
+        .collect();
+    let mut out = file[..12].to_vec();
+    out.extend(list(
+        b"INFO",
+        &[chunk(b"ifil", &words(&[version.0, version.1]))],
+    ));
+    out.extend(list(b"sdta", &chunks));
+    out.extend(&file[pdta..]);
+    let riff = (out.len() - 8) as u32;
+    out[4..8].copy_from_slice(&riff.to_le_bytes());
+    out
 }

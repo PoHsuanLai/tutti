@@ -14,8 +14,7 @@
 use tutti_graph::{CrossfadeCurve, Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
 use tutti_nodes::testing::Const;
 use tutti_session::{InPort, MixError, NodeMode, OutPort, Root, Session};
-use tutti_types::MaxBlock;
-use tutti_types::{ChannelLayout, InterleavedMut, Mix, SampleRate, Samples, Seconds};
+use tutti_types::{ChannelLayout, InterleavedMut, Mix, Seconds};
 
 const A: f32 = 0.25;
 const BLOCK: usize = 64;
@@ -49,13 +48,7 @@ struct Rig {
 
 /// `Const(A) -> Halve -> output 0`, committed once.
 fn rig() -> Rig {
-    let mut s = Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds");
+    let mut s = Session::builder().build().expect("builds");
     let g = s.graph();
     let (a, _) = g.add(ForkByClone(Const::mono(A)));
     let (halve, _) = g.add(ForkByClone(Halve));

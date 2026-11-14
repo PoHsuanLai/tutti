@@ -306,18 +306,6 @@ impl PhaserMember {
         self.stages
     }
 
-    /// The sweep's bottom.
-    #[must_use]
-    pub fn min_hz(&self) -> Hz {
-        self.min_hz
-    }
-
-    /// The sweep's top at this rate: the authored top, at most 0.90 of Nyquist.
-    #[must_use]
-    pub fn max_hz(&self) -> Hz {
-        self.max_hz
-    }
-
     /// The sweep depth.
     #[must_use]
     pub fn depth(&self) -> Depth {
@@ -333,11 +321,11 @@ impl PhaserMember {
     /// The all-pass centre at the sweep's centre (LFO position 0), in [`Hz`]:
     /// [`sweep_hz`] there. With a depth of zero it is the bottom of the range.
     #[must_use]
-    pub fn centre_hz(&self) -> Hz {
+    fn centre_hz(&self) -> Hz {
         sweep_hz(self.min_hz, self.max_hz, 0.0, self.depth)
     }
 
-    /// The all-pass coefficient at the centre: [`allpass_coeff`] of [`centre_hz`](Self::centre_hz).
+    /// The all-pass coefficient at the centre: [`allpass_coeff`] of the centre frequency.
     #[must_use]
     pub fn coefficient(&self) -> f32 {
         allpass_coeff(self.centre_hz().get(), self.sr)
@@ -519,12 +507,6 @@ impl PhaserFamily {
     pub const fn range(&self) -> &SweepRange {
         &self.range
     }
-
-    /// How the channels' sweeps are offset.
-    #[must_use]
-    pub const fn stagger(&self) -> &Stagger {
-        &self.stagger
-    }
 }
 
 impl Family for PhaserFamily {
@@ -553,7 +535,7 @@ impl Family for PhaserFamily {
         *out = PhaserMember::of(self, c, rate);
     }
 
-    fn recurrence(&self) -> PhaserRecurrence {
+    fn recurrence(&self, _: SampleRate) -> PhaserRecurrence {
         let mut offsets = [PhaseIncrement(0.0); MAX_PHASER_CHANNELS];
         for (c, o) in offsets.iter_mut().enumerate().take(self.width()) {
             *o = self.stagger.offset(c);

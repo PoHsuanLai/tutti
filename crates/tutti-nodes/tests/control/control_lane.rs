@@ -123,12 +123,8 @@ impl Node for Feed {
     }
     fn prepare(&mut self, _: &Prepare) {}
     fn process(&mut self, cx: &Cx<'_>, mut io: Io<'_>) -> Status {
-        let (base, n) = (cx.env.frame.get(), cx.env.block_len);
         for &(at, seg) in &self.plan {
-            if let Some(o) = at
-                .checked_sub(base)
-                .and_then(|o| Offset::new(o as usize, n))
-            {
+            if let Some(o) = cx.env.offset_of(Frame::new(at)) {
                 io.event_out(0).push(Event::segment(o, seg)).expect("room");
             }
         }
@@ -571,11 +567,8 @@ fn an_export_is_the_live_render_bit_for_bit() {
 
     let mut host = Host::new();
     let mut ch = TransportChanges::NONE;
-    ch.push(
-        Offset::new(37, Samples(128)).expect("inside"),
-        host.rolling(),
-    )
-    .expect("room");
+    ch.push(Offset::of(Samples(37), Samples(128)), host.rolling())
+        .expect("room");
     let mut live = block(&mut ed, &mut exec, &stopped, &ch, 128);
     for c in &mut live {
         c.drain(..37);
@@ -1286,14 +1279,11 @@ fn lane_controls_reach_their_own_cells() {
     assert_eq!(c.knob(), Some(0.25));
     assert!(c.set_knob(0.75));
     assert_eq!(c.knob(), Some(0.75));
-    assert!(c.set_range(0.1, 0.9));
-    assert_eq!(c.range(), (0.1, 0.9));
     let (mut ed, _exec) = probes(64, &[2], (5.0, 50.0));
     let n = native(&ed, 2, ControlProgram::default(), None);
     let c = n.controls();
     assert!(!c.set_knob(1.0), "no knob");
     assert_eq!(c.knob(), None);
-    assert!(!c.set_range(0.0, 1.0), "a native range is its port's");
     assert_eq!(c.range(), (5.0, 50.0));
     ed.set_param_range(cutoff(2), ParamRange::new(6.0, 60.0))
         .expect("a probe");

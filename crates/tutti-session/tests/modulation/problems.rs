@@ -10,15 +10,13 @@ use tutti_session::{
     ModTarget, PHASES, ParamRef, PhaseCx, Problem, RouteSpec, Session, SessionEvent, SourceName,
     TargetName,
 };
-use tutti_types::{Depth, Hz, MaxBlock, SampleRate, Samples, UnitParam};
+use tutti_types::{Depth, Hz, MaxBlock, Samples, UnitParam};
 
 fn session() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            tutti_types::ChannelLayout::STEREO,
-            MaxBlock::of(Samples(256)),
-        )
+        .outputs(tutti_types::ChannelLayout::STEREO)
+        .max_block(MaxBlock::of(Samples(256)))
+        .build()
         .expect("builds")
 }
 

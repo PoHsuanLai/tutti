@@ -198,7 +198,7 @@ fn the_member_holds_the_figures_of_its_definition() {
     let family = design();
     let m = family.member(&controls(-20.0, 0.001, 0.0102, 0.1, -12.0), RATE);
     // 0.0102 s at 48 kHz is 489.6 frames, floored.
-    assert_eq!(m.hold_samples(), 489);
+    assert_eq!(m.hold_samples, 489);
     assert_eq!(m.threshold(), Db(-20.0));
 
     let m = family.member(
@@ -215,7 +215,7 @@ fn the_member_holds_the_figures_of_its_definition() {
         (m.attack(), m.hold(), m.release()),
         (Seconds(0.0), Seconds(0.0), Seconds(0.0))
     );
-    assert_eq!(m.hold_samples(), 0);
+    assert_eq!(m.hold_samples, 0);
     assert_eq!(m.range(), Db(0.0), "a range over 0 dB reads as 0");
 
     let m = family.member(
@@ -472,7 +472,7 @@ fn silence_opens_a_threshold_at_or_under_the_floor() {
     for (threshold, opens) in [(-200.0f32, true), (Db::FLOOR.get(), true), (-143.0, false)] {
         let c = controls(threshold, 0.0, 0.0, 0.0, -40.0);
         let m = design().member(&c, RATE);
-        assert_eq!(m.silence_opens(), opens, "threshold {threshold}");
+        assert_eq!(m.silence_opens, opens, "threshold {threshold}");
         let mut k = runner(&c);
         let out = run_mono(&mut k, &vec![1.0; 64], &vec![0.0; 64], None);
         let want = if opens { 1.0 } else { amplitude(-40.0) };
@@ -590,7 +590,7 @@ fn a_reset_clears_the_follower_and_the_hold() {
 /// length renders (a default gate passes the signal).
 #[test]
 fn a_block_of_the_prepared_length_renders() {
-    let mut k = design().realized();
+    let mut k = design().realized(RATE);
     k.prepare(
         &(),
         &Setup {

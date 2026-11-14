@@ -62,12 +62,12 @@ use tutti_ump::{Data128, Message, MidiChannel, MidiGroup, Sysex8Packet, SysexSta
 const BLOCK: usize = 64;
 
 /// The offset `k` frames into the block.
-fn at(k: u32) -> Offset {
-    Offset::new(k as usize, Samples(BLOCK)).expect("inside the block")
+fn at(k: usize) -> Offset {
+    Offset::of(Samples(k), Samples(BLOCK))
 }
 
 /// The packet of `words`, zero-padded to four, `k` frames into the block.
-fn packet(k: u32, words: &[u32]) -> UmpAt {
+fn packet(k: usize, words: &[u32]) -> UmpAt {
     let mut w = [0u32; 4];
     w[..words.len()].copy_from_slice(words);
     (at(k), Ump(w))
@@ -491,7 +491,7 @@ fn alternating_continue_sleep_does_not_allocate() {
 }
 
 /// **The host turns the plugin's `clap_process_status` into the shared
-/// per-block status the graph node reads** (doc 023 step 2): *sleep* and
+/// per-block status the graph node reads**: *sleep* and
 /// *tail* as themselves, *continue* and *continue if not quiet* as
 /// `Continue` (neither narrows anything), checked through the real
 /// `Processor::process` path, not the raw status the tests above read.

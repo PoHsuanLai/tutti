@@ -23,8 +23,8 @@ use tutti_ump::{CCNumber, KeyEvent, Message, MidiChannel, MidiGroup, NoteNumber,
 const BLOCK: usize = 1_000;
 
 /// The offset `k` frames into the block.
-fn at(k: u32) -> Offset {
-    Offset::new(k as usize, Samples(BLOCK)).expect("inside the block")
+fn at(k: usize) -> Offset {
+    Offset::of(Samples(k), Samples(BLOCK))
 }
 
 /// The first event `event` adds to a fresh list.
@@ -861,6 +861,7 @@ fn test_host_get_extension_returns_non_null_for_supported() {
     use clap_sys::ext::ambisonic::CLAP_EXT_AMBISONIC;
     use clap_sys::ext::audio_ports::CLAP_EXT_AUDIO_PORTS;
     use clap_sys::ext::audio_ports_config::CLAP_EXT_AUDIO_PORTS_CONFIG;
+    use clap_sys::ext::draft::transport_control::CLAP_EXT_TRANSPORT_CONTROL;
     use clap_sys::ext::event_registry::CLAP_EXT_EVENT_REGISTRY;
     use clap_sys::ext::gui::CLAP_EXT_GUI;
     use clap_sys::ext::latency::CLAP_EXT_LATENCY;
@@ -875,6 +876,7 @@ fn test_host_get_extension_returns_non_null_for_supported() {
     use clap_sys::ext::thread_check::CLAP_EXT_THREAD_CHECK;
     use clap_sys::ext::thread_pool::CLAP_EXT_THREAD_POOL;
     use clap_sys::ext::timer_support::CLAP_EXT_TIMER_SUPPORT;
+    use clap_sys::ext::track_info::CLAP_EXT_TRACK_INFO;
     use clap_sys::ext::voice_info::CLAP_EXT_VOICE_INFO;
 
     let host = ClapHost::new(std::sync::Arc::new(HostState::new(&main_thread())));
@@ -882,6 +884,8 @@ fn test_host_get_extension_returns_non_null_for_supported() {
     let get_ext = unsafe { (*raw).get_extension.unwrap() };
 
     let supported = [
+        CLAP_EXT_TRACK_INFO,
+        CLAP_EXT_TRANSPORT_CONTROL,
         CLAP_EXT_THREAD_CHECK,
         CLAP_EXT_LOG,
         CLAP_EXT_PARAMS,
@@ -970,9 +974,7 @@ fn test_host_does_not_advertise_extensions_it_does_not_serve() {
 
     for id in [
         c"clap.remote-controls/2",
-        c"clap.track-info/1",
         c"clap.context-menu/1",
-        c"clap.transport-control/1",
         c"clap.triggers/1",
         c"clap.tuning/2",
         c"clap.resource-directory/1",

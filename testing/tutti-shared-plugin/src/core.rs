@@ -36,15 +36,15 @@
 //! # Faults
 //!
 //! The high nibble of the mode word's low byte (`mode | fault << 4`) makes
-//! `process` fail, for a probe that measures a plugin which dies rendering
-//! (doc 023 section 6): `FAULT_CRASH` aborts the process in the first block,
+//! `process` fail, for a probe that measures a plugin which dies rendering:
+//! `FAULT_CRASH` aborts the process in the first block,
 //! `FAULT_HANG` never returns from it. Loading and describing are untouched.
 //!
 //! # Rings
 //!
 //!
-//! What the plugin **does** with its tail, for the probe that measures one
-//! (doc 023 section 6): the high nibble of the fourth byte, `RINGS_*`. With it
+//! What the plugin **does** with its tail, for the probe that measures one:
+//! the high nibble of the fourth byte, `RINGS_*`. With it
 //! non-zero the plugin ignores its mode and the `tag` (a probe subject has no DC
 //! offset to settle past) and renders a ring: any frame with a non-zero input
 //! on any channel starts it, at age 0; at an age from `onset` to `onset + length`

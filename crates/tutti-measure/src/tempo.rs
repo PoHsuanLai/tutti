@@ -36,6 +36,7 @@ use crate::xcorr::cross_correlate;
 use crate::{Error, Result};
 use tutti_dsp::FftScratch;
 use tutti_dsp::StftGeometry;
+use tutti_types::ranged;
 
 /// The default analysis window, in samples.
 const WINDOW: usize = 1024;
@@ -60,15 +61,30 @@ const SILENCE_FLOOR: Db = Db(-90.0);
 /// is within rounding of its own level.
 const FLAT: f32 = f32::EPSILON;
 
+ranged! {
+    /// How wide the tempo prior is, in octaves (a factor of two in tempo per
+    /// octave): finite and above zero. A ratio between two tempi, which no unit
+    /// type covers.
+    PriorSpread(f32), PriorSpreadError, "a prior spread above zero",
+    |raw| raw > 0.0 && raw <= f32::MAX
+}
+
+ranged! {
+    /// How hard the beat tracker holds to the tempo: finite and not negative.
+    /// The weight of a penalty against a novelty score of unit standard
+    /// deviation, which no unit type covers.
+    Tightness(f32), TightnessError, "a tightness of zero or more",
+    |raw| raw >= 0.0 && raw <= f32::MAX
+}
+
 /// What [`estimate_tempo`] and [`track_beats`] search and prefer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TempoConfig {
     min: Bpm,
     max: Bpm,
     centre: Bpm,
-    // Octaves: a ratio between two tempi, which no unit type covers.
-    spread: f32,
-    tightness: f32,
+    spread: PriorSpread,
+    tightness: Tightness,
     alternatives: usize,
 }
 
@@ -80,8 +96,8 @@ impl Default for TempoConfig {
             min: Bpm::of(60.0),
             max: Bpm::of(200.0),
             centre: Bpm::of(120.0),
-            spread: 1.0,
-            tightness: 100.0,
+            spread: PriorSpread::of(1.0),
+            tightness: Tightness::of(100.0),
             alternatives: 2,
         }
     }
@@ -128,35 +144,21 @@ impl TempoConfig {
 
     /// Prefer tempi near `centre`, falling to `exp(-1/2)` of the weight one
     /// `spread` away, in octaves (a factor of two in tempo per octave).
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidTempoParameter`] unless `spread` is finite and above
-    /// zero.
-    pub fn with_prior(mut self, centre: Bpm, spread_octaves: f32) -> Result<Self> {
-        if !(spread_octaves.is_finite() && spread_octaves > 0.0) {
-            return Err(Error::InvalidTempoParameter("prior spread"));
-        }
+    #[must_use]
+    pub fn with_prior(mut self, centre: Bpm, spread: PriorSpread) -> Self {
         self.centre = centre;
-        self.spread = spread_octaves;
-        Ok(self)
+        self.spread = spread;
+        self
     }
 
     /// How hard the beat tracker holds to the tempo: the weight of the penalty
     /// on a gap's log ratio to the beat period, against a novelty score of unit
     /// standard deviation. Zero ignores the period and picks the strongest
     /// onsets; large values give an evenly spaced grid.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::InvalidTempoParameter`] unless `tightness` is finite and not
-    /// negative.
-    pub fn with_tightness(mut self, tightness: f32) -> Result<Self> {
-        if !(tightness.is_finite() && tightness >= 0.0) {
-            return Err(Error::InvalidTempoParameter("tightness"));
-        }
+    #[must_use]
+    pub fn with_tightness(mut self, tightness: Tightness) -> Self {
         self.tightness = tightness;
-        Ok(self)
+        self
     }
 
     /// How many runner-up tempi [`Tempo::alternatives`] holds, at most; capped
@@ -172,20 +174,6 @@ impl TempoConfig {
     #[must_use]
     pub fn range(&self) -> (Bpm, Bpm) {
         (self.min, self.max)
-    }
-
-    /// The tempo the prior favours.
-    #[inline]
-    #[must_use]
-    pub fn centre(&self) -> Bpm {
-        self.centre
-    }
-
-    /// The beat tracker's tightness.
-    #[inline]
-    #[must_use]
-    pub fn tightness(&self) -> f32 {
-        self.tightness
     }
 }
 
@@ -331,7 +319,7 @@ pub fn track_beats(
 ///
 /// As [`estimate_tempo_from_novelty`] when estimating. With a supplied tempo,
 /// [`Error::NonFiniteInput`] for a NaN or infinite value in `novelty`, and
-/// [`Error::InvalidTempoParameter`] for a tempo whose period is not between two
+/// [`Error::UntrackableTempo`] for a tempo whose period is not between two
 /// frames and the curve's length; a flat curve gives no beats.
 pub fn track_beats_from_novelty(
     cfg: &TempoConfig,
@@ -352,14 +340,14 @@ pub fn track_beats_from_novelty(
             // the curve holds at most one beat.
             let period = 60.0 * rate / bpm.get();
             if !(2.0..=novelty.len() as f64).contains(&period) {
-                return Err(Error::InvalidTempoParameter("tempo"));
+                return Err(Error::UntrackableTempo { bpm });
             }
             bpm
         }
         None => estimate_tempo_from_novelty(cfg, novelty, sample_rate, hop, fft)?.bpm,
     };
     let period = 60.0 * rate / bpm.get();
-    let beats = beat::track(novelty, period, cfg.tightness)
+    let beats = beat::track(novelty, period, cfg.tightness.get())
         .into_iter()
         .map(|frame| Samples(frame * hop.get()))
         .collect();
@@ -499,7 +487,8 @@ impl Periodicity {
 
     /// The prior's weight at `lag`, from 1 at the centre down.
     fn weight(&self, cfg: &TempoConfig, lag: usize) -> f32 {
-        let octaves = (self.bpm(lag as f64) / cfg.centre.get()).log2() / f64::from(cfg.spread);
+        let octaves =
+            (self.bpm(lag as f64) / cfg.centre.get()).log2() / f64::from(cfg.spread.get());
         (-0.5 * octaves * octaves).exp() as f32
     }
 
@@ -779,11 +768,11 @@ mod tests {
         let weak = estimate_tempo(&TempoConfig::new(), geometry(), &train(0.1), &mut fft).unwrap();
         assert!((weak.bpm.get() - 60.0).abs() < 1.5, "{}", weak.bpm);
 
-        let centred = TempoConfig::new().with_prior(Bpm::of(60.0), 1.0).unwrap();
+        let centred = TempoConfig::new().with_prior(Bpm::of(60.0), PriorSpread::of(1.0));
         let low = estimate_tempo(&centred, geometry(), &half, &mut fft).unwrap();
         assert!((low.bpm.get() - 60.0).abs() < 1.5, "{}", low.bpm);
 
-        let narrow = TempoConfig::new().with_prior(Bpm::of(120.0), 0.1).unwrap();
+        let narrow = TempoConfig::new().with_prior(Bpm::of(120.0), PriorSpread::of(0.1));
         let high = estimate_tempo(&narrow, geometry(), &train(0.1), &mut fft).unwrap();
         assert!((high.bpm.get() - 120.0).abs() < 1.5, "{}", high.bpm);
 
@@ -802,7 +791,7 @@ mod tests {
         let grid_clicks = click_samples(120.0, 0.3, 20.0);
         let hop = geometry().hop().get() as f64;
         let run = |tightness: f32| {
-            let cfg = TempoConfig::new().with_tightness(tightness).unwrap();
+            let cfg = TempoConfig::new().with_tightness(Tightness::new(tightness).unwrap());
             track_beats(&cfg, geometry(), &x, &mut FftScratch::new()).unwrap()
         };
         let tight = miss(&run(100.0), &grid_clicks);
@@ -1013,11 +1002,6 @@ mod tests {
         for raw in [0.0, -5.0, f64::NAN, f64::INFINITY] {
             assert!(Bpm::new(raw).is_none(), "{raw}");
         }
-        assert!(cfg.with_prior(Bpm::of(120.0), 0.0).is_err());
-        assert!(cfg.with_prior(Bpm::of(120.0), f32::NAN).is_err());
-        assert!(cfg.with_tightness(-1.0).is_err());
-        assert!(cfg.with_tightness(f32::NAN).is_err());
-        assert!(cfg.with_tightness(0.0).is_ok());
 
         let curve = vec![0.0f32; 1000];
         assert_eq!(
@@ -1097,7 +1081,7 @@ mod tests {
     }
 
     /// A supplied tempo whose period no curve can hold is an
-    /// `InvalidTempoParameter`, not an allocation of the period's size and not
+    /// `UntrackableTempo`, not an allocation of the period's size and not
     /// an empty grid; a usable one tracks.
     #[test]
     fn a_supplied_tempo_must_fit_the_curve() {
@@ -1121,7 +1105,7 @@ mod tests {
                     Some(Bpm::of(bad)),
                     &mut fft
                 ),
-                Err(Error::InvalidTempoParameter("tempo")),
+                Err(Error::UntrackableTempo { bpm: Bpm::of(bad) }),
                 "{bad}"
             );
         }

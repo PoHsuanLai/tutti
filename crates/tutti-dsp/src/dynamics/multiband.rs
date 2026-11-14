@@ -123,7 +123,7 @@ impl MultibandMember {
 
     /// Band `band`'s compressor, or `None` past the last band.
     #[must_use]
-    pub fn compressor(&self, band: usize) -> Option<&CompressorMember> {
+    fn compressor(&self, band: usize) -> Option<&CompressorMember> {
         self.bands[..self.count].get(band)
     }
 
@@ -237,7 +237,7 @@ impl Family for MultibandFamily {
         }
     }
 
-    fn recurrence(&self) -> MultibandRecurrence {
+    fn recurrence(&self, _: SampleRate) -> MultibandRecurrence {
         MultibandRecurrence {
             width: usize::from(self.input.layout().count()),
             bands: self.bands(),

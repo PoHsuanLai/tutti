@@ -1,4 +1,4 @@
-//! The main-thread view (design 029 step 2): `MainSession::update` services
+//! The main-thread view: `MainSession::update` services
 //! the editors opened through the view and reports what they ask for, the
 //! editor's `open`, `resize`-side `rescale` and `close`, and the graveyard a
 //! removal parks a plugin in until the view empties it.
@@ -10,14 +10,15 @@
 
 use std::sync::Arc;
 
+use dpi::{PhysicalSize, Size};
+
 use tutti_fixtures::StandInWindow;
 use tutti_graph::{ForkByClone, NodeKey};
 use tutti_nodes::testing::Const;
 use tutti_plugin_host::PluginHandle;
 use tutti_plugin_types::fake::{Call, FakePlugin};
 use tutti_plugin_types::{
-    ContentScale, EditorError, EditorSize, MainThread, Normalized, ParamId, ParameterInfo,
-    PluginFailure,
+    ContentScale, EditorError, MainThread, Normalized, ParamId, ParameterInfo, PluginFailure,
 };
 use tutti_session::{Opened, PluginChange, PluginEvent, Session, SessionEvent};
 use tutti_types::{ChannelLayout, SampleRate};
@@ -107,7 +108,7 @@ fn session_with_editor() -> (Session, NodeKey, FakePlugin) {
     (s, node.erase(), fake)
 }
 
-fn wanted_sizes(events: &[SessionEvent], node: NodeKey) -> Vec<EditorSize> {
+fn wanted_sizes(events: &[SessionEvent], node: NodeKey) -> Vec<Size> {
     events
         .iter()
         .filter_map(|e| match e {
@@ -141,20 +142,11 @@ fn an_editor_that_requests_a_size_raises_editor_wants_size() {
         .editor()
         .open(&StandInWindow, ContentScale::IDENTITY)
         .unwrap();
-    assert_eq!(
-        opened,
-        Opened::Embedded(EditorSize {
-            width: 640,
-            height: 480
-        })
-    );
+    assert_eq!(opened, Opened::Embedded(PhysicalSize::new(640, 480).into()));
 
-    let want = EditorSize {
-        width: 1000,
-        height: 700,
-    };
+    let want = PhysicalSize::new(1000, 700);
     fake.request_editor_size(want);
-    assert_eq!(wanted_sizes(&ui.update(), node), vec![want]);
+    assert_eq!(wanted_sizes(&ui.update(), node), vec![want.into()]);
     assert!(
         wanted_sizes(&ui.update(), node).is_empty(),
         "a request is answered once"
@@ -169,10 +161,7 @@ fn update_services_the_open_editor_and_no_other() {
     let (mut s, node, fake) = session_with_editor();
     let mut ui = s.main(main_thread());
 
-    fake.request_editor_size(EditorSize {
-        width: 1,
-        height: 1,
-    });
+    fake.request_editor_size(PhysicalSize::new(1, 1));
     assert!(wanted_sizes(&ui.update(), node).is_empty());
     assert_eq!(idles(&fake), 0, "nothing is serviced before it opens");
 
@@ -191,10 +180,7 @@ fn update_services_the_open_editor_and_no_other() {
 
     ui.plugin(node).unwrap().editor().close();
     let before = idles(&fake);
-    fake.request_editor_size(EditorSize {
-        width: 2,
-        height: 2,
-    });
+    fake.request_editor_size(PhysicalSize::new(2, 2));
     assert!(wanted_sizes(&ui.update(), node).is_empty());
     assert_eq!(idles(&fake), before, "a closed editor is not serviced");
     assert!(fake.calls().contains(&Call::CloseEditor));

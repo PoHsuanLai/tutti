@@ -1,0 +1,144 @@
+# The conformance dashboard, its badges and the coverage report, published to
+# GitHub Pages from main, nightly. Each OS runs the spec-tagged test tiers with nextest's
+# `conformance` profile (JUnit), `cargo xtask conformance` joins the three
+# files to the spec inventories, and `cargo xtask coverage` adds the line
+# coverage. The tiers run here, not downloaded from CI: a CI run is per pull
+# request and per changed path, so a push to main has no complete set of
+# per-OS results to fetch.
+
+name: Pages
+
+# Nightly and on demand, not per push: a run takes four jobs across three
+# OSes, longer than the gap between merges, so a per-push run is cancelled by
+# the next merge before it publishes.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  CARGO_PROFILE_DEV_OPT_LEVEL: '1'
+  RUST_BACKTRACE: 1
+
+jobs:
+  results:
+    name: results (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux, runner: ubuntu-24.04 }
+          - { name: macos, runner: macos-latest }
+          - { name: windows, runner: windows-latest }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Install Linux audio deps
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/linux-audio-deps
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - uses: taiki-e/install-action@nextest
+      - name: Build plugin-server and plugin-probe
+        run: |
+          cargo build --locked -p tutti-plugin-server
+          cargo build --locked -p tutti-plugin-probe
+      # A failing test is a red cell on the dashboard, not a failed publish:
+      # the step passes whatever nextest says, and the JUnit file holds the
+      # outcome. A format with no tests on this OS compiles to nothing.
+      - name: Spec-tagged tiers
+        shell: bash
+        run: |
+          cargo nextest run --locked --profile conformance --no-fail-fast \
+            -p tutti-plugin-contract \
+            -p tutti-clap-ffi -p tutti-clap-host \
+            -p tutti-vst3-ffi -p tutti-vst3-host \
+            -p tutti-vst2-ffi -p tutti-vst2-host \
+            -p tutti-au-ffi -p tutti-au-host \
+            -p tutti-plugin-server \
+            -p tutti-ump -p tutti-midi-protocol -p tutti-midi-device \
+            -p tutti-midi-file -p tutti-midi-runtime -p tutti-voicing || echo "some tests failed; the dashboard shows them"
+      - name: Name the file by OS
+        shell: bash
+        run: |
+          mkdir junit
+          cp target/nextest/conformance/junit.xml "junit/${{ matrix.name }}.xml"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.name }}
+          path: junit/${{ matrix.name }}.xml
+          if-no-files-found: error
+
+  coverage:
+    name: line coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Install Linux audio deps
+        uses: ./.github/actions/linux-audio-deps
+      - run: rustup toolchain install
+      - run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: cargo xtask coverage --out site/coverage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-coverage
+          path: site/coverage
+          if-no-files-found: error
+
+  deploy:
+    name: publish
+    needs: [results, coverage]
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: junit-*
+          path: junit
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: site-coverage
+          path: site/coverage
+      - run: cargo xtask conformance --results junit --out site/conformance
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

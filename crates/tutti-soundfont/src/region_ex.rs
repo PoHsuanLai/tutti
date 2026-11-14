@@ -14,12 +14,7 @@ pub(crate) struct RegionEx {}
 
 impl RegionEx {
     pub(crate) fn start_oscillator(oscillator: &mut Oscillator, region: &RegionPair) {
-        // `Voices::execute` starts no voice whose sample has no rate, so this
-        // is a guard and never reached: no rate of 0 is made up.
-        let Some(rate) = region.instrument.sample_rate() else {
-            return;
-        };
-        let sample_rate = rate.get() as i32;
+        let sample_rate = region.instrument.sample_rate();
         let loop_mode = region.sample_modes();
         let start = region.sample_start();
         let end = region.sample_end();

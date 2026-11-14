@@ -34,6 +34,9 @@ pub enum MidiEvent {
     /// is closed and its port retired, after the [`Removed`](Self::Removed)
     /// that said so. What the device had queued is discarded; the notes,
     /// pedals and bends it held are released downstream by the ingest node.
+    /// The session keeps the device as one the app wants, and opens it again
+    /// when it returns and is surely the same one
+    /// ([`InputRestored`](Self::InputRestored)).
     #[cfg(feature = "midi-hardware")]
     InputLost {
         /// Its last listing; `info.id` is the device.
@@ -41,11 +44,36 @@ pub enum MidiEvent {
     },
     /// The device the session held open as its output vanished: the output
     /// is closed, and what the hardware out sends is counted as dropped
-    /// ([`OutputDropped`](Self::OutputDropped)) until a host connects another.
+    /// ([`OutputDropped`](Self::OutputDropped)) until another is connected or
+    /// this one returns and is surely the same device
+    /// ([`OutputRestored`](Self::OutputRestored)); its stamp stream carries on.
     #[cfg(feature = "midi-hardware")]
     OutputLost {
         /// Its last listing; `info.id` is the device.
         info: tutti_midi_hardware::DeviceInfo,
+    },
+    /// A device that was lost as an input ([`InputLost`](Self::InputLost))
+    /// returned and is surely the same one: the input is open again.
+    #[cfg(feature = "midi-hardware")]
+    InputRestored {
+        /// Its listing now; `info.id` is the device.
+        info: tutti_midi_hardware::DeviceInfo,
+    },
+    /// The device that was lost as the output ([`OutputLost`](Self::OutputLost))
+    /// returned and is surely the same one: the output is open again.
+    #[cfg(feature = "midi-hardware")]
+    OutputRestored {
+        /// Its listing now; `info.id` is the device.
+        info: tutti_midi_hardware::DeviceInfo,
+    },
+    /// A lost device returned and is surely the same one, but opening it
+    /// failed. It stays wanted: it is tried again when it next returns.
+    #[cfg(feature = "midi-hardware")]
+    RestoreFailed {
+        /// Its listing now; `info.id` is the device.
+        info: tutti_midi_hardware::DeviceInfo,
+        /// Why it did not open.
+        error: crate::MidiError,
     },
     /// A device the session holds open as an input has settled its UMP Stream
     /// negotiation (M2-104 §7.1.6.1): the Endpoint it declared,
@@ -69,7 +97,9 @@ pub enum MidiEvent {
     CiPeer {
         /// The device.
         device: tutti_midi_hardware::DeviceId,
-        /// What happened to the peer.
+        /// The peer.
+        peer: tutti_midi_hardware::PeerId,
+        /// What happened to it.
         change: tutti_midi_hardware::CiChange,
     },
     /// A MIDI-CI peer's Profiles became known or changed, a request to switch one
@@ -81,8 +111,27 @@ pub enum MidiEvent {
     CiProfiles {
         /// The device.
         device: tutti_midi_hardware::DeviceId,
+        /// The peer.
+        peer: tutti_midi_hardware::PeerId,
         /// What happened.
         change: tutti_midi_hardware::ProfilesChange,
+    },
+    /// A MIDI-CI peer answered Process Inquiry, a MIDI Message Report it was asked
+    /// for began, ended, was refused or timed out, or the peer's Process Inquiry was
+    /// dropped with it (M2-101 section 9): the session is the Initiator with every
+    /// peer that declares Process Inquiry, and reports each change once, from
+    /// `Phase::Poll`. The messages of a report are not events of this kind: they
+    /// reach the graph as the input's MIDI, between the began and the ended. The
+    /// peers that can be asked are
+    /// [`Midi::report_peers`](crate::Midi::report_peers).
+    #[cfg(feature = "midi-hardware")]
+    CiProcess {
+        /// The device.
+        device: tutti_midi_hardware::DeviceId,
+        /// The peer.
+        peer: tutti_midi_hardware::PeerId,
+        /// What happened.
+        change: tutti_midi_hardware::ProcessChange,
     },
     /// The hardware devices' event inlets dropped events because they were
     /// full: the total over every input so far, reported when it rises, at
@@ -145,6 +194,39 @@ pub enum MidiEvent {
     /// the project's own tempo and meter are published again, from the next
     /// block, at the beat the transport is then at.
     TempoUnfollowed,
+    /// The session locked to the MIDI clock it follows
+    /// ([`Midi::follow_clock`](crate::Midi::follow_clock)): Beat Clock after a
+    /// quarter note of steady ticks, MTC after three consistent cycles of
+    /// Quarter Frames.
+    ClockLocked {
+        /// The clock followed.
+        kind: tutti_midi_runtime::ClockKind,
+    },
+    /// The session lost the MIDI clock it follows: a gap in Beat Clock's ticks,
+    /// or silence past the dropout (half a second of Beat Clock, a quarter of a
+    /// second of MTC), which also stops a transport the source had started.
+    ClockUnlocked {
+        /// The clock followed.
+        kind: tutti_midi_runtime::ClockKind,
+    },
+    /// The session stopped following its MIDI clock
+    /// ([`Midi::unfollow_clock`](crate::Midi::unfollow_clock)); the transport
+    /// keeps the motion it had, and the project's tempo and meter are published
+    /// again if the follower had changed them.
+    ClockUnfollowed,
+    /// The transport refused commands a followed MIDI clock or Machine Control asked of it, this
+    /// many in one update: its list of timed commands was full. Nothing was
+    /// applied for them (the source says its position again with its next
+    /// message), and each is logged.
+    ClockCommandsRefused(u64),
+    /// A Machine Control command addressed to the session that it does not act
+    /// on ([`Midi::follow_machine_control`](crate::Midi::follow_machine_control)):
+    /// record, shuttle, eject, a READ, a speed other than play speed and the
+    /// rest the transport has no counterpart for.
+    MachineControlIgnored(tutti_midi_protocol::MmcCommand),
+    /// The session stopped following MIDI Machine Control
+    /// ([`Midi::unfollow_machine_control`](crate::Midi::unfollow_machine_control)).
+    MachineControlUnfollowed,
     /// The OS watch for MIDI devices ended on its own (the reason is the
     /// message): the device list is frozen at what it last saw and no further
     /// hot-plug is reported. Reported once.

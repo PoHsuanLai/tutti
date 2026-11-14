@@ -1,4 +1,4 @@
-//! Where a format can run: the hosting markers (design 021 §2.1, §3).
+//! Where a format can run: the hosting markers.
 //!
 //! A format is [`Loaded`] in its `-host` crate. Whether the host may load it
 //! into its own process, or serve it from another one with an editor-only
@@ -14,9 +14,11 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use dpi::Size;
+
 use crate::{
-    AutomationMode, ContentScale, EditorCapabilities, EditorError, EditorSize, KeyEvent, KeyUse,
-    Loaded, MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult, Ready, Wakeups,
+    AutomationMode, ContentScale, EditorCapabilities, EditorError, KeyEvent, KeyUse, Loaded,
+    MainThread, Normalized, ParamEdit, ParamId, PluginError, PluginResult, Ready, Request, Wakeups,
     WindowHandle,
 };
 
@@ -96,7 +98,7 @@ impl Origin {
 /// The format can run in the host's own process.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be hosted in this process",
-    note = "implement `InProcess` only if the plugin can be loaded and run here (design 021 §3)"
+    note = "implement `InProcess` only if the plugin can be loaded and run here"
 )]
 pub trait InProcess: Loaded {
     /// Loads the plugin into this process, not activated, honouring the
@@ -115,13 +117,13 @@ pub trait InProcess: Loaded {
 
 /// The format can be served from another process, with its editor elsewhere.
 ///
-/// The promise (design 021 §3.2): the audio instance runs in another process;
+/// The promise: the audio instance runs in another process;
 /// an editor-only second instance of the same module runs here and shows what
 /// the audio instance holds; state and parameters cross only by id and by
 /// blob, never as a pointer, handle or callback of the plugin's.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be hosted over IPC",
-    note = "its editor cannot run apart from its audio instance (design 021 §4)"
+    note = "its editor cannot run apart from its audio instance"
 )]
 pub trait OutOfProcess: Loaded {
     /// The editor-only instance in the host process.
@@ -180,7 +182,10 @@ pub trait EditorWindow {
 
     /// Embeds the editor into `parent`, whose backing-store scale is `scale`
     /// (forwarded where the format takes it; see [`ContentScale`]), and returns
-    /// its size.
+    /// its size, in the unit the format counts in ([`EditorUnit`](crate::EditorUnit)):
+    /// a [`Size::Physical`] where the window system works in device pixels, a
+    /// [`Size::Logical`] where it works in points. The editor keeps `scale` to
+    /// convert a size it is later given in the other unit.
     ///
     /// # Errors
     ///
@@ -190,7 +195,7 @@ pub trait EditorWindow {
         main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> PluginResult<EditorSize>;
+    ) -> PluginResult<Size>;
 
     /// Opens the editor as a plugin-owned floating window. No parent in, no
     /// size out.
@@ -284,20 +289,19 @@ pub trait EditorWindow {
     /// The view's static resize capabilities.
     fn editor_capabilities(&mut self, main: &MainThread) -> EditorCapabilities;
 
-    /// Asks the view to take `requested`; it answers with the size it took.
+    /// Asks the view to take `requested`, in either unit (converted at the
+    /// editor's scale where the format counts in the other); it answers with the
+    /// size it took, in the format's own unit as [`open_editor`](Self::open_editor)
+    /// does.
     ///
     /// # Errors
     ///
     /// The format or the plugin cannot resize.
-    fn set_editor_size(
-        &mut self,
-        main: &MainThread,
-        requested: EditorSize,
-    ) -> PluginResult<EditorSize>;
+    fn set_editor_size(&mut self, main: &MainThread, requested: Size) -> PluginResult<Size>;
 
     /// A size the plugin asked its window to take, if it asked since the last
-    /// poll.
-    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<EditorSize>;
+    /// poll, in the format's own unit.
+    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<Size>;
 }
 
 /// The editor-only instance an [`OutOfProcess`] format loads in the host
@@ -327,8 +331,7 @@ pub trait Editor: EditorWindow + Send {
     fn poll_edits(&mut self, main: &MainThread) -> Vec<ParamEdit>;
 
     /// The editor instance's whole state, for the host to give the audio
-    /// instance what the user changed in the editor that is not a parameter
-    /// (design 021 Q8).
+    /// instance what the user changed in the editor that is not a parameter.
     ///
     /// # Errors
     ///
@@ -342,6 +345,19 @@ pub trait Editor: EditorWindow + Send {
     fn take_dirty(&mut self, main: &MainThread) -> bool {
         let _ = main;
         false
+    }
+
+    /// What the editor instance asked of the host since the last call, oldest
+    /// first, appended to `out`: the same meaning as
+    /// [`Control::take_requests`](crate::Control::take_requests), for the
+    /// requests the host must answer. The editor instance serves its own
+    /// callbacks, timers and descriptors in
+    /// [`editor_idle`](EditorWindow::editor_idle) and is never active, so what
+    /// it yields is a [`Request::Transport`] (CLAP `transport-control`: a
+    /// plugin's own buttons call the host of the instance that shows them). A
+    /// format with nothing to ask keeps the default and appends nothing.
+    fn take_requests(&mut self, main: &MainThread, out: &mut Vec<Request>) {
+        let _ = (main, out);
     }
 
     /// Shows the host's automation mode in the editor. No-op for a format

@@ -178,18 +178,12 @@
 //!
 //! ## Examples
 //!
-//! The loopback examples drive real hardware, so they need a device present:
-//!
-//! ```bash
-//! cargo run --example list_devices          # list, then watch hot-plug for ten seconds
-//! cargo run --example iac_loopback_test     # macOS, needs the IAC Driver enabled
-//! cargo run --example alsa_loopback_test    # Linux, uses `Midi Through`
-//! ```
-//!
-//! Two things the Linux example documents that are easy to get wrong: **VirMIDI does
+//! `cargo run --example list_devices` lists the devices, then watches hot-plug
+//! for ten seconds. The ALSA loopback suite (`sequencer-tests`) sends UMP out
+//! through the kernel's `Midi Through` client and reads it back. **VirMIDI does
 //! not echo** (writing to it feeds the raw-MIDI device, not that port's own
-//! subscribers, so a send/receive pair on one virmidi port receives nothing), and
-//! `Midi Through` is the kernel's actual loopback.
+//! subscribers, so a send/receive pair on one virmidi port receives nothing),
+//! and `Midi Through` is the kernel's actual loopback.
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 
@@ -202,7 +196,7 @@ mod backend;
 // backends (ALSA, CoreMIDI) convert an OS block, so it is dead where the stub
 // is the backend.
 #[cfg_attr(
-    not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
+    midi_backend = "none",
     allow(dead_code, reason = "only a native backend converts OS blocks")
 )]
 mod block;
@@ -213,13 +207,19 @@ mod endpoints;
 mod error;
 // Only a native backend's callback runs through it; the stub has none.
 #[cfg_attr(
-    not(any(target_os = "macos", all(target_os = "linux", alsa_ump))),
+    midi_backend = "none",
     allow(dead_code, reason = "only a native backend has a driver callback")
 )]
 mod guard;
 mod port;
+mod process;
 mod profiles;
 mod session;
+// Only the native backends convert an OS timestamp.
+#[cfg_attr(
+    midi_backend = "none",
+    allow(dead_code, reason = "only the OS backends convert a stamp")
+)]
 mod stamp;
 mod stream;
 #[cfg(test)]
@@ -232,7 +232,7 @@ mod wire;
 pub mod test_support;
 
 pub use capability::{EndpointInfo, UmpCapability};
-pub use ci::{CiChange, CiPeerInfo};
+pub use ci::{CiChange, CiPeerInfo, PeerId};
 pub use devices::{
     ChangeSink, DeviceEvents, Devices, OpenInput, OpenOutput, Pending, RecvTimeoutError, SeedError,
     WatchFailure,
@@ -240,6 +240,7 @@ pub use devices::{
 pub use endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 pub use error::{Error, Result};
 pub use port::{HardwareMidiInputs, InputProducerHandle, PortInfo, Pushed, StreamDrain};
+pub use process::{ProcessChange, ReportAsk, ReportError, ReportPeer};
 pub use profiles::{
     ChannelCount, ChannelProfile, ListedProfile, PeerProfiles, ProfileError, ProfileSwitch,
     ProfilesChange, Whole, WholeProfile,
@@ -252,8 +253,13 @@ pub use tutti_midi_device::{
     SavedDevice,
 };
 
-#[cfg(target_os = "macos")]
-pub use backend::coremidi::{UmpVirtualDestination, UmpVirtualSource};
+// What the platform's backend exports beyond the common surface (CoreMIDI's
+// virtual endpoints); the other platforms export nothing here.
+#[allow(
+    unused_imports,
+    reason = "only the CoreMIDI platform exports public types of its own"
+)]
+pub use backend::*;
 
 // --- Runtime delivery (the graph's MIDI border) ---
 //

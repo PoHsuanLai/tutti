@@ -7,8 +7,7 @@ use tutti_graph::UmpAt;
 pub use tutti_plugin_types::{Samples, WireMidi};
 
 pub use tutti_plugin_types::{
-    ChannelLayout, EditorSize, ParameterInfo, PluginTail, TimeSignature, TransportInfo,
-    WindowHandle,
+    ChannelLayout, ParameterInfo, PluginTail, TimeSignature, TransportInfo, WindowHandle,
 };
 
 /// What the plugin declared at load time; see [`Vst2Loaded::metadata`](crate::Vst2Loaded::metadata).

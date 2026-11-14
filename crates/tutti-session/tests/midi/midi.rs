@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tutti_graph::UmpAt;
 use tutti_session::Stamp;
-use tutti_types::MaxBlock;
 
 use std::time::{Duration, Instant};
 use tutti_fixtures::midi;
@@ -17,7 +16,7 @@ use tutti_graph::Refused;
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_hardware::{EndpointId, PortDirection};
 use tutti_midi_runtime::{CHANNELLESS_PORT, LIVE_INLET_CAPACITY, MIDI_INPUT_PORTS, TimedMidiEvent};
-use tutti_types::{Beat, BeatDuration, ChannelLayout, Frame, SampleRate, Samples};
+use tutti_types::{Beat, BeatDuration, Frame, SampleRate};
 use tutti_ump::Ump;
 use tutti_ump::{KeyEvent, MidiChannel, MidiGroup, NoteNumber, NoteVelocity};
 
@@ -379,11 +378,8 @@ fn route_rules_wire_the_hardware_input() {
 fn a_route_rule_names_a_group() {
     let mut s = Session::builder()
         .midi_groups(MidiGroup::of(1))
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     let input = s.midi_nodes().expect("the builder's MIDI nodes").input;
     let (a, _) = tap(&mut s);
@@ -613,11 +609,8 @@ fn hot_plug_session() -> (Session, tutti_midi_hardware::test_support::FakeCounte
         tutti_midi_hardware::test_support::FakeBackend::build_with(vec![], vec![], usize::MAX);
     let s = Session::builder()
         .midi_hardware_over(backend)
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     (s, fake)
 }
@@ -636,6 +629,15 @@ fn device_events(events: &[SessionEvent]) -> Vec<(&'static str, String)> {
             }
             SessionEvent::Midi(MidiEvent::OutputLost { info }) => {
                 Some(("output lost", info.name.clone()))
+            }
+            SessionEvent::Midi(MidiEvent::InputRestored { info }) => {
+                Some(("input restored", info.name.clone()))
+            }
+            SessionEvent::Midi(MidiEvent::OutputRestored { info }) => {
+                Some(("output restored", info.name.clone()))
+            }
+            SessionEvent::Midi(MidiEvent::RestoreFailed { info, .. }) => {
+                Some(("restore failed", info.name.clone()))
             }
             _ => None,
         })
@@ -732,11 +734,8 @@ fn keyboards(
     let mut s = Session::builder()
         .midi_hardware_over(backend)
         .midi_devices(devices)
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     let (synth, seen) = tap(&mut s);
     s.midi()
@@ -931,6 +930,203 @@ fn a_held_output_that_vanishes_is_closed_and_reported() {
         ]
     );
     assert!(s.midi().output().is_none());
+}
+
+/// Plugs a device the OS tells for certain across a replug
+/// (a CoreMIDI identity), which is what a returning device must be to be
+/// reconnected unasked.
+#[cfg(feature = "midi-hardware")]
+fn plug_persistent(
+    fake: &tutti_midi_hardware::test_support::FakeCounters,
+    raw: u32,
+    name: &str,
+    d: PortDirection,
+) {
+    fake.plug(
+        tutti_midi_hardware::test_support::persistent_endpoint(raw, name),
+        d,
+    );
+}
+
+/// The device events of an update, with the notices of the list itself
+/// (added, removed, changed) left out.
+#[cfg(feature = "midi-hardware")]
+fn restores(events: &[SessionEvent]) -> Vec<(&'static str, String)> {
+    device_events(events)
+        .into_iter()
+        .filter(|(kind, _)| kind.contains("restore"))
+        .collect()
+}
+
+/// **A connected input whose device is removed and returns is open again**,
+/// and the update that saw it return says so.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_removed_input_that_returns_is_reconnected() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    let _ = s.update();
+    s.midi().connect_input("keys").expect("connects");
+    fake.unplug(EndpointId::from_raw(1));
+    let _ = s.update();
+    assert!(!hw(&s).is_any_input_connected());
+
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    assert_eq!(
+        restores(&s.update()),
+        [("input restored", "Keys".to_string())]
+    );
+    assert_eq!(hw(&s).connected_input_names(), ["Keys"]);
+    assert_eq!(hw(&s).ports().list_input_ports().len(), 1);
+}
+
+/// **An input the app disconnected is not reconnected when its device
+/// returns**: only a removal keeps a device wanted.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn an_input_the_app_disconnected_is_not_reconnected() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    let _ = s.update();
+    s.midi().connect_input("keys").expect("connects");
+    s.midi().disconnect_input("keys").expect("disconnects");
+    fake.unplug(EndpointId::from_raw(1));
+    let _ = s.update();
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    assert!(restores(&s.update()).is_empty());
+    assert!(!hw(&s).is_any_input_connected());
+}
+
+/// **A lost input the app then disconnects is forgotten**, and a second
+/// disconnect names that nothing is held.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn disconnecting_a_lost_input_forgets_it() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    let _ = s.update();
+    s.midi().connect_input("keys").expect("connects");
+    fake.unplug(EndpointId::from_raw(1));
+    let _ = s.update();
+    s.midi().disconnect_input("keys").expect("forgets");
+    assert!(s.midi().disconnect_input("keys").is_err());
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    assert!(restores(&s.update()).is_empty());
+    assert!(!hw(&s).is_any_input_connected());
+}
+
+/// **A returning device that is only the same name is not bound unasked**:
+/// an ALSA identity cannot tell two units of a model apart.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_returning_input_known_only_by_name_is_not_reconnected() {
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 1, "Keys", PortDirection::Input);
+    let _ = s.update();
+    s.midi().connect_input("keys").expect("connects");
+    fake.unplug(EndpointId::from_raw(1));
+    let _ = s.update();
+    plug(&fake, 1, "Keys", PortDirection::Input);
+    assert!(restores(&s.update()).is_empty());
+    assert!(!hw(&s).is_any_input_connected());
+}
+
+/// **A device that is not the lost one leaves it wanted**: another keyboard
+/// arriving binds nothing, and the lost one is still reconnected on return.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn another_devices_arrival_does_not_restore_a_lost_input() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    let _ = s.update();
+    s.midi().connect_input("keys").expect("connects");
+    fake.unplug(EndpointId::from_raw(1));
+    let _ = s.update();
+    plug_persistent(&fake, 2, "Pads", PortDirection::Input);
+    assert!(restores(&s.update()).is_empty());
+    assert!(!hw(&s).is_any_input_connected());
+    plug_persistent(&fake, 1, "Keys", PortDirection::Input);
+    assert_eq!(
+        restores(&s.update()),
+        [("input restored", "Keys".to_string())]
+    );
+}
+
+/// **A connected output whose device is removed and returns is open again.**
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_removed_output_that_returns_is_reconnected() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    let _ = s.update();
+    s.midi().connect_output("synth").expect("connects");
+    fake.unplug(EndpointId::from_raw(10));
+    let _ = s.update();
+    assert!(s.midi().output().is_none());
+
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    assert_eq!(
+        restores(&s.update()),
+        [("output restored", "Synth".to_string())]
+    );
+    assert!(s.midi().output().is_some());
+}
+
+/// **An output the app disconnected is not reconnected on return**, and
+/// neither is one known only by name.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn an_output_the_app_disconnected_or_that_is_only_a_name_is_not_reconnected() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    let _ = s.update();
+    s.midi().connect_output("synth").expect("connects");
+    s.midi().disconnect_output().expect("disconnects");
+    fake.unplug(EndpointId::from_raw(10));
+    let _ = s.update();
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    assert!(restores(&s.update()).is_empty());
+    assert!(s.midi().output().is_none());
+
+    plug(&fake, 11, "Other", PortDirection::Output);
+    let _ = s.update();
+    s.midi().connect_output("other").expect("connects");
+    fake.unplug(EndpointId::from_raw(11));
+    let _ = s.update();
+    plug(&fake, 11, "Other", PortDirection::Output);
+    assert!(restores(&s.update()).is_empty());
+    assert!(s.midi().output().is_none());
+}
+
+/// **A reconnection that fails is reported, and the device stays wanted**:
+/// it is tried again when it next returns.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_reconnection_that_fails_is_reported_and_retried_on_the_next_return() {
+    let (mut s, fake) = hot_plug_session();
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    let _ = s.update();
+    s.midi().connect_output("synth").expect("connects");
+    fake.unplug(EndpointId::from_raw(10));
+    let _ = s.update();
+
+    fake.refuse_output_opens(true);
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    assert_eq!(
+        restores(&s.update()),
+        [("restore failed", "Synth".to_string())]
+    );
+    assert!(s.midi().output().is_none());
+
+    fake.refuse_output_opens(false);
+    fake.unplug(EndpointId::from_raw(10));
+    let _ = s.update();
+    plug_persistent(&fake, 10, "Synth", PortDirection::Output);
+    assert_eq!(
+        restores(&s.update()),
+        [("output restored", "Synth".to_string())]
+    );
+    assert!(s.midi().output().is_some());
 }
 
 /// **A watch that dies is reported once**, with its reason: the list is frozen
@@ -1208,7 +1404,7 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
     })
     .with_function_block(block);
     let raw = EndpointId::from_raw(7);
-    let peer = Muid::new(0x0012_3456).unwrap();
+    let peer = Muid::of(0x0012_3456);
     let data = DiscoveryData::new(
         tutti_ump::DeviceIdentity {
             manufacturer: tutti_ump::ManufacturerId::of(0x41),
@@ -1227,8 +1423,13 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
     for ms in 0..40 {
         let now = start + Duration::from_millis(ms);
         for event in update_at(&mut s, now) {
-            if let SessionEvent::Midi(MidiEvent::CiPeer { device, change }) = event {
-                found.push((device, change));
+            if let SessionEvent::Midi(MidiEvent::CiPeer {
+                device,
+                peer,
+                change,
+            }) = event
+            {
+                found.push((device, peer, change));
             }
         }
         let mut answers: Vec<Ump> = Vec::new();
@@ -1259,7 +1460,7 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
         }
     }
     assert!(replied, "the session sent a Discovery");
-    let [(device_id, CiChange::Found(info))] = found.as_slice() else {
+    let [(device_id, id, CiChange::Found(declared))] = found.as_slice() else {
         panic!("one peer found, got {found:?}");
     };
     assert_eq!(
@@ -1270,12 +1471,15 @@ fn a_midi_ci_peer_that_answers_discovery_is_a_session_event() {
             .map(|d| d.name.as_str()),
         Some("Wire")
     );
-    assert_eq!(info.muid(), peer);
-    assert_eq!(info.peer().discovery(), &data);
-    assert_eq!(
-        &s.midi().ci_peers(device_id)[..],
-        std::slice::from_ref(info)
-    );
+    assert_eq!(id.muid, peer);
+    assert_eq!(id.group, MidiGroup::FIRST);
+    assert_eq!(declared.discovery(), &data);
+    let listed = s.midi().ci_peers(device_id);
+    let [info] = &listed[..] else {
+        panic!("one peer listed, got {listed:?}");
+    };
+    assert_eq!(info.id(), *id);
+    assert_eq!(info.peer(), declared);
 }
 
 /// **A MIDI-CI peer's Profiles are the session's, and it switches them as the
@@ -1332,7 +1536,7 @@ fn a_midi_ci_peers_profiles_are_listed_and_switched_through_the_session() {
     })
     .with_function_block(block);
     let raw = EndpointId::from_raw(7);
-    let peer = Muid::new(0x0012_3456).unwrap();
+    let peer = Muid::of(0x0012_3456);
     let profile = ProfileId::Standard(StandardProfile::new(
         U7::of(0x21),
         U7::of(2),
@@ -1361,9 +1565,7 @@ fn a_midi_ci_peers_profiles_are_listed_and_switched_through_the_session() {
             }
         }
         if !switched
-            && seen
-                .iter()
-                .any(|c| matches!(c, ProfilesChange::Known { .. }))
+            && seen.iter().any(|c| matches!(c, ProfilesChange::Known))
             && let Some(id) = &device_id
         {
             let peers = s.midi().profiles(id);
@@ -1466,26 +1668,475 @@ fn a_midi_ci_peers_profiles_are_listed_and_switched_through_the_session() {
     assert_eq!(listed[0].channels(), Some(ProfileChannels::of(2)));
 }
 
-/// **The hardware out JR-stamps only as its device's configuration says**
-/// (M2-104 §7.1.6.2: JR Timestamps go to a device only once a Stream
-/// Configuration Notification has said it receives them). The
-/// session asks for JR off, so the output is unstamped when the device
-/// settles; when the device notifies that it receives JR the next `MidiOut`
-/// phase stamps, and the wire carries the JR messages; when it notifies the
-/// reverse the stamps stop. There is no switch of the session's own.
+/// A MIDI-CI peer that lists the MPE Profile (M2-120 section 3.2) disabled on
+/// Channel 1, enables it when asked with the Number of Channels (appendix A.3
+/// and A.4) and disables it when asked, over the fake OS.
+#[cfg(feature = "midi-hardware")]
+struct MpePeer {
+    device: tutti_midi_hardware::Endpoint,
+    assembler: tutti_ump::SysexAssembler<Box<[u8]>>,
+    muid: tutti_midi_device::Muid,
+}
+
+#[cfg(feature = "midi-hardware")]
+impl MpePeer {
+    const RAW: u64 = 7;
+
+    fn new() -> Self {
+        use tutti_midi_hardware::{Capabilities, Endpoint, FunctionBlock};
+        use tutti_ump::{Direction, FirstGroup, FunctionBlockId, GroupSpan, SysexAssembler};
+        let block = FunctionBlock::builder(
+            FunctionBlockId::new(0).unwrap(),
+            Direction::Bidirectional,
+            FirstGroup::new(0).unwrap(),
+            GroupSpan::new(1).unwrap(),
+        )
+        .midi_ci(2, 0)
+        .name(tutti_midi_device::BlockName::new("Main").unwrap())
+        .build()
+        .unwrap();
+        let room = SysexAssembler::room_for(256, 1, 16);
+        Self {
+            device: Endpoint::new(Capabilities {
+                midi1: true,
+                midi2: true,
+                ..Capabilities::default()
+            })
+            .with_function_block(block),
+            assembler: SysexAssembler::new(vec![0; room].into_boxed_slice(), 256, 16),
+            muid: tutti_midi_device::Muid::of(0x0012_3456),
+        }
+    }
+
+    /// What the session sent the peer, answered as the peer would.
+    fn answer(&mut self, fake: &tutti_midi_hardware::test_support::FakeCounters, now: Instant) {
+        use tutti_midi_device::{
+            CI_VERSION, CiCategories, CiDeviceId, CiHeader, CiMessage, Decoded, DiscoveryData,
+            MaxSysexSize, ProfileId, ProfileLists,
+        };
+        use tutti_ump::{DeviceIdentity, ManufacturerId, SysexStep, U7};
+        let at = |device_id| CiHeader {
+            device_id,
+            ci_version: CI_VERSION,
+            source: self.muid,
+        };
+        let mut answers: Vec<Ump> = Vec::new();
+        for ump in fake.take_sent(EndpointId::from_raw(Self::RAW)) {
+            if let Ok(message @ tutti_ump::Message::Stream(_)) = ump.decode() {
+                self.device.reply(message, &mut answers);
+                continue;
+            }
+            self.assembler.begin_block();
+            let SysexStep::Complete(done) = self.assembler.push(ump) else {
+                continue;
+            };
+            match CiMessage::decode(self.assembler.message(done).payload()) {
+                Decoded::Message(CiMessage::Discovery { header, .. }) => {
+                    let data = DiscoveryData::new(
+                        DeviceIdentity {
+                            manufacturer: ManufacturerId::of(0x41),
+                            family: [U7::of(1); 2],
+                            model: [U7::of(2); 2],
+                            revision: [U7::of(3); 4],
+                        },
+                        CiCategories::PROFILE_CONFIGURATION,
+                        MaxSysexSize::of(256),
+                    );
+                    answers.extend(
+                        CiMessage::DiscoveryReply {
+                            header: CiHeader::new(self.muid),
+                            to: header.source,
+                            data,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                }
+                Decoded::Message(CiMessage::ProfileInquiry { header, .. }) => {
+                    for (address, lists) in [
+                        (
+                            CiDeviceId::Channel(MidiChannel::of(0)),
+                            ProfileLists::new(vec![], vec![ProfileId::MPE]).unwrap(),
+                        ),
+                        (CiDeviceId::FunctionBlock, ProfileLists::none()),
+                    ] {
+                        answers.extend(
+                            CiMessage::ProfileReply {
+                                header: at(address),
+                                to: header.source,
+                                profiles: lists,
+                            }
+                            .packets(MidiGroup::FIRST),
+                        );
+                    }
+                }
+                Decoded::Message(CiMessage::SetProfileOn {
+                    header, channels, ..
+                }) => answers.extend(
+                    CiMessage::ProfileEnabled {
+                        header: at(header.device_id),
+                        profile: ProfileId::MPE,
+                        channels,
+                    }
+                    .packets(MidiGroup::FIRST),
+                ),
+                Decoded::Message(CiMessage::SetProfileOff { header, .. }) => answers.extend(
+                    CiMessage::ProfileDisabled {
+                        header: at(header.device_id),
+                        profile: ProfileId::MPE,
+                        channels: tutti_midi_device::ProfileChannels::of(4),
+                    }
+                    .packets(MidiGroup::FIRST),
+                ),
+                _ => {}
+            }
+        }
+        for ump in answers {
+            assert!(fake.send_input(EndpointId::from_raw(Self::RAW), ump, now));
+        }
+    }
+}
+
+/// **A device that enables the MPE Profile switches its input's ingest to the
+/// Profile's rules, and disabling it switches back** (M2-120 sections 3.3,
+/// 3.5 and Table 15). The session asks a peer to enable the Profile on
+/// Channel 1 with four Channels; the Enabled Report is the zone, so the zone
+/// channels' Reset All Controllers and Pitch Bend Sensitivities of 48 reach
+/// the synth, and Omni Off on a Member Channel, which the Profile prohibits
+/// and which passes with no zone, is dropped. Disabling is the same stop,
+/// and Omni Off passes again. Closing the input clears the zones with its slot.
 #[cfg(feature = "midi-hardware")]
 #[test]
-fn the_hardware_out_stamps_as_the_devices_configuration_says() {
-    use tutti_midi_hardware::{Capabilities, Endpoint};
-    use tutti_ump::{Message, Protocol, Stream, StreamConfig};
+fn a_devices_enabling_the_mpe_profile_switches_its_inputs_rules() {
+    use tutti_fixtures::midi::BendRanges;
+    use tutti_midi_device::{ProfileChange, ProfileState};
+    use tutti_midi_hardware::{ChannelCount, ListedProfile, ProfilesChange};
+    use tutti_midi_protocol::{MpeZoneConfig, MpeZones, PitchBendSensitivity};
+    use tutti_ump::{CCNumber, Message, Voice2};
+
+    let (backend, fake) =
+        tutti_midi_hardware::test_support::FakeBackend::build_with(vec![], vec![], usize::MAX);
+    let mut s = Session::builder()
+        .midi_hardware_over(backend)
+        .sample_rate(SampleRate::of(RATE))
+        .build()
+        .expect("builds");
+    let (synth, seen) = tap(&mut s);
+    s.midi()
+        .route(MidiRouteRule::any_channel().to(synth))
+        .expect("routes");
+    plug(&fake, MpePeer::RAW, "Wire", PortDirection::Duplex);
+    let _ = s.update();
+    s.midi().connect_input("wire").expect("connects");
+    s.midi()
+        .enable_ci(tutti_ump::DeviceIdentity {
+            manufacturer: tutti_ump::ManufacturerId::NON_COMMERCIAL,
+            family: [tutti_ump::U7::of(1); 2],
+            model: [tutti_ump::U7::of(2); 2],
+            revision: [tutti_ump::U7::of(3); 4],
+        })
+        .expect("hardware");
+    let mut peer = MpePeer::new();
+    play(&s);
+    let start = Instant::now();
+    let clock = std::cell::Cell::new(0u64);
+    // Runs the session and the peer for `ms` milliseconds; the profile
+    // changes the session reported.
+    let mut run = |s: &mut Session, ms: u64| {
+        let mut changes = Vec::new();
+        for _ in 0..ms {
+            clock.set(clock.get() + 1);
+            let now = start + Duration::from_millis(clock.get());
+            for event in update_at(s, now) {
+                if let SessionEvent::Midi(MidiEvent::CiProfiles { device, change, .. }) = event {
+                    changes.push((device, change));
+                }
+            }
+            peer.answer(&fake, now);
+            blocks(s, 1);
+        }
+        changes
+    };
+    let changes = run(&mut s, 60);
+    let (device, _) = changes
+        .iter()
+        .find(|(_, c)| matches!(c, ProfilesChange::Known))
+        .expect("the peer's Profiles are known");
+    let device = device.clone();
+    let all: Vec<_> = s.midi().profiles(&device)[0].listed().collect();
+    let [ListedProfile::Channel(listed)] = all.as_slice() else {
+        panic!("one Profile on a Channel: {all:?}");
+    };
+    assert_eq!(all[0].state(), ProfileState::Disabled);
+
+    // The device speaks MIDI 1.0, which the ingest widens.
+    let omni_off = |channel: u8| {
+        midi::m1_cc(
+            MidiChannel::of(channel),
+            CCNumber::of(124),
+            tutti_ump::U7::of(0),
+        )
+    };
+    let omni_offs = |seen: &Seen| {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, e)| {
+                matches!(
+                    e.decode(),
+                    Ok(Message::Midi2(a, Voice2::ControlChange { controller, .. }))
+                        if controller == CCNumber::of(124) && a.channel.get() == 2
+                )
+            })
+            .count()
+    };
+    let raw = EndpointId::from_raw(MpePeer::RAW);
+
+    // Not enabled: Omni Off on channel 3 passes.
+    assert!(fake.send_input(raw, omni_off(2), Instant::now()));
+    let _ = run(&mut s, 5);
+    assert_eq!(omni_offs(&seen), 1, "no zone, no rule");
+
+    // Enabled with four Channels from Channel 1.
+    s.midi()
+        .set_profile(listed.enable(ChannelCount::new(4).unwrap()))
+        .expect("the peer lists it");
+    let changes = run(&mut s, 60);
+    assert!(
+        changes.iter().any(|(_, c)| matches!(
+            c,
+            ProfilesChange::Changed {
+                change: ProfileChange::Enabled,
+                ..
+            }
+        )),
+        "{changes:?}"
+    );
+    let peers = s.midi().profiles(&device);
+    assert_eq!(
+        peers[0].mpe_zones(),
+        Some(MpeZones::single(
+            MpeZoneConfig::profile(
+                MidiChannel::of(0),
+                4,
+                PitchBendSensitivity::MPE_PROFILE_DEFAULT
+            )
+            .unwrap()
+        ))
+    );
+    let mut ranges = BendRanges::default();
+    for (_, ump) in seen.lock().unwrap().iter() {
+        ranges.observe(ump);
+    }
+    for channel in 1..=3 {
+        assert_eq!(
+            ranges.semitones(MidiChannel::of(channel)),
+            48.0,
+            "member {channel}"
+        );
+    }
+    assert!(fake.send_input(raw, omni_off(2), Instant::now()));
+    let _ = run(&mut s, 5);
+    assert_eq!(omni_offs(&seen), 1, "the Profile prohibits it on a Member");
+
+    // Disabled: the rules are MPE-less again.
+    let listed: Vec<_> = s.midi().profiles(&device)[0].listed().collect();
+    let [ListedProfile::Channel(listed)] = listed.as_slice() else {
+        panic!("one Profile on a Channel: {listed:?}");
+    };
+    s.midi().set_profile(listed.disable()).expect("lists it");
+    let _ = run(&mut s, 60);
+    assert_eq!(s.midi().profiles(&device)[0].mpe_zones(), None);
+    assert!(fake.send_input(raw, omni_off(2), Instant::now()));
+    let _ = run(&mut s, 5);
+    assert_eq!(omni_offs(&seen), 2, "no zone, no rule");
+}
+
+/// **A MIDI-CI peer's MIDI Message Report is asked for through the session**
+/// (M2-101 section 9): a peer whose Discovery Reply declares Process Inquiry is
+/// sent an Inquiry: Process Inquiry Capabilities by the session's tick; its reply
+/// with MIDI Message Report makes it a `Midi::report_peers` handle
+/// (`MidiEvent::CiProcess`); `Midi::report` sends an Inquiry: MIDI Message Report
+/// (Sub-ID#2 `0x42`) with the bitmaps asked, and the peer's Reply and End are
+/// reported as `ReportBegan` and `ReportEnded`.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_midi_ci_peers_message_report_is_asked_for_through_the_session() {
+    use tutti_midi_device::{
+        BlockName, CI_VERSION, ChannelControllers, CiCategories, CiDeviceId, CiHeader, CiMessage,
+        DataControl, Decoded, DiscoveryData, MaxSysexSize, Muid, NoteData, ProcessFeatures,
+        ReportRequest, ReportScope, SystemMessages,
+    };
+    use tutti_midi_hardware::{Capabilities, Endpoint, FunctionBlock, ProcessChange};
+    use tutti_ump::{
+        DeviceIdentity, Direction, FirstGroup, FunctionBlockId, GroupSpan, ManufacturerId,
+        SysexAssembler, SysexStep, U7,
+    };
 
     let (mut s, fake) = hot_plug_session();
-    plug(&fake, 7, "Dev", PortDirection::Duplex);
+    plug(&fake, 7, "Wire", PortDirection::Duplex);
     let _ = s.update();
+    s.midi().connect_input("wire").expect("connects");
+    let identity = |manufacturer| DeviceIdentity {
+        manufacturer,
+        family: [U7::of(1); 2],
+        model: [U7::of(2); 2],
+        revision: [U7::of(3); 4],
+    };
+    s.midi()
+        .enable_ci(identity(ManufacturerId::NON_COMMERCIAL))
+        .expect("hardware");
+    let block = FunctionBlock::builder(
+        FunctionBlockId::new(0).unwrap(),
+        Direction::Bidirectional,
+        FirstGroup::new(0).unwrap(),
+        GroupSpan::new(1).unwrap(),
+    )
+    .midi_ci(2, 0)
+    .name(BlockName::new("Main").unwrap())
+    .build()
+    .unwrap();
+    let mut device = Endpoint::new(Capabilities {
+        midi1: true,
+        midi2: true,
+        ..Capabilities::default()
+    })
+    .with_function_block(block);
     let raw = EndpointId::from_raw(7);
-    s.midi().connect_input("dev").expect("connects");
-    s.midi().connect_output("dev").expect("connects");
+    let peer = Muid::of(0x0012_3456);
+    let at = |device_id| CiHeader {
+        device_id,
+        ci_version: CI_VERSION,
+        source: peer,
+    };
+    let asked = ReportScope::FunctionBlock {
+        system: SystemMessages::SONG_POSITION,
+        controllers: ChannelControllers::CONTROL_CHANGE,
+        notes: NoteData::empty(),
+    };
+    let room = SysexAssembler::room_for(256, 1, 16);
+    let mut assembler = SysexAssembler::new(vec![0; room].into_boxed_slice(), 256, 16);
+    let start = Instant::now();
+    let mut seen = Vec::new();
+    let mut inquiries = Vec::new();
+    let mut device_id = None;
+    let mut asked_for = false;
+    for ms in 0..80 {
+        let now = start + Duration::from_millis(ms);
+        for event in update_at(&mut s, now) {
+            match event {
+                SessionEvent::Midi(MidiEvent::CiPeer { device, .. }) => device_id = Some(device),
+                SessionEvent::Midi(MidiEvent::CiProcess { change, .. }) => seen.push(change),
+                _ => {}
+            }
+        }
+        if !asked_for
+            && seen
+                .iter()
+                .any(|c| matches!(c, ProcessChange::Capabilities(_)))
+            && let Some(id) = &device_id
+        {
+            let peers = s.midi().report_peers(id);
+            let [handle] = &peers[..] else {
+                panic!("one peer that can be asked: {peers:?}");
+            };
+            s.midi()
+                .report(handle.ask(ReportRequest::new(DataControl::Full, asked)))
+                .expect("the peer supports it");
+            asked_for = true;
+        }
+        let mut answers: Vec<Ump> = Vec::new();
+        for ump in fake.take_sent(raw) {
+            if let Ok(message @ tutti_ump::Message::Stream(_)) = ump.decode() {
+                device.reply(message, &mut answers);
+                continue;
+            }
+            assembler.begin_block();
+            let SysexStep::Complete(done) = assembler.push(ump) else {
+                continue;
+            };
+            match CiMessage::decode(assembler.message(done).payload()) {
+                Decoded::Message(CiMessage::Discovery { header, .. }) => {
+                    let data = DiscoveryData::new(
+                        identity(ManufacturerId::of(0x41)),
+                        CiCategories::PROCESS_INQUIRY,
+                        MaxSysexSize::of(256),
+                    );
+                    answers.extend(
+                        CiMessage::DiscoveryReply {
+                            header: CiHeader::new(peer),
+                            to: header.source,
+                            data,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                }
+                Decoded::Message(CiMessage::ProcessCapabilitiesInquiry { header, .. }) => {
+                    answers.extend(
+                        CiMessage::ProcessCapabilitiesReply {
+                            header: at(CiDeviceId::FunctionBlock),
+                            to: header.source,
+                            features: ProcessFeatures::MIDI_MESSAGE_REPORT,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                }
+                Decoded::Message(CiMessage::MessageReportInquiry {
+                    header,
+                    control,
+                    scope,
+                    ..
+                }) => {
+                    inquiries.push((header.device_id, control, scope));
+                    answers.extend(
+                        CiMessage::MessageReportReply {
+                            header: at(header.device_id),
+                            to: header.source,
+                            scope,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                    answers.extend(
+                        CiMessage::MessageReportEnd {
+                            header: at(header.device_id),
+                            to: header.source,
+                        }
+                        .packets(MidiGroup::FIRST),
+                    );
+                }
+                _ => {}
+            }
+        }
+        for ump in answers {
+            assert!(fake.send_input(raw, ump, now));
+        }
+    }
+    assert_eq!(
+        inquiries,
+        [(CiDeviceId::FunctionBlock, DataControl::Full, asked)],
+        "one Inquiry: MIDI Message Report, on the Function Block, as asked"
+    );
+    let ended = [
+        ProcessChange::ReportBegan(asked),
+        ProcessChange::ReportEnded,
+    ];
+    let report: Vec<_> = seen
+        .iter()
+        .filter(|c| !matches!(c, ProcessChange::Capabilities(_)))
+        .collect();
+    assert_eq!(report, ended.iter().collect::<Vec<_>>());
+}
 
+/// Runs the Stream negotiation of the open duplex device `raw` to its end,
+/// answering as an Endpoint that receives no JR does. Returns the time it
+/// started at.
+#[cfg(feature = "midi-hardware")]
+fn settle(
+    s: &mut Session,
+    fake: &tutti_midi_hardware::test_support::FakeCounters,
+    raw: EndpointId,
+) -> Instant {
+    use tutti_midi_hardware::{Capabilities, Endpoint};
+    use tutti_ump::Message;
     // The device answers the session's Stream messages as an Endpoint does.
     let mut device = Endpoint::new(Capabilities {
         midi1: true,
@@ -1497,7 +2148,7 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
     let mut settled = false;
     for ms in 0..8 {
         let now = start + Duration::from_millis(ms);
-        let events = update_at(&mut s, now);
+        let events = update_at(s, now);
         settled |= events
             .iter()
             .any(|e| matches!(e, SessionEvent::Midi(MidiEvent::StreamSettled { .. })));
@@ -1512,6 +2163,29 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
         }
     }
     assert!(settled, "the negotiation settled");
+    start
+}
+
+/// **The hardware out JR-stamps only as its device's configuration says**
+/// (M2-104 §7.1.6.2: JR Timestamps go to a device only once a Stream
+/// Configuration Notification has said it receives them). The
+/// session asks for JR off, so the output is unstamped when the device
+/// settles; when the device notifies that it receives JR the next `MidiOut`
+/// phase stamps, and the wire carries the JR messages; when it notifies the
+/// reverse the stamps stop. There is no switch of the session's own.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn the_hardware_out_stamps_as_the_devices_configuration_says() {
+    use tutti_ump::{Message, Protocol, Stream, StreamConfig};
+
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 7, "Dev", PortDirection::Duplex);
+    let _ = s.update();
+    let raw = EndpointId::from_raw(7);
+    s.midi().connect_input("dev").expect("connects");
+    s.midi().connect_output("dev").expect("connects");
+
+    let start = settle(&mut s, &fake, raw);
     let stamping = |s: &mut Session| s.midi().hardware_out().out.map(|o| o.is_stamping());
     assert_eq!(stamping(&mut s), Some(false), "asked for JR off");
 
@@ -1544,4 +2218,86 @@ fn the_hardware_out_stamps_as_the_devices_configuration_says() {
     assert_eq!(stamping(&mut s), Some(false));
     assert!(!sent.iter().any(|u| u.is_jr()), "{sent:?}");
     assert_eq!(sent.len(), 2);
+}
+
+/// Opens the duplex device 7 as input and output, settled, and has it
+/// receive JR Timestamps.
+#[cfg(feature = "midi-hardware")]
+fn jr_session() -> (
+    Session,
+    tutti_midi_hardware::test_support::FakeCounters,
+    EndpointId,
+) {
+    use tutti_ump::{Message, Protocol, Stream, StreamConfig};
+    let (mut s, fake) = hot_plug_session();
+    plug(&fake, 7, "Dev", PortDirection::Duplex);
+    let _ = s.update();
+    let raw = EndpointId::from_raw(7);
+    s.midi().connect_input("dev").expect("connects");
+    s.midi().connect_output("dev").expect("connects");
+    settle(&mut s, &fake, raw);
+    let ump = Ump::from(Message::Stream(Stream::StreamConfigurationNotification(
+        StreamConfig {
+            protocol: Protocol::Midi2,
+            rx_jr: true,
+            tx_jr: false,
+        },
+    )));
+    let now = Instant::now();
+    assert!(fake.send_input(raw, ump, now));
+    update_at(&mut s, now + Duration::from_millis(20));
+    fake.take_sent(raw);
+    (s, fake, raw)
+}
+
+/// **The JR stamp stream carries on across a disconnect and reconnect of the
+/// output**: a stream that restarted at origin 0 would stamp the next
+/// events earlier than ones already sent. Two events 480 frames apart move
+/// the origin to 481; after the output is closed and opened again it is still
+/// 481.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn the_stamp_stream_survives_a_disconnected_output() {
+    let (mut s, _fake, _raw) = jr_session();
+    s.midi()
+        .hardware_out()
+        .route(&[(Frame::new(0), key(0, 60)), (Frame::new(480), key(0, 61))]);
+    let origin = |s: &mut Session| s.midi().hardware_out().out.map(|o| o.origin());
+    assert_eq!(origin(&mut s), Some(Frame::new(481)));
+    s.midi().disconnect_output().expect("it was open");
+    s.midi().connect_output("dev").expect("connects");
+    assert_eq!(
+        origin(&mut s),
+        Some(Frame::new(481)),
+        "the stream carried on"
+    );
+}
+
+/// **`reconnect_saved` is all or nothing**: a duplex device whose output
+/// refuses to open leaves the input it would have opened closed; an input
+/// that was open before the call stays open.
+#[cfg(feature = "midi-hardware")]
+#[test]
+fn a_refused_output_leaves_no_input_opened_by_reconnect_saved() {
+    let (mut s, fake) = hot_plug_session();
+    let mut dev = tutti_midi_hardware::test_support::endpoint(7, "Dev");
+    dev.identity = tutti_midi_hardware::Identity::Product("unit".into());
+    fake.plug(dev, PortDirection::Duplex);
+    let _ = s.update();
+    let saved = s.midi().devices().remove(0);
+    fake.refuse_output_opens(true);
+
+    assert!(matches!(
+        s.midi().reconnect_saved(&saved),
+        Err(MidiError::Hardware(_))
+    ));
+    assert!(hw(&s).connected_input_names().is_empty(), "rolled back");
+
+    s.midi().connect_input("dev").expect("connects");
+    assert!(s.midi().reconnect_saved(&saved).is_err());
+    assert_eq!(
+        hw(&s).connected_input_names(),
+        ["Dev"],
+        "it was open before"
+    );
 }

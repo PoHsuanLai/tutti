@@ -10,6 +10,7 @@ use crate::generator_range;
 use crate::generator_type::GeneratorType;
 use crate::instrument_generator::InstrumentGenerator;
 use crate::loop_mode::LoopMode;
+use crate::sample_header::playing_rate;
 use crate::sample_header::{SampleHeader, Side};
 use crate::zone::Zone;
 
@@ -201,7 +202,7 @@ impl InstrumentRegion {
     /// The start address offset, in frames. Signed, a relative count (SF2 2.04
     /// section 9.3): no unit type covers a count that can be negative.
     #[must_use]
-    pub fn start_address_offset(&self) -> i32 {
+    pub(crate) fn start_address_offset(&self) -> i32 {
         self.address_offset(
             InstrumentGenerator::StartAddressCoarseOffset,
             InstrumentGenerator::StartAddressOffset,
@@ -210,7 +211,7 @@ impl InstrumentRegion {
 
     /// The end address offset, in frames.
     #[must_use]
-    pub fn end_address_offset(&self) -> i32 {
+    pub(crate) fn end_address_offset(&self) -> i32 {
         self.address_offset(
             InstrumentGenerator::EndAddressCoarseOffset,
             InstrumentGenerator::EndAddressOffset,
@@ -219,7 +220,7 @@ impl InstrumentRegion {
 
     /// The loop start address offset, in frames.
     #[must_use]
-    pub fn start_loop_address_offset(&self) -> i32 {
+    pub(crate) fn start_loop_address_offset(&self) -> i32 {
         self.address_offset(
             InstrumentGenerator::StartLoopAddressCoarseOffset,
             InstrumentGenerator::StartLoopAddressOffset,
@@ -228,17 +229,18 @@ impl InstrumentRegion {
 
     /// The loop end address offset, in frames.
     #[must_use]
-    pub fn end_loop_address_offset(&self) -> i32 {
+    pub(crate) fn end_loop_address_offset(&self) -> i32 {
         self.address_offset(
             InstrumentGenerator::EndLoopAddressCoarseOffset,
             InstrumentGenerator::EndLoopAddressOffset,
         )
     }
 
-    /// The rate the sample was recorded at, or `None` when the file states 0.
+    /// The rate the sample plays at: the rate its header states, or
+    /// [`NEAREST_PRACTICAL_RATE`](crate::NEAREST_PRACTICAL_RATE) when it states 0.
     #[must_use]
-    pub fn sample_rate(&self) -> Option<SampleRate> {
-        SampleRate::new(f64::from(self.sample_sample_rate))
+    pub fn sample_rate(&self) -> SampleRate {
+        playing_rate(self.sample_sample_rate)
     }
 
     /// The sample header's pitch correction.

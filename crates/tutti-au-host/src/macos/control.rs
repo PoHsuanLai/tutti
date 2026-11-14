@@ -11,12 +11,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use dpi::{LogicalSize, Size};
 use tutti_au_ffi::AuEditor;
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
     AuComponentType, AutomationMode, ContentScale, Control, EditorCapabilities, EditorError,
-    EditorPresence, EditorSize, EditorWindow, Features, LoadedPlugin, MainThread, Normalized,
-    ParamEdit, ParamFlags, ParamId, ParamMapping, ParamRange, ParamSteps, ParameterInfo, PluginBus,
+    EditorPresence, EditorWindow, Features, LoadedPlugin, MainThread, Normalized, ParamEdit,
+    ParamFlags, ParamId, ParamMapping, ParamRange, ParamSteps, ParameterInfo, PluginBus,
     PluginBuses, PluginClass, PluginDescriptor, PluginError, PluginResult, PluginTail, Preset,
     PresetId, RenderModeSupport, Request, RescanScope, StateUse, WindowHandle, Wraps, taken,
 };
@@ -499,7 +500,8 @@ impl EditorWindow for AuLoaded {
     }
 
     /// `_scale` is unused: an AU view is an `NSView`, which lays out in logical
-    /// pixels and reads its backing scale itself. `preferred` is a *hint* to the
+    /// pixels (points) and reads its backing scale itself, so the size it returns
+    /// is a [`Size::Logical`]. `preferred` is a *hint* to the
     /// view factory (`AUCocoaUIView.h:47-48`); this entry point receives no size,
     /// so it offers 800 by 600 and returns the size the view actually made.
     /// Re-opening closes the previous view first, so the AU is never asked to
@@ -509,20 +511,13 @@ impl EditorWindow for AuLoaded {
         main: &MainThread,
         parent: WindowHandle,
         _scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
+    ) -> PluginResult<Size> {
         self.close_editor(main);
-        let editor = AuEditor::open(
-            self.unit(),
-            Some(parent),
-            EditorSize {
-                width: 800,
-                height: 600,
-            },
-        )
-        .map_err(|e| editor_error("AU open_editor failed", e))?;
+        let editor = AuEditor::open(self.unit(), Some(parent), LogicalSize::new(800, 600))
+            .map_err(|e| editor_error("AU open_editor failed", e))?;
         let size = editor.editor_size();
         *self.editor_slot() = Some(editor);
-        Ok(size)
+        Ok(size.into())
     }
 
     /// Detaches and releases the editor view. The teardown is AppKit's
@@ -542,17 +537,13 @@ impl EditorWindow for AuLoaded {
         EditorCapabilities::default()
     }
 
-    fn set_editor_size(
-        &mut self,
-        _main: &MainThread,
-        _requested: EditorSize,
-    ) -> PluginResult<EditorSize> {
+    fn set_editor_size(&mut self, _main: &MainThread, _requested: Size) -> PluginResult<Size> {
         Err(PluginError::Editor(EditorError::PluginError(
             "set_editor_size not supported".into(),
         )))
     }
 
-    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<EditorSize> {
+    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<Size> {
         None
     }
 }

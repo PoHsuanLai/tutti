@@ -147,6 +147,10 @@ impl std::fmt::Debug for ModInput<'_> {
 /// Something an [`update`](Session::update) found for the host.
 #[non_exhaustive]
 pub enum SessionEvent {
+    /// The graph's edits could not be committed: the plan sent last keeps
+    /// playing. Each update tries again; a refusal is reported once, until a
+    /// commit is sent or it fails another way.
+    CommitRefused(tutti_graph::CommitError),
     /// A crossfade that waited out a re-prepare
     /// ([`Crossfade::Waiting`](crate::Crossfade::Waiting)) swapped its node
     /// in: `controls` are the incoming node's `IntoNode::Controls`, boxed
@@ -246,8 +250,7 @@ pub enum SessionEvent {
     /// failed to. See [`SamplerEvent`](crate::SamplerEvent).
     #[cfg(feature = "sampler")]
     Sampler(crate::SamplerEvent),
-    /// A hosted plugin's event, by area (design 029 section 3.3, design 030
-    /// convention 1): what the plugin reported (its own edit of a parameter, a
+    /// A hosted plugin's event, by area: what the plugin reported (its own edit of a parameter, a
     /// new tail) and every transition of its life (died, reloading, recovered,
     /// gave up). See [`PluginEvent`](crate::PluginEvent).
     #[cfg(feature = "plugin")]
@@ -257,6 +260,7 @@ pub enum SessionEvent {
 impl std::fmt::Debug for SessionEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::CommitRefused(e) => f.debug_tuple("CommitRefused").field(e).finish(),
             Self::CrossfadeLanded { node, id, .. } => f
                 .debug_struct("CrossfadeLanded")
                 .field("node", node)
@@ -364,7 +368,7 @@ pub enum RootTopologyStatus {
 /// // One global output: the mono device takes it as it is, unfolded.
 /// let mut session = Session::builder()
 ///     .outputs_floor(ChannelLayout::MONO)
-///     .build_offline(SampleRate::SR_48K, ChannelLayout::MONO, MaxBlock::of(Samples(64)))
+///     .outputs(ChannelLayout::MONO).max_block(MaxBlock::of(Samples(64))).build()
 ///     .unwrap();
 /// let (dc, _) = session.graph().add(ForkByClone(Const::mono(0.5)));
 /// session.graph().set_sources_hard(Root::output(0), [OutPort::new(dc, 0)]).unwrap();
@@ -467,9 +471,22 @@ pub struct Session {
 }
 
 impl Session {
-    /// A builder with the defaults.
-    pub fn builder() -> crate::SessionBuilder {
+    /// A builder with the defaults: offline, 48 kHz, stereo, blocks of up to
+    /// [`LIVE_MAX_BLOCK`](crate::LIVE_MAX_BLOCK) frames
+    /// ([`SessionBuilder`](crate::SessionBuilder) has the options and the
+    /// device state).
+    pub fn builder() -> crate::SessionBuilder<crate::Offline> {
         crate::SessionBuilder::default()
+    }
+
+    /// An offline session at `rate` with every other option at its default:
+    /// shorthand for `Session::builder().sample_rate(rate).build()`.
+    ///
+    /// # Errors
+    ///
+    /// As [`SessionBuilder::build`](crate::SessionBuilder::build).
+    pub fn new(rate: tutti_types::SampleRate) -> crate::Result<Self> {
+        Self::builder().sample_rate(rate).build()
     }
 
     /// The graph, to edit. An edit marks it edited; the next
@@ -501,7 +518,7 @@ impl Session {
     /// places the file from the declaration (`tutti_export::Setup::with_root`, set by the export's fork).
     ///
     /// The device a declaration must place on is the one the session renders
-    /// to (`build_offline`'s layout, or the open device's, and the new one on a
+    /// to (the offline `outputs`, or the open device's, and the new one on a
     /// restart); a detached session has none, and the file is checked at the
     /// export.
     ///
@@ -594,6 +611,8 @@ impl Session {
             Phase::Collect => {
                 // First, so what a job landed is in the graph this update commits.
                 self.land_jobs(out);
+                // What the graph's own removals left declared.
+                self.forget_removed();
                 // Before the collect, as a frame's spawns run before its
                 // commit: a crossfade lands on the update that first finds
                 // the re-prepare resumed.
@@ -631,7 +650,7 @@ impl Session {
                 self.resumed |= repreparing && !self.graph.is_repreparing();
             }
             Phase::Commit => {
-                let sent = self.graph.is_edited() && self.commit() == Committed::Sent;
+                let sent = self.graph.is_edited() && self.commit_reporting(out);
                 if !sent && self.resumed {
                     self.publish_sent();
                 }
@@ -649,15 +668,18 @@ impl Session {
                     // The re-apply's commit, as the update's own: published
                     // on `Sent`.
                     if self.mods.reapply(&mut self.graph, cx.mods, cx.now, out) {
-                        self.commit();
+                        self.commit_reporting(out);
                     }
                     self.mods.resync(&mut self.graph);
                 }
             }
-            Phase::MidiOut =>
-            {
+            Phase::MidiOut => {
                 #[cfg(feature = "midi")]
-                self.midi_state.midi_out_phase(&mut self.graph, cx.now, out)
+                {
+                    let playhead = self.playhead();
+                    self.midi_state
+                        .midi_out_phase(&mut self.graph, &playhead, cx.now, out)
+                }
             }
             Phase::Plugins =>
             {
@@ -691,8 +713,21 @@ impl Session {
                         meter: &self.click_settings.project_meter(),
                         playhead: self.playhead(),
                     };
-                    if self.midi_state.follow_phase(&follow, &mut self.graph, out) {
+                    let tempo_edited = self.midi_state.follow_phase(&follow, &mut self.graph, out);
+                    let (actions, clock_edited) =
+                        self.midi_state.clock_phase(&follow, &mut self.graph, out);
+                    let (machine_actions, machine_edited) =
+                        self.midi_state.machine_phase(&follow, &mut self.graph, out);
+                    if tempo_edited || clock_edited || machine_edited {
                         self.commit();
+                    }
+                    let refused: u64 = actions
+                        .into_iter()
+                        .chain(machine_actions)
+                        .map(|action| u64::from(!self.send_clock_action(action)))
+                        .sum();
+                    if refused > 0 {
+                        out.push(crate::MidiEvent::ClockCommandsRefused(refused).into());
                     }
                 }
                 #[cfg(feature = "device")]
@@ -795,6 +830,20 @@ impl Session {
         committed
     }
 
+    /// [`commit`](Self::commit), a refusal pushed onto `out`: whether it sent.
+    fn commit_reporting(&mut self, out: &mut Vec<SessionEvent>) -> bool {
+        match self.commit() {
+            Committed::Sent => true,
+            Committed::Refused(e) => {
+                if self.graph.newly_refused(&e) {
+                    out.push(SessionEvent::CommitRefused(e));
+                }
+                false
+            }
+            Committed::Retry => false,
+        }
+    }
+
     /// Publish the compensation of the plan sent last: the per-channel
     /// pre-roll to [`compensation`](Self::compensation), the total to
     /// [`latency`](Self::latency). Nothing before the first plan.
@@ -824,11 +873,28 @@ impl Session {
     pub fn remove(&mut self, node: impl Into<NodeKey>) -> Result<(), RemoveError> {
         let node = node.into();
         self.graph.remove(node)?;
-        #[cfg(feature = "modulation")]
-        self.mods.own.forget_node(node);
-        #[cfg(feature = "midi")]
-        self.midi_state.forget_node(node);
+        self.forget_removed();
         Ok(())
+    }
+
+    /// Forgets what the session declared on every node removed since the
+    /// last call, through this session's [`remove`](Self::remove) or the
+    /// graph's own: modulation, MIDI routes, the capture of an input.
+    fn forget_removed(&mut self) {
+        for node in self.graph.take_removed() {
+            #[cfg(feature = "modulation")]
+            self.mods.own.forget_node(node);
+            #[cfg(feature = "midi")]
+            self.midi_state.forget_node(node);
+            #[cfg(all(feature = "device", feature = "audio-io"))]
+            self.inputs.forget(node);
+            #[cfg(not(any(
+                feature = "modulation",
+                feature = "midi",
+                all(feature = "device", feature = "audio-io")
+            )))]
+            let _ = node;
+        }
     }
 
     /// The session's own modulation declarations, read: its routes and
@@ -886,12 +952,12 @@ impl Session {
     /// # Panics
     ///
     /// On a session not built with
-    /// [`build_offline`](crate::SessionBuilder::build_offline): its engine
+    /// [`build`](crate::SessionBuilder::build): its engine
     /// is a device's callback, or there is none.
     pub fn render(&self, output: &mut tutti_types::InterleavedMut<'_>) {
         self.engine
             .as_ref()
-            .expect("render needs an offline session (SessionBuilder::build_offline)")
+            .expect("render needs an offline session (SessionBuilder::build)")
             .process(output);
     }
 
@@ -1046,6 +1112,29 @@ impl Session {
             }
         }
         Ok(())
+    }
+
+    /// Sends what a followed MIDI clock asked of the transport, at the next
+    /// block, and says whether the transport took it. A command the transport's
+    /// list has no room for is dropped and logged, and the caller counts it
+    /// ([`MidiEvent::ClockCommandsRefused`](crate::MidiEvent::ClockCommandsRefused)):
+    /// the source says its position again with the next message.
+    #[cfg(feature = "midi")]
+    fn send_clock_action(&self, action: crate::midi_follow::ClockAction) -> bool {
+        use crate::midi_follow::ClockAction;
+        let event = match action {
+            ClockAction::Play => MotionEvent::Play,
+            ClockAction::Stop => MotionEvent::stop(),
+            ClockAction::Locate(beat) => MotionEvent::locate(beat),
+            ClockAction::PlayFrom(beat) => MotionEvent::play_from(beat),
+        };
+        match self.schedule(At::NextBlock, event) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!("midi: a followed clock's {event:?} was not sent: {error}");
+                false
+            }
+        }
     }
 
     /// Loops the transport over `range` from the next block, and arms it: the

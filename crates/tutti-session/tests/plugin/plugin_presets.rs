@@ -1,4 +1,4 @@
-//! A hosted plugin's presets through the main-thread view (design 029 step 4):
+//! A hosted plugin's presets through the main-thread view:
 //! what the format can do with them, a list that loads by id, a file that
 //! loads by path, and the three typed answers of a load.
 //!
@@ -32,11 +32,8 @@ mod clap {
             std::env::set_var("TUTTI_CLAP_PROBE_PRESET_LOAD", "1");
         }
         let mut s = Session::builder()
-            .build_offline(
-                SampleRate::SR_48K,
-                ChannelLayout::STEREO,
-                MaxBlock::of(Samples(512)),
-            )
+            .max_block(MaxBlock::of(Samples(512)))
+            .build()
             .expect("an offline session builds");
         let node = s
             .add_plugin_blocking(

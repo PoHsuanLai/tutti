@@ -26,6 +26,11 @@
 //! reassembler returns and the caller sends as an [`Ack`](crate::Ack) or a
 //! [`Nak`](crate::Nak). Nothing reads a clock: time is an argument.
 //!
+//! [`PeInitiator`] is the Initiator's side over all of it with one peer: the
+//! Capabilities exchange (M2-101 §8.5), then Get, Set and Subscribe as a
+//! [`PeCall`], each ending in a [`PeOutcome`]. The messages it sends and reads are
+//! [`CiMessage::PropertyExchange`](crate::CiMessage::PropertyExchange).
+//!
 //! ```
 //! use tutti_midi_device::{PeHeader, MaxSysexSize, PeRequest, ResourceName};
 //!
@@ -56,7 +61,7 @@
 //!     streams: StreamLimit::new(4).unwrap(),
 //!     bytes: BufferLimit::new(1 << 16).unwrap(),
 //! });
-//! let (peer, now) = (Muid::new(7).unwrap(), Instant::now());
+//! let (peer, now) = (Muid::of(7), Instant::now());
 //! let mut done = None;
 //! for chunk in chunks {
 //!     let step = inbox.push(peer, PeMessageKind::SET_INQUIRY, chunk, PeFlowControl::Off, now);
@@ -73,9 +78,11 @@
 //! [`mcoded7`] holds the encoder and the decoder, pure functions over slices.
 
 mod body;
+mod capabilities;
 mod chunk;
 mod flow;
 mod header;
+mod initiator;
 mod json;
 mod limits;
 pub mod mcoded7;
@@ -84,16 +91,22 @@ mod value;
 mod write;
 
 pub use body::{BodyLimit, PeBodyError, decode_body, encode_body};
+pub use capabilities::{
+    PeCapabilities, PeCiMessage, PeVersion, SUB_ID2_PE_CAPABILITIES_INQUIRY,
+    SUB_ID2_PE_CAPABILITIES_REPLY, SUB_ID2_PE_NOTIFY, SimultaneousRequests,
+};
 pub use chunk::{
     ChunkNo, ChunkPosition, ChunkTotal, PE_MAX_CHUNK_DATA_LEN, PeChunk, PeChunkError, PeRequestId,
     split_message,
 };
-pub use flow::{
-    PE_TIMEOUT, PeAnswer, PeMessageKind, PeSignal, PeTerminator, PeTransaction, TimeoutWait,
-};
+pub use flow::{PE_TIMEOUT, PeAnswer, PeMessageKind, PeSignal, PeTerminator, PeTransaction};
 pub use header::{
     PE_MAX_HEADER_LEN, PeEncoding, PeEndedBy, PeHeader, PeHeaderError, PeHeaderTooLong, PePage,
-    PeReply, PeRequest, PeStatus, PeSubscription, PeUpdateCommand,
+    PeReply, PeRequest, PeSetScope, PeStatus, PeStatusClass, PeSubscription, PeUpdateCommand,
+};
+pub use initiator::{
+    PeAction, PeCall, PeCapabilitiesFailure, PeChange, PeError, PeGet, PeInitiator, PeKind,
+    PeNotification, PeOutcome, PeResponse, PeSet, PeSettings, PeSubscribed, PeUnreadable,
 };
 pub use limits::{
     MediaType, NotInRange, NotValid, PeMessage, PropertyName, ResourceId, ResourceName, SubscribeId,

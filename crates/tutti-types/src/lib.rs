@@ -139,6 +139,10 @@
 #[macro_use]
 pub mod value;
 
+// `ranged!` is `#[macro_export]`ed: it is the one way any crate writes a
+// range-checked type, used as `tutti_types::ranged!`.
+mod ranged;
+
 // Private: everything public in these is re-exported at the root below, so the
 // module path would be a second name for a type that already has one.
 mod bus;
@@ -159,13 +163,14 @@ pub use atomic_float::{AtomicF32, AtomicF64};
 // Value vocabulary.
 pub use value::{
     Adsr, Amplitude, ArcDegrees, At, AtomicSampleRate, Azimuth, Beat, BeatDuration, BeatsPerCycle,
-    BeatsPerCycleOutOfRange, Bpm, BpmOutOfRange, Cents, CompressionRatio, Confidence, Correlation,
-    Db, Depth, DepthOutOfRange, Direction, Drive, Elevation, Feedback, Frame, Hz, InvalidMaxBlock,
-    Latency, MaxBlock, Mix, Moment, NotOnMidiScale, Note, NoteNumberOutOfRange, Pan, Param,
-    Param64, ParamAddr, ParamCell, ParamKey, ParamRaw, Phase, PhaseIncrement, PitchClass,
-    PlayReading, PlaybackRate, Q, Radians, ReadRate, Resonance, SamplePosition, SampleRate,
-    SampleRateOutOfRange, Samples, Seconds, Semitones, Spread, SrcRatio, StereoWidth,
-    StretchFactor, Tail, Unit, UnitAddr, UnitParam, UnitParamOutOfRange, Velocity,
+    BeatsPerCycleOutOfRange, Bpm, BpmOutOfRange, Cents, CentsSpan, CentsSpanOutOfRange,
+    CompressionRatio, Confidence, Correlation, Db, Depth, DepthOutOfRange, Direction, Drive,
+    Elevation, Feedback, Frame, Hz, InvalidMaxBlock, Latency, MaxBlock, Mix, Moment,
+    NotOnMidiScale, Note, NoteNumberOutOfRange, Pan, Param, Param64, ParamAddr, ParamCell,
+    ParamKey, ParamRaw, Phase, PhaseIncrement, PitchClass, PlayReading, PlaybackRate, Q, Radians,
+    ReadRate, Resonance, SamplePosition, SampleRate, SampleRateOutOfRange, Samples, Seconds,
+    Semitones, Spread, SrcRatio, StereoBalance, StereoWidth, StretchFactor, Tail, Unit, UnitAddr,
+    UnitParam, UnitParamOutOfRange, Velocity,
 };
 
 // The frame is the source of truth for time: the one frame↔beat conversion,

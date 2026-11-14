@@ -544,7 +544,7 @@ fn the_range_is_capped_at_0_9_nyquist_and_a_rising_rate_restores_the_authored_to
     let f = family(1, 4, SweepRange::DEFAULT, Stagger::NONE);
     let top = |f: &PhaserFamily, sr: f64| {
         f.member(&controls(1.0, 1.0, 0.5), SampleRate::of(sr))
-            .max_hz()
+            .max_hz
     };
     assert_eq!(top(&f, 8_000.0), Hz(3_600.0), "0.90 of a 4 kHz Nyquist");
     assert_eq!(top(&f, 48_000.0), Hz(4_000.0));
@@ -552,7 +552,7 @@ fn the_range_is_capped_at_0_9_nyquist_and_a_rising_rate_restores_the_authored_to
     assert_eq!(top(&wide, 48_000.0), Hz(21_600.0));
     assert_eq!(top(&wide, 96_000.0), Hz(30_000.0));
     assert_eq!(
-        wide.member(&controls(1.0, 1.0, 0.5), RATE).min_hz(),
+        wide.member(&controls(1.0, 1.0, 0.5), RATE).min_hz,
         Hz(300.0)
     );
 }
@@ -575,7 +575,7 @@ fn the_coefficient_at_a_control_point_is_the_sweep_at_the_lfo_phase() {
             p = p.advance(inc);
         }
         let lfo = (std::f64::consts::TAU * f64::from(p.get())).sin() as f32;
-        let hz = sweep_hz(m.min_hz(), m.max_hz(), lfo, Depth::FULL);
+        let hz = sweep_hz(m.min_hz, m.max_hz, lfo, Depth::FULL);
         allpass_coeff(hz.get(), RATE.get() as f32)
     };
     let (_, _, state) = k.parts_mut();
@@ -604,7 +604,7 @@ fn each_channel_is_staggered_by_its_step_and_a_full_cycle_is_none() {
         let (_, _, state) = k.parts_mut();
         for (ch, offset) in offsets.into_iter().enumerate() {
             let lfo = (std::f64::consts::TAU * offset).sin() as f32;
-            let hz = sweep_hz(m.min_hz(), m.max_hz(), lfo, Depth::FULL);
+            let hz = sweep_hz(m.min_hz, m.max_hz, lfo, Depth::FULL);
             let want = allpass_coeff(hz.get(), RATE.get() as f32);
             assert!(
                 (state.points[ch][0] - want).abs() < 1e-5,
@@ -770,13 +770,15 @@ impl<'de> Deserialize<'de> for Stages {
 /// `2..=12` and never clamps.
 #[test]
 fn stages_keep_the_range_checked_shape() {
-    tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+    let c = tutti_fixtures::RangeContract {
         new: Stages::new,
         get: Stages::get,
         of: Some(Stages::of),
         valid: &[2, 3, 7, 11, 12],
         invalid: &[0, 1, 13, 20, usize::MAX],
-    });
+    };
+    tutti_fixtures::check_range_contract(&c);
+    tutti_fixtures::check_range_serde(&c);
     assert_eq!(Stages::try_from(13), Err(StagesError(13)));
     assert_eq!((Stages::MIN, Stages::MAX), (2, 12));
 }
@@ -851,7 +853,7 @@ fn the_member_states_what_it_was_built_to() {
     assert_eq!((m.width(), m.stages(), f.width()), (2, Stages::of(6), 2));
     assert_eq!(m.latency(), tutti_types::Samples::ZERO);
     assert_eq!(m.tail(Db(-60.0)), Ring::Unbounded);
-    assert_eq!((m.min_hz(), m.max_hz()), (Hz(300.0), Hz(3_000.0)));
+    assert_eq!((m.min_hz, m.max_hz), (Hz(300.0), Hz(3_000.0)));
     // Frozen at the LFO's peak at half depth the centre is half way up the range, at its
     // trough the bottom.
     let (peak, trough) = (m.at(1.0), m.at(-1.0));

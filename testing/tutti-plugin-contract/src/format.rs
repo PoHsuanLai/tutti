@@ -42,7 +42,7 @@ pub trait Format {
     /// Where a parameter point lands.
     const PARAM_TIMING: ParamTiming;
     /// How far a parameter's value may move through the format's own
-    /// representation and still be the value written (design 029 §6.3): 0 for a
+    /// representation and still be the value written: 0 for a
     /// format that keeps a double, the `f32` epsilon for one that keeps a
     /// single (an AU holds its parameters as `f32` in plain units, so a plain
     /// default such as 632.4555... comes back as the nearest `f32`). Relative,
@@ -93,10 +93,18 @@ pub fn run<F: Format>(name: &str, body: impl FnOnce()) {
     run_gapped(F::NAME, F::GAPS, name, body);
 }
 
+/// The line a gapped case prints before it runs, which `cargo xtask
+/// conformance` reads from the test's output to count the case as covering
+/// nothing.
+fn gap_marker(case: &str) -> String {
+    format!("tutti-contract: gap {case}")
+}
+
 fn run_gapped(format: &str, gaps: &[(&str, Gap)], name: &str, body: impl FnOnce()) {
     let Some((_, gap)) = gaps.iter().find(|(case, _)| *case == name) else {
         return body();
     };
+    println!("{}", gap_marker(name));
     let failure = catch_unwind(AssertUnwindSafe(body))
         .expect_err("claims a gap but passes: remove the claim");
     let got = message(failure.as_ref());
@@ -123,6 +131,11 @@ mod tests {
     fn panic_message(f: impl FnOnce()) -> String {
         let failure = catch_unwind(AssertUnwindSafe(f)).expect_err("panics");
         message(failure.as_ref()).to_owned()
+    }
+
+    #[test]
+    fn the_gap_marker_is_the_line_the_conformance_report_reads() {
+        assert_eq!(gap_marker("a_case"), "tutti-contract: gap a_case");
     }
 
     #[test]

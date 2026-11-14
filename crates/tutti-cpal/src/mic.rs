@@ -58,7 +58,7 @@ use tutti_types::{Pull, Source};
 use crate::driver_seam::device_rate;
 use crate::error::{Error, Result};
 use crate::faults::StreamFaults;
-use crate::host::{AudioHost, DeviceHost, DeviceSelector};
+use crate::host::{AudioHost, DeviceHost, DeviceSelector, device_name};
 use crate::latency::StreamLatency;
 use crate::owner::Owned;
 use crate::roster::Direction;
@@ -246,12 +246,14 @@ impl MicIn {
         let device = host.device(Direction::Input, &mic.device)?;
         let inputs = mic.inputs.as_deref();
         let latency = mic.latency.clone().unwrap_or_default();
-        let name = device.name().unwrap_or_default();
+        let name = device_name(&device).unwrap_or_default();
         let config = choose_input_config(
             device.supported_input_configs().map_err(|e| {
                 Error::InvalidDevice(format!("cannot query {name:?} input configs: {e}"))
             })?,
-            device.default_input_config()?,
+            device
+                .default_input_config()
+                .map_err(Error::DeviceNotAvailable)?,
             graph_rate,
             &name,
         )?;
@@ -324,7 +326,7 @@ impl MicIn {
                 // Checked above, before the thread is spawned.
                 _ => unreachable!("sample format checked before spawn"),
             };
-            stream.play()?;
+            stream.play().map_err(Error::PlayStream)?;
             Ok(stream)
         })?;
 
@@ -551,30 +553,32 @@ where
     // Set by a panic in `capture.block`, whose state may be torn: the capture
     // then does nothing, and its source answers `Failed` (the faults' latch).
     let mut failed = false;
-    let stream = device.build_input_stream(
-        config,
-        move |data: &[T], info: &cpal::InputCallbackInfo| {
-            if failed {
-                return;
-            }
-            delivering.delivered();
-            latency.record(crate::latency::input_delay(&info.timestamp()));
-            // A panic must not unwind out of the device's C frame.
-            let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                capture.block(data);
-            }));
-            if let Err(payload) = ran {
-                failed = true;
-                delivering.record_panic("the capture callback panicked");
-                // Dropping the payload would free on the audio thread.
-                std::mem::forget(payload);
-            }
-        },
-        // Not exercised without a device: what it calls, `StreamFaults::record`
-        // and `MicIn::pull`'s verdict, is tested on its own.
-        move |err| faults.record(&err),
-        None,
-    )?;
+    let stream = device
+        .build_input_stream(
+            *config,
+            move |data: &[T], info: &cpal::InputCallbackInfo| {
+                if failed {
+                    return;
+                }
+                delivering.delivered();
+                latency.record(crate::latency::input_delay(&info.timestamp()));
+                // A panic must not unwind out of the device's C frame.
+                let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    capture.block(data);
+                }));
+                if let Err(payload) = ran {
+                    failed = true;
+                    delivering.record_panic("the capture callback panicked");
+                    // Dropping the payload would free on the audio thread.
+                    std::mem::forget(payload);
+                }
+            },
+            // Not exercised without a device: what it calls, `StreamFaults::record`
+            // and `MicIn::pull`'s verdict, is tested on its own.
+            move |err| faults.record(&err),
+            None,
+        )
+        .map_err(Error::BuildStream)?;
     Ok(stream)
 }
 
@@ -596,7 +600,7 @@ pub(crate) fn choose_input_config(
     graph_rate: SampleRate,
     device_name: &str,
 ) -> Result<cpal::SupportedStreamConfig> {
-    let wanted = cpal::SampleRate(graph_rate.get().round() as u32);
+    let wanted = graph_rate.get().round() as cpal::SampleRate;
 
     let mut best: Option<cpal::SupportedStreamConfig> = None;
     for range in supported {

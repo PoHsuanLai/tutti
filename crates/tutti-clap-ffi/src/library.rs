@@ -18,7 +18,7 @@ use crate::plugin::Plugin;
 use crate::roles::ThreadRoles;
 
 /// Which step of loading failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Stage {
     /// Opening the library or reading `clap_entry`.
     Opening,
@@ -31,7 +31,8 @@ pub enum Stage {
 }
 
 /// A load that failed: which step, and what went wrong at it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{:?}: {}", self.stage(), self.reason())]
 #[non_exhaustive]
 pub enum LoadError {
     /// The library could not be opened; the loader's message.
@@ -140,14 +141,6 @@ impl LoadError {
         }
     }
 }
-
-impl std::fmt::Display for LoadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}: {}", self.stage(), self.reason())
-    }
-}
-
-impl std::error::Error for LoadError {}
 
 /// What a descriptor declares, as owned strings.
 #[derive(Debug, Clone)]

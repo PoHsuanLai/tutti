@@ -12,7 +12,7 @@ use tutti_graph::{
 };
 use tutti_midi_protocol::MpeMode;
 use tutti_session::{MidiError, Session, SessionInstrument, SessionNode, TakePlacement};
-use tutti_types::{ChannelLayout, Frame, MaxBlock, SampleRate, Samples};
+use tutti_types::{ChannelLayout, Frame, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, NoteNumber, NoteVelocity};
 
 const RATE: f64 = 48_000.0;
@@ -134,6 +134,31 @@ fn an_instrument_has_its_handles_keys_and_no_second_live_input() {
     );
 }
 
+/// **A node's keys have one owner, whichever was asked first**: a node whose
+/// live input handed out its keys ([`Midi::input`](tutti_session::Midi::input))
+/// is not made an instrument with a second pair, and an instrument's node
+/// hands out no live keys (the test above). Nothing is opened by the refusal.
+#[test]
+fn a_node_whose_live_input_has_its_keys_is_not_made_an_instrument() {
+    let mut s = offline();
+    let (node, ()) = s.graph().add(Probe(ForkByClone(Five), Arc::default()));
+    let key = node.erase();
+    let _keys = s.midi().input(key).expect("the live input's keys");
+    assert!(matches!(
+        s.instrument(key),
+        Err(tutti_session::Error::NotInstrument {
+            why: tutti_session::NotInstrument::LiveInput,
+            ..
+        })
+    ));
+    assert!(
+        s.graph_ref()
+            .feed(key, tutti_session::Feeder::Instrument)
+            .is_empty(),
+        "no instrument queue was opened"
+    );
+}
+
 /// **The instrument's key is typed, so a source of the caller's own wires into
 /// its event input** (`events_in` is a method of `Key`, which an erased
 /// `NodeKey` has not).
@@ -238,11 +263,8 @@ fn the_sessions_mpe_mode_reaches_the_ingest_and_the_next_instrument() {
     };
     let mut s = Session::builder()
         .mpe_mode(rotation)
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     assert_eq!(s.midi().mpe(), rotation, "the builder's mode to begin with");
 
@@ -327,11 +349,8 @@ mod hardware {
         let (backend, fake) = FakeBackend::build_with(vec![], vec![], usize::MAX);
         let s = Session::builder()
             .midi_hardware_over(backend)
-            .build_offline(
-                SampleRate::of(RATE),
-                ChannelLayout::STEREO,
-                MaxBlock::of(Samples(1_024)),
-            )
+            .sample_rate(SampleRate::of(RATE))
+            .build()
             .expect("builds");
         (s, fake)
     }

@@ -32,7 +32,7 @@ pub fn built<D: FamilyCase>(
     controls: &D::Controls,
     rate: SampleRate,
 ) -> (Realized<D::Recurrence>, D::Member) {
-    let mut k = d.realized();
+    let mut k = d.realized(rate);
     k.prepare(&d.capacity(rate), &setup(rate));
     let model = d.member(controls, rate);
     k.retarget(&model);

@@ -5,7 +5,8 @@ use super::ClapLoaded;
 use crate::error::{ClapError, Result};
 use crate::host::state::TimerEntry;
 use crate::host::{HostState, LogRecord};
-use crate::types::{ContentScale, EditorCapabilities, EditorSize, WindowHandle};
+use crate::types::{ContentScale, EditorCapabilities, WindowHandle};
+use dpi::Size;
 use std::sync::Arc;
 use tutti_clap_ffi::GuiError;
 use tutti_plugin_types::{FdId, Interest, MainThread, Ready, Wakeups};
@@ -17,7 +18,8 @@ fn gui_error(error: GuiError) -> ClapError {
 impl ClapLoaded {
     /// Creates the plugin editor and embed it into the given native `parent`
     /// window, whose backing-store scale is `scale`, returning the editor's
-    /// initial size.
+    /// initial size, in the unit of the window api (physical pixels; logical points on
+    /// cocoa).
     ///
     /// Follows the CLAP embed sequence: `is_api_supported` → `create` →
     /// `set_scale(scale)` → `get_size` → `set_parent` → `show`. See
@@ -32,7 +34,7 @@ impl ClapLoaded {
         main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> Result<EditorSize> {
+    ) -> Result<Size> {
         self.host_state
             .gui
             .window_destroyed
@@ -44,7 +46,7 @@ impl ClapLoaded {
 
         let outcome = self
             .plugin
-            .open_embedded(main, &parent, scale.get())
+            .open_embedded(main, &parent, scale)
             .map_err(gui_error)?;
 
         // Only an editor that was `create`d needs `destroy` later.
@@ -52,10 +54,7 @@ impl ClapLoaded {
             self.flags.gui_created = true;
         }
 
-        Ok(EditorSize {
-            width: outcome.width,
-            height: outcome.height,
-        })
+        Ok(outcome.size)
     }
 
     /// Creates the plugin's own top-level window, rather than embedding.
@@ -180,9 +179,7 @@ impl ClapLoaded {
     /// Returns [`ClapError::EditorError`] if the plugin has no GUI extension or
     /// no editor is created.
     pub fn rescale_editor(&mut self, main: &MainThread, scale: ContentScale) -> Result<bool> {
-        self.plugin
-            .rescale_gui(main, scale.get())
-            .map_err(gui_error)
+        self.plugin.rescale_gui(main, scale).map_err(gui_error)
     }
 
     /// Asks the plugin to resize its open editor to `requested`, returning the
@@ -196,16 +193,8 @@ impl ClapLoaded {
     /// Returns [`ClapError::EditorError`] if the plugin has no GUI extension,
     /// cannot adjust the request to a usable size, lacks `set_size`, or refuses
     /// the adjusted size.
-    pub fn resize_editor(
-        &mut self,
-        main: &MainThread,
-        requested: EditorSize,
-    ) -> Result<EditorSize> {
-        let (width, height) = self
-            .plugin
-            .resize_gui(main, requested.width, requested.height)
-            .map_err(gui_error)?;
-        Ok(EditorSize { width, height })
+    pub fn resize_editor(&mut self, main: &MainThread, requested: Size) -> Result<Size> {
+        self.plugin.resize_gui(main, requested).map_err(gui_error)
     }
 
     /// Consumes the plugin's pending `gui.request_resize`, if any.
@@ -213,7 +202,7 @@ impl ClapLoaded {
     /// Draining: a second call with no new request answers `None`. The host
     /// is free to ignore or clamp the size — CLAP treats it as a request, not
     /// an instruction.
-    pub fn take_editor_resize_request(&self) -> Option<EditorSize> {
+    pub fn take_editor_resize_request(&self) -> Option<Size> {
         if !self
             .host_state
             .gui
@@ -222,18 +211,13 @@ impl ClapLoaded {
         {
             return None;
         }
-        Some(EditorSize {
-            width: self
-                .host_state
-                .gui
-                .request_resize_width
+        let gui = &self.host_state.gui;
+        Some(tutti_clap_ffi::gui_size(
+            gui.request_resize_width
                 .load(std::sync::atomic::Ordering::Acquire),
-            height: self
-                .host_state
-                .gui
-                .request_resize_height
+            gui.request_resize_height
                 .load(std::sync::atomic::Ordering::Acquire),
-        })
+        ))
     }
 
     /// [`EditorWindow::close_editor`](tutti_plugin_types::EditorWindow::close_editor) without a token, for `Drop`, which

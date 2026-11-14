@@ -213,7 +213,7 @@ pub enum ClapEvent {
 /// direction reads each channel's range from the stream
 /// ([`PerNoteState`], which scales a bend by it).
 fn emitted_bend_range_semitones() -> f64 {
-    f64::from(PitchBendSensitivity::MPE_DEFAULT.semitones().get())
+    f64::from(PitchBendSensitivity::MPE_MEMBER_DEFAULT.semitones().get())
 }
 
 /// The per-note controllers with a CLAP note expression, and the expression
@@ -931,7 +931,7 @@ impl InputEventList {
     /// sensitivity at the MPE default, ±48 (RP-053), until the stream sets
     /// another.
     fn per_note_state(ports: usize) -> PerNoteState {
-        PerNoteState::new(ports, PitchBendSensitivity::MPE_DEFAULT.semitones())
+        PerNoteState::new(ports, PitchBendSensitivity::MPE_MEMBER_DEFAULT.semitones())
     }
 
     /// Sets the note dialect of the plugin's input note port: `true` sends
@@ -2280,12 +2280,12 @@ mod tests {
     }
 
     /// The offset `k` frames into the block.
-    fn at(k: u32) -> Offset {
-        Offset::new(k as usize, Samples(BLOCK)).expect("inside the block")
+    fn at(k: usize) -> Offset {
+        Offset::of(Samples(k), Samples(BLOCK))
     }
 
     /// The packet of `words`, zero-padded to four, at offset `k`.
-    fn packet(k: u32, words: &[u32]) -> UmpAt {
+    fn packet(k: usize, words: &[u32]) -> UmpAt {
         let mut w = [0u32; 4];
         w[..words.len()].copy_from_slice(words);
         (at(k), Ump(w))
@@ -2891,7 +2891,7 @@ mod tests {
             let mut list = InputEventList::new();
             list.reserve(200 * points + 16);
             list.add_param_changes(&changes, &[], false);
-            for frame in [0u32, 100, 475] {
+            for frame in [0usize, 100, 475] {
                 list.add_midi(&(
                     at(frame),
                     fx::note_off(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0),
@@ -3114,7 +3114,7 @@ mod tests {
 
     fn cc_message(group: u8) -> UmpAt {
         (
-            Offset::new(0, Samples(64)).expect("inside the block"),
+            Offset::of(Samples(0), Samples(64)),
             Message::Midi1(
                 Address::new(MidiGroup::new(group).unwrap(), MidiChannel::FIRST),
                 Voice1::ControlChange {
@@ -3158,7 +3158,7 @@ mod tests {
                 tutti_ump::Sysex7Packets::from_payload(MidiGroup::new(group).unwrap(), &payload)
                     .expect("seven-bit bytes");
             let ump = packets.into_iter().next().expect("one packet");
-            (Offset::new(0, Samples(64)).expect("inside the block"), ump)
+            (Offset::of(Samples(0), Samples(64)), ump)
         };
         let mut list = InputEventList::new();
         list.reserve_sysex();
@@ -4150,7 +4150,7 @@ mod tests {
     }
 
     /// The SysEx7 packets of `payload`, each `time` frames into the block.
-    fn sysex_packets(payload: &[u8], time: u32) -> Vec<UmpAt> {
+    fn sysex_packets(payload: &[u8], time: usize) -> Vec<UmpAt> {
         fx::sysex7_packets(payload)
             .into_iter()
             .map(|ump| (at(time), ump))

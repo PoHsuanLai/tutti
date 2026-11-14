@@ -90,13 +90,16 @@ use clap_sys::ext::surround::{CLAP_EXT_SURROUND, CLAP_EXT_SURROUND_COMPAT, clap_
 use clap_sys::ext::tail::{CLAP_EXT_TAIL, clap_plugin_tail};
 use clap_sys::ext::thread_pool::{CLAP_EXT_THREAD_POOL, clap_plugin_thread_pool};
 use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_plugin_timer_support};
+use clap_sys::ext::track_info::{
+    CLAP_EXT_TRACK_INFO, CLAP_EXT_TRACK_INFO_COMPAT, clap_plugin_track_info,
+};
 use clap_sys::ext::voice_info::{CLAP_EXT_VOICE_INFO, clap_plugin_voice_info};
 use clap_sys::plugin::clap_plugin;
 
 use crate::host::Host;
 use crate::library::{Bundle, LoadError, Stage};
 use crate::roles::ThreadRoles;
-use tutti_plugin_types::MainThread;
+use tutti_plugin_types::{ContentScale, MainThread};
 
 macro_rules! extensions {
     ($($(#[$m:meta])* $field:ident: $ty:ty = [$($id:expr),+];)*) => {
@@ -145,6 +148,7 @@ extensions! {
     ambisonic: clap_plugin_ambisonic = [CLAP_EXT_AMBISONIC, CLAP_EXT_AMBISONIC_COMPAT];
     surround: clap_plugin_surround = [CLAP_EXT_SURROUND, CLAP_EXT_SURROUND_COMPAT];
     params: clap_plugin_params = [CLAP_EXT_PARAMS];
+    track_info: clap_plugin_track_info = [CLAP_EXT_TRACK_INFO, CLAP_EXT_TRACK_INFO_COMPAT];
     param_indication: clap_plugin_param_indication = [CLAP_EXT_PARAM_INDICATION, CLAP_EXT_PARAM_INDICATION_COMPAT];
     state: clap_plugin_state = [CLAP_EXT_STATE];
     state_context: clap_plugin_state_context = [CLAP_EXT_STATE_CONTEXT];
@@ -227,6 +231,9 @@ pub struct Plugin {
     /// CLAP requires every other `clap.gui` entry to follow, kept here so a
     /// caller cannot break it.
     pub(crate) gui_created: bool,
+    /// The scale the editor was opened with or last given: what a size in the
+    /// other unit is converted at.
+    pub(crate) gui_scale: ContentScale,
     // Dropped after `Plugin::drop` has destroyed the instance: the host the
     // plugin called, then the library its code lives in.
     // `ManuallyDrop` so a drop off the main thread can move them to the main
@@ -248,34 +255,42 @@ impl std::fmt::Debug for Plugin {
 }
 
 /// An extension call that did not run to a result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum CallError {
     /// The plugin does not implement the extension.
+    #[error("the plugin does not implement the extension")]
     NoExtension,
     /// The plugin implements the extension but not this entry.
+    #[error("the plugin does not implement the entry")]
     NoFunction,
     /// The entry ran and answered `false`.
+    #[error("the entry answered false")]
     Failed,
     /// The entry is only legal in the other activation state (CLAP's
     /// `[!active]` and `[active ? audio-thread : main-thread]` annotations):
     /// nothing was called.
+    #[error("the entry is not legal in the current activation state")]
     WrongState,
 }
 
 /// Why [`Plugin::activate`] did not activate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum ActivateError {
     /// An [`AudioSide`](crate::AudioSide) of an earlier activation is still
     /// alive; drop it (rejoin the halves) first. The plugin was not called.
+    #[error("the audio half of the previous activation is still alive")]
     ProcessorStillAlive,
     /// The plugin is already active; `deactivate` it first. The plugin was
     /// not called.
+    #[error("the plugin is already active")]
     AlreadyActive,
     /// The sample rate is not finite and positive, `min_frames` is zero, or
     /// `min_frames` exceeds `max_frames`: CLAP forbids all three. The plugin
     /// was not called.
+    #[error("the sample rate or block range is one CLAP forbids")]
     BadConfig,
     /// The plugin has no `activate` entry or answered `false`.
+    #[error("the plugin has no activate entry or refused it")]
     Refused,
 }
 
@@ -372,6 +387,7 @@ impl Plugin {
         Ok(Self {
             core,
             gui_created: false,
+            gui_scale: ContentScale::IDENTITY,
             _host: ManuallyDrop::new(host),
             _bundle: ManuallyDrop::new(bundle),
             _not_sync: PhantomData,
@@ -630,6 +646,12 @@ impl Plugin {
     ) {
         let color_ptr = color.as_ref().map_or(ptr::null(), ptr::from_ref);
         call!(self.param_indication.set_automation(param_id, state.raw(), color_ptr) else ());
+    }
+
+    /// `track-info.changed`: the host's answer to `get` is different now. A
+    /// plugin without the extension is not told.
+    pub fn track_info_changed(&self, _main: &MainThread) {
+        call!(self.track_info.changed() else ());
     }
 
     // ---- state -----------------------------------------------------------
@@ -1118,6 +1140,7 @@ impl Drop for Plugin {
             let moved = Plugin {
                 core: Arc::clone(&self.core),
                 gui_created: self.gui_created,
+                gui_scale: self.gui_scale,
                 _host: ManuallyDrop::new(host),
                 _bundle: ManuallyDrop::new(bundle),
                 _not_sync: PhantomData,
@@ -1203,7 +1226,7 @@ pub struct AudioPortInfo {
 }
 
 /// A port type string, as CLAP names the ones it defines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PortKind {
     /// `CLAP_PORT_MONO`.
     Mono,

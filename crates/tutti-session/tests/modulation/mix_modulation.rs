@@ -18,8 +18,7 @@ use tutti_session::{
     InPort, MixRef, ModRefusal, ModTarget, OutPort, ParamRef, PassError, Problem, Root, RouteSpec,
     Session, TargetName,
 };
-use tutti_types::MaxBlock;
-use tutti_types::{ChannelLayout, Depth, InterleavedMut, Mix, SampleRate, Samples, UnitParam};
+use tutti_types::{ChannelLayout, Depth, InterleavedMut, Mix, UnitParam};
 
 const BLOCK: usize = 128;
 /// The constant source's level.
@@ -46,13 +45,7 @@ impl Node for Halve {
 }
 
 fn offline() -> Session {
-    Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
-        .expect("builds")
+    Session::builder().build().expect("builds")
 }
 
 fn settle(s: &mut Session) {
@@ -109,7 +102,7 @@ fn figure(s: &mut Session, m: f32, what: &str) {
 /// range `0..=1`, macro `0.5` at depth `0.5`: `0.25 + 0.25 = 0.5`), a base moved
 /// while routed moves the modulated figure (`0.5 + 0.25 = 0.75`), the macro
 /// moved is the offset moved (`0.5 - 0.25 = 0.25`), a value past the range is
-/// clamped (the knob written through `ModState::set_knob` to `0.875` and the
+/// clamped (the knob written through `Graph::set_mix` to `0.875` and the
 /// macro back to `0.5` is `1.125`, clamped to `1.0`), and with the route
 /// removed the mix returns to the base the knob left, `0.875`, once the lane's
 /// source goes (the declick), not to WET.
@@ -129,7 +122,6 @@ fn a_route_onto_a_mix_modulates_around_the_base_set_mix_writes() {
     let route = m
         .route(RouteSpec::new(source, mix, Depth::of(0.5)))
         .unwrap();
-    let target = m.key(mix);
     settle(&mut s);
     figure(&mut s, 0.5, "the base plus the route's offset");
 
@@ -147,7 +139,7 @@ fn a_route_onto_a_mix_modulates_around_the_base_set_mix_writes() {
     figure(&mut s, 0.25, "the macro moved");
 
     s.mods_mut().set_source(source, Macro(0.5)).unwrap();
-    assert!(s.mod_state().set_knob(target, 0.875), "the lane has a knob");
+    s.graph().set_mix(node, Mix::new(0.875)).expect("a node");
     settle(&mut s);
     figure(&mut s, 1.0, "clamped to the blend");
     assert_eq!(

@@ -83,7 +83,8 @@ impl Channels {
 
     /// The key's channels: the input's width when [`keyed`](Self::keyed), else 0.
     #[must_use]
-    pub const fn key_width(&self) -> usize {
+    #[cfg(any(test, feature = "contract"))]
+    pub(crate) const fn key_width(&self) -> usize {
         if self.keyed { self.input_width() } else { 0 }
     }
 
@@ -166,13 +167,14 @@ pub trait Family: Clone + Send {
         member
     }
 
-    /// An unprepared recurrence for this family. Control side; allocates.
-    fn recurrence(&self) -> Self::Recurrence;
+    /// An unprepared recurrence for this family at `rate`, the rate its first
+    /// [`prepare`](Recurrence::prepare) will be for. Control side; allocates.
+    fn recurrence(&self, rate: SampleRate) -> Self::Recurrence;
 
-    /// An unprepared runner of this family's recurrence, at rest on the family's blank
-    /// member. Control side; allocates.
-    fn realized(&self) -> Realized<Self::Recurrence> {
-        Realized::new(self.recurrence(), &self.blank(SampleRate::DEFAULT))
+    /// An unprepared runner of this family's recurrence at `rate`, at rest on the
+    /// family's blank member there. Control side; allocates.
+    fn realized(&self, rate: SampleRate) -> Realized<Self::Recurrence> {
+        Realized::new(self.recurrence(rate), &self.blank(rate))
     }
 }
 

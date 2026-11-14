@@ -483,7 +483,7 @@ fn a_stop_inside_a_block_silences_the_read_on_its_frame() {
     let stop_beat = Beat::new(0.25 + 40.0 * 2.0 / SR);
     changes
         .push(
-            Offset::new(40, Samples(64)).unwrap(),
+            Offset::of(Samples(40), Samples(64)),
             tutti_graph::TransportPosition::new(false, Bpm::of(120.0), stop_beat, None),
         )
         .unwrap();
@@ -1137,8 +1137,9 @@ fn with_channels_declares_the_width() {
     );
 }
 
-/// The node's shape is its declared width, a generator's: no inputs, no
-/// latency, never skipped (its tail is unbounded).
+/// The node's shape is its declared width, a source's: no inputs, no latency,
+/// and a free-running one rings out its wave (32 frames at the rate it was
+/// written at, which is the render's).
 #[test]
 fn the_shape_is_the_declared_width() {
     for w in [1usize, 2, 6, 8] {
@@ -1151,7 +1152,7 @@ fn the_shape_is_the_declared_width() {
         assert_eq!(shape.audio_out().count() as usize, w, "width {w}");
         assert_eq!(shape.audio_in().count(), 0);
         assert_eq!(shape.latency.samples(), Samples(0));
-        assert_eq!(shape.tail, Tail::Unbounded);
+        assert_eq!(shape.tail, Tail::Finite(Samples(32)));
     }
 }
 

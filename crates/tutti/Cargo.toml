@@ -47,7 +47,7 @@ tutti-midi-file = { version = "0.0.1", path = "../tutti-midi-file", optional = t
 tutti-midi-hardware = { version = "0.0.1", path = "../tutti-midi-hardware", optional = true }
 tutti-plugin = { version = "0.0.1", path = "../tutti-plugin", optional = true }
 tutti-plugin-host = { version = "0.0.1", path = "../tutti-plugin-host", optional = true }
-# The API layer (design 015): a graph, its engine and its device behind one
+# The API layer: a graph, its engine and its device behind one
 # `Session`. `default-features = false` (its default is empty anyway): each
 # feature below turns on the session's feature of the same name with `?`, so
 # a build without `session` gets no session edge from a feature.
@@ -58,7 +58,7 @@ tutti-session = { version = "0.0.1", path = "../tutti-session", default-features
 # doctest. Dev-only: a consumer of the umbrella never sees the module.
 tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["testing"] }
 tempfile = "3.8"
-# The reference CLAP plugin the §5.2 example plays, in a `plugin-server`
+# The reference CLAP plugin the `plugin_midi_export` example plays, in a `plugin-server`
 # (built first: `cargo build -p tutti-plugin-server`; not a dev-dependency,
 # which would be a cycle through `tutti-plugin`), and the lookup that finds
 # both beside the running binary (`tutti-session/tests/support`). Its `Notes`
@@ -194,12 +194,12 @@ name = "song_bounce"
 required-features = ["session", "export", "sampler", "dsp", "modulation"]
 test = true
 
-# Design 015 §5.1: doc 014 §8.1's modulation, headless, in one import.
+# Modulation, headless, in one import.
 [[example]]
 name = "headless_modulation"
 required-features = ["session", "modulation"]
 
-# Design 015 §5.2: load a plugin, play a MIDI file, export to WAV, in one
+# Load a plugin, play a MIDI file, export to WAV, in one
 # import. Run as a test (`test = true`) so CI plays it; it needs
 # `plugin-server` built first, and fails without it.
 [[example]]
@@ -207,7 +207,7 @@ name = "plugin_midi_export"
 required-features = ["session", "clap", "export"]
 test = true
 
-# Design 029 step 1, the acceptance example: scan a plugin directory, pick a
+# A plugin host: scan a plugin directory, pick a
 # plugin by name, load it into a session, wire, play, set a parameter, save
 # its state and bounce. It needs a plugin directory, `plugin-server` and
 # `plugin-probe` built, so CI compiles it and does not run it.
@@ -215,7 +215,7 @@ test = true
 name = "plugin_host"
 required-features = ["session", "clap", "export"]
 
-# Design 030 L1f-a, the MIDI acceptance program: every piece of the session's
+# Every piece of the session's
 # MIDI together, offline and with no device. Run as a test (`test = true`).
 [[example]]
 name = "midi_all"

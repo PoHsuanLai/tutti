@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use tutti_types::{
-    Amplitude, AtomicF32, Azimuth, Cents, CompressionRatio, Db, Depth, Drive, Elevation, Feedback,
-    Hz, Mix, Pan, Param, ParamCell, ParamRaw, Q, Resonance, Seconds, Spread, StereoWidth, Unit,
-    UnitAddr,
+    Amplitude, AtomicF32, Azimuth, CentsSpan, CompressionRatio, Db, Depth, Drive, Elevation,
+    Feedback, Hz, Mix, Pan, Param, ParamCell, ParamRaw, Q, Resonance, Seconds, Spread, StereoWidth,
+    Unit, UnitAddr,
 };
 
 use crate::controls::{ParamSet, Params};
@@ -60,7 +60,7 @@ macro_rules! scalar_units {
 scalar_units!(
     Amplitude,
     Azimuth,
-    Cents,
+    CentsSpan,
     CompressionRatio,
     Db,
     Depth,

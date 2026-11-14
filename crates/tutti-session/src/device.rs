@@ -52,7 +52,7 @@ use crate::graph::Graph;
 use crate::{DevicePolicy, DeviceWatch, Error, FollowEvent, Result, Session, SessionEvent};
 
 /// A session and the [`Device`] that drives it, as
-/// [`build_device`](crate::SessionBuilder::build_device) returns them.
+/// [`SessionBuilder::build`](crate::SessionBuilder::build) on a device returns them.
 ///
 /// **The device is the stream.** Dropping a [`Device`] stops the callback, so
 /// a build that returned `(Session, Device)` was silenced by

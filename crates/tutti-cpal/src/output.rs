@@ -14,7 +14,7 @@ use crate::block::OutputBlock;
 use crate::driver_seam::{CpalDriver, OutputSpec, RunningStream, StreamDriver};
 use crate::error::{Error, Result};
 use crate::faults::StreamFaults;
-use crate::host::{AudioHost, DeviceHost, DeviceSelector};
+use crate::host::{AudioHost, DeviceHost, DeviceSelector, device_name};
 use crate::latency::StreamLatency;
 use crate::roster::Direction;
 
@@ -56,7 +56,7 @@ impl AudioCallbackState {
 /// **Runs on the audio thread. Must not allocate, lock, or block.** Every
 /// buffer it touches is sized once at stream build to [`MAX_FRAMES`]; a longer
 /// callback is clamped and its tail silenced rather than reallocating here.
-/// `tests/rt_no_alloc.rs` gates this against a disabled allocator.
+/// `tests/device/rt_no_alloc.rs` gates this against a disabled allocator.
 ///
 /// # Panics
 ///
@@ -110,9 +110,7 @@ pub(crate) enum Opened {
 
 impl Opened {
     fn of(device: &cpal::Device) -> Self {
-        device
-            .name()
-            .map_or_else(|e| Self::Unnamed(e.to_string()), Self::Named)
+        device_name(device).map_or_else(|e| Self::Unnamed(e.to_string()), Self::Named)
     }
 }
 
@@ -145,7 +143,9 @@ impl AudioEngine {
     /// As [`new`](Self::new), plus whatever resolving `sel` on `host` reports.
     pub fn open(host: DeviceHost, sel: DeviceSelector) -> Result<Self> {
         let device = host.device(Direction::Output, &sel)?;
-        let config = device.default_output_config()?;
+        let config = device
+            .default_output_config()
+            .map_err(Error::DeviceNotAvailable)?;
         Ok(Self {
             spec: OutputSpec::from_supported(&config)?,
             target: Some((host, sel)),
@@ -237,7 +237,9 @@ impl AudioEngine {
             ));
         };
         let device = host.device(Direction::Output, sel)?;
-        let config = device.default_output_config()?;
+        let config = device
+            .default_output_config()
+            .map_err(Error::DeviceNotAvailable)?;
         self.spec = OutputSpec::from_supported(&config)?;
         // What it is called is recorded by the caller once the stream runs
         // (`set_opened`): a restart that fails leaves the name of the device

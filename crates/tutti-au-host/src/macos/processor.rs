@@ -452,7 +452,7 @@ impl AuProcessor {
     /// the silence-flag read.
     ///
     /// Split out so the f32 and f64 entry points cannot drift on any of it:
-    /// notably the `LastRenderError` enrichment and the `OutputIsSilence`
+    /// notably the `LastRenderStatus` enrichment and the `OutputIsSilence`
     /// handling. Allocation-free on the success path.
     fn render_frames(&mut self, num_frames: u32) -> Result<Silence> {
         if num_frames > self.block_size {
@@ -717,11 +717,8 @@ mod ump_staging {
     use tutti_plugin_types::Samples;
     use tutti_ump::{Message, MidiChannel, MidiGroup, Ump};
 
-    fn at(frame: u32, ump: Ump) -> UmpAt {
-        (
-            Offset::new(frame as usize, Samples(4096)).expect("inside the block"),
-            ump,
-        )
+    fn at(frame: usize, ump: Ump) -> UmpAt {
+        (Offset::of(Samples(frame), Samples(4096)), ump)
     }
 
     fn note_on(group: u8, key: u8) -> Ump {

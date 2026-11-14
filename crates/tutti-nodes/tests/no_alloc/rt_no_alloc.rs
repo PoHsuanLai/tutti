@@ -1,0 +1,187 @@
+//! Regression gate for RT-safety: built-in nodes must not allocate on the
+//! process path. The panner tests are `spatial_rt_no_alloc.rs`.
+
+use tutti_types::Drive;
+use tutti_types::{SampleRate, Seconds};
+
+/// A node through `BlockRig`, silent inputs: 16 warm-up blocks (past
+/// the first FFT partition, so `process` takes the hot path), then 1 000
+/// blocks under `assert_no_alloc`. Its `prepare` (which sizes the fold's
+/// scratch) runs when the rig is built, outside the gate.
+fn gate<N: tutti_graph::IntoNode>(node: N) {
+    gate_at(node, 64);
+}
+
+/// [`gate`] at a host block of `block` frames.
+fn gate_at<N: tutti_graph::IntoNode>(node: N, block: usize) {
+    let (mut rig, _controls) =
+        tutti_graph::contract::BlockRig::new(node, tutti_types::SampleRate::SR_48K, block);
+    for _ in 0..16 {
+        rig.block();
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..1_000 {
+            rig.block();
+        }
+    });
+}
+#[test]
+fn convolver_process_is_allocation_free() {
+    use tutti_nodes::{ConvolverNode, generate_test_ir};
+
+    let ir = generate_test_ir(2048, Seconds::new(0.3), SampleRate::SR_48K);
+    gate(ConvolverNode::new(&ir, 512));
+}
+#[test]
+fn stereo_convolver_process_is_allocation_free() {
+    use tutti_nodes::{ConvolverNode, generate_test_ir};
+
+    let ir_l = generate_test_ir(2048, Seconds::new(0.3), SampleRate::SR_48K);
+    let ir_r = generate_test_ir(2048, Seconds::new(0.4), SampleRate::SR_48K);
+    gate(ConvolverNode::stereo(&ir_l, &ir_r, 512));
+}
+
+/// The incremental accumulation runs in every block between two partition
+/// boundaries, so it is gated at host blocks that divide the partition, ones
+/// that do not (37, 100) and one longer than a partition (1000 against 256).
+#[test]
+fn convolver_mid_cycle_blocks_are_allocation_free() {
+    use tutti_nodes::{ConvolverNode, generate_test_ir};
+
+    let ir = generate_test_ir(8192, Seconds::new(0.3), SampleRate::SR_48K);
+    for block in [37usize, 100, 128, 1000] {
+        gate_at(ConvolverNode::new(&ir, 256), block);
+    }
+}
+
+/// The bare convolver with call lengths from 1 to past two partitions, in an
+/// order that lands calls mid-cycle, across the boundary and exactly on it,
+/// over a signal that is not silent.
+#[test]
+fn convolver_ragged_calls_are_allocation_free() {
+    use tutti_dsp::Convolver;
+    use tutti_nodes::generate_test_ir;
+
+    let ir = generate_test_ir(8192, Seconds::new(0.3), SampleRate::SR_48K);
+    let mut c = Convolver::new(&ir, 128);
+    let x: Vec<f32> = (0..513).map(|i| ((i as f32) * 0.31).sin()).collect();
+    let mut y = vec![0.0f32; 513];
+    let lens = [1usize, 7, 33, 100, 127, 128, 129, 255, 513, 64];
+    for k in 0..40 {
+        let n = lens[k % lens.len()];
+        c.process_block(&x[..n], &mut y[..n]);
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        for k in 0..3_000 {
+            let n = lens[k % lens.len()];
+            c.process_block(&x[..n], &mut y[..n]);
+        }
+    });
+}
+
+/// A 5 s IR at a 512 head, which the cost model cuts into a head and tail
+/// levels with their own transforms, under ragged calls from 1 frame to past
+/// the longest tail partition, over a signal that is not silent. The run is
+/// long enough for every level to complete many blocks, and it lands calls on
+/// and across each level's forward and inverse frames.
+#[test]
+fn convolver_tail_levels_are_allocation_free() {
+    use tutti_dsp::Convolver;
+    use tutti_nodes::generate_test_ir;
+
+    let ir = generate_test_ir(240_000, Seconds::new(1.0), SampleRate::SR_48K);
+    let mut c = Convolver::new(&ir, 512);
+    let x: Vec<f32> = (0..5000).map(|i| ((i as f32) * 0.31).sin()).collect();
+    let mut y = vec![0.0f32; 5000];
+    let lens = [1usize, 64, 64, 64, 333, 512, 700, 2049, 4999, 64, 127, 3];
+    for k in 0..60 {
+        let n = lens[k % lens.len()];
+        c.process_block(&x[..n], &mut y[..n]);
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        for k in 0..1_500 {
+            let n = lens[k % lens.len()];
+            c.process_block(&x[..n], &mut y[..n]);
+        }
+    });
+}
+
+/// The fold path is the one with scratch: a width-long frame buffer and a
+/// block-long mono buffer, both sized before the first block (the frame at
+/// construction, the mono block at `prepare`), never grown in `process`. Six
+/// channels, so the fold does real work rather than the stereo average.
+#[test]
+fn folded_six_channel_convolver_process_is_allocation_free() {
+    use tutti_nodes::{ConvolverNode, generate_test_ir};
+
+    let irs: Vec<Vec<f32>> = (0..6)
+        .map(|c| {
+            generate_test_ir(
+                1024,
+                tutti_types::Seconds::from_f32(0.2 + 0.05 * c as f32),
+                SampleRate::SR_48K,
+            )
+        })
+        .collect();
+    let refs: Vec<&[f32]> = irs.iter().map(Vec::as_slice).collect();
+    gate(ConvolverNode::folded(&refs, 256).unwrap());
+}
+
+/// Every curve of the shaper, unfed (the block-rate drive) and with its
+/// drive port fed a per-frame ramp (the path that writes each frame's
+/// hardness into channel 0 and shapes it last), 1 000 blocks each under
+/// `assert_no_alloc`. `Direct` feeds the port, which `BlockRig` cannot.
+#[test]
+fn distortion_process_is_allocation_free_fed_and_unfed() {
+    use tutti_graph::contract::Direct;
+    use tutti_nodes::{DistortionNode, ShapeKind};
+    use tutti_types::SampleRate;
+
+    let kinds = [
+        ShapeKind::Tanh,
+        ShapeKind::Atan,
+        ShapeKind::Softsign,
+        ShapeKind::HardClip,
+        ShapeKind::Crush,
+        ShapeKind::SoftCrush,
+    ];
+    let drive: Vec<f32> = (0..64).map(|i| 1.0 + 0.0625 * i as f32).collect();
+    for kind in kinds {
+        // The unfed render's first block, kept to prove the fed arm ran.
+        let mut unfed: Vec<Vec<f32>> = Vec::new();
+        for fed in [false, true] {
+            let mut node = Direct::new(
+                DistortionNode::with_channels(3u16, kind, Drive::new(2.0)),
+                SampleRate::SR_48K,
+                64,
+            );
+            for (c, x) in node.inputs_mut().iter_mut().enumerate() {
+                for (i, s) in x.iter_mut().enumerate() {
+                    *s = 0.9 * (((i + 7 * c) % 13) as f32 / 6.0 - 1.0);
+                }
+            }
+            if fed {
+                node.feed(0, Some(&drive));
+            }
+            node.block();
+            assert!(
+                (0..3).all(|c| node.output(c).iter().any(|s| s.abs() > 1e-6)),
+                "{kind:?} fed={fed} rendered a silent channel; the gate would walk no curve"
+            );
+            let first: Vec<Vec<f32>> = (0..3).map(|c| node.output(c).to_vec()).collect();
+            if fed {
+                assert_ne!(
+                    first, unfed,
+                    "{kind:?}: the fed drive changed nothing; the gate would walk the unfed arm"
+                );
+            } else {
+                unfed = first;
+            }
+            assert_no_alloc::assert_no_alloc(|| {
+                for _ in 0..1_000 {
+                    node.block();
+                }
+            });
+        }
+    }
+}

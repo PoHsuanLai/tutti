@@ -72,9 +72,10 @@ use tutti_ump::{
 
 use crate::capability::UmpCapability;
 use crate::ci::{
-    Ci, CiChange, CiChanges, CiPeerInfo, Heard, groups_after_settle, groups_of_a_midi1_port,
+    Ci, CiChange, CiChanges, CiPeerInfo, Heard, PeerId, groups_after_settle, groups_of_a_midi1_port,
 };
 use crate::devices::OpenOutput;
+use crate::process::{self, ProcessChange, ReportAsk, ReportError};
 use crate::profiles::{ProfileError, ProfileSwitch, ProfilesChange, Snapshot};
 use tutti_midi_device::DeviceId;
 
@@ -181,9 +182,11 @@ pub(crate) struct Stepped {
     /// The stream, when this call settled it or changed it.
     pub(crate) stream: Option<DeviceStream>,
     /// The MIDI-CI peers that came, changed or went.
-    pub(crate) ci: Vec<CiChange>,
+    pub(crate) ci: Vec<(PeerId, CiChange)>,
     /// The Profiles of the peers that changed.
-    pub(crate) profiles: Vec<ProfilesChange>,
+    pub(crate) profiles: Vec<(PeerId, ProfilesChange)>,
+    /// The Process Inquiry of the peers that changed.
+    pub(crate) process: Vec<(PeerId, ProcessChange)>,
 }
 
 /// The Identity Request of a MIDI 1.0 port that has an output (the module's
@@ -314,6 +317,17 @@ impl Negotiation {
         self.ci.profiles()
     }
 
+    /// The MIDI-CI peers of this device that can be asked for a MIDI Message
+    /// Report.
+    pub(crate) fn report_peers(&self) -> process::Snapshot {
+        self.ci.report_peers()
+    }
+
+    /// Asks that a peer be sent a MIDI Message Report request at the next poll.
+    pub(crate) fn report(&mut self, ask: ReportAsk) -> Result<(), ReportError> {
+        self.ci.report(ask)
+    }
+
     /// Asks that a peer's Profile be switched at the next poll.
     pub(crate) fn set_profile(&mut self, switch: ProfileSwitch) -> Result<(), ProfileError> {
         self.ci.set_profile(switch)
@@ -394,6 +408,7 @@ impl Negotiation {
             stream,
             ci: changes.peers,
             profiles: changes.profiles,
+            process: changes.process,
         }
     }
 

@@ -13,19 +13,19 @@ use thiserror::Error;
 pub enum Error {
     /// No default output stream config was available from the host.
     #[error("Audio device not available")]
-    DeviceNotAvailable(#[from] cpal::DefaultStreamConfigError),
+    DeviceNotAvailable(#[source] cpal::Error),
 
     /// The CPAL stream could not be built with the requested config.
     #[error("Failed to build audio stream")]
-    BuildStream(#[from] cpal::BuildStreamError),
+    BuildStream(#[source] cpal::Error),
 
     /// The CPAL stream could not be started.
     #[error("Failed to play audio stream")]
-    PlayStream(#[from] cpal::PlayStreamError),
+    PlayStream(#[source] cpal::Error),
 
     /// Enumerating audio devices via CPAL failed.
     #[error("Failed to enumerate devices")]
-    DevicesError(#[from] cpal::DevicesError),
+    DevicesError(#[source] cpal::Error),
 
     /// The requested stream configuration was rejected as invalid.
     #[error("Invalid config: {0}")]

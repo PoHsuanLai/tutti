@@ -25,16 +25,18 @@
 use std::num::NonZeroUsize;
 use std::time::Instant;
 
-use crate::ParamEdit;
+use dpi::Size;
+
 use crate::{
-    AudioBufferMut, AutomationMode, ContentScale, EditorCapabilities, EditorSize, EditorWindow,
-    KeyEvent, KeyUse, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor,
-    PluginError, PluginResult, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput,
-    ProcessWake, SampleRate, Samples, WindowHandle,
+    AudioBufferMut, AutomationMode, ContentScale, EditorCapabilities, EditorWindow, KeyEvent,
+    KeyUse, LoadedPlugin, Normalized, ParamId, ParameterInfo, PluginDescriptor, PluginError,
+    PluginResult, PluginTail, Preset, PresetId, ProcessContext, ProcessOutput, ProcessWake,
+    SampleRate, Samples, WindowHandle,
 };
+use crate::{Delivered, ParamEdit};
 use crate::{
     FdId, MainThread, Prepare, Ready, RenderMode, RenderModeSupport, Request, RescanScope,
-    RestartRules, StateUse, TimerId, Wakeups,
+    RestartRules, StateUse, TimerId, TrackInfo, Wakeups,
 };
 
 /// What the main thread asks of a plugin, in any state that has one.
@@ -150,6 +152,20 @@ pub trait Control: EditorWindow {
         let _ = (main, mode);
     }
 
+    /// Tells the plugin's host what the host says of the track the plugin sits
+    /// on. A format that can answer the plugin's reads (CLAP `track-info`)
+    /// keeps it and tells the plugin when it differs from the last; a format
+    /// without one keeps this default, which takes it and drops it, and
+    /// answers [`Yes`](Delivered::Yes): there is nowhere it should have gone.
+    ///
+    /// [`PluginDead`](Delivered::PluginDead) when the plugin is gone,
+    /// [`Dropped`](Delivered::Dropped) when a served plugin's queue was full
+    /// and a later call may succeed.
+    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) -> Delivered {
+        let _ = (main, info);
+        Delivered::Yes
+    }
+
     /// Reads parameters again after a rescan the plugin asked for.
     fn rescan_parameters(&mut self, main: &MainThread, scope: RescanScope) {
         let _ = (main, scope);
@@ -210,7 +226,7 @@ pub trait Control: EditorWindow {
     /// Appends the parameter edits the plugin reported of its own accord (its
     /// editor moving a knob, its own automation), oldest first, to `out`: each
     /// a [`ParamEdit`], so a gesture's `Begin`, its changes and its `End` come
-    /// in the order the plugin made them (doc 029 section 6.1).
+    /// in the order the plugin made them.
     ///
     /// Every format reports them here: VST2's `audioMasterBeginEdit`,
     /// `audioMasterAutomate` and `audioMasterEndEdit`, VST3's `beginEdit`,
@@ -317,8 +333,7 @@ pub trait Processor: Send {
     /// Per format: CLAP `plugin.reset`; VST3 `setProcessing(false)`, started
     /// again in the next block (the SDK calls it a way to reset buffers, a
     /// request a plugin may ignore); VST2 `effStopProcess`, started again in the next
-    /// block (likewise a request). Every format drops a SysEx open across the reset
-    /// (design 016 §6.2).
+    /// block (likewise a request). Every format drops a SysEx open across the reset.
     fn reset(&mut self);
 
     /// The frames this Processor renders in, if it renders in fixed chunks
@@ -575,6 +590,10 @@ impl<W: Wraps> Control for W {
         }
     }
 
+    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) -> Delivered {
+        self.plugin_mut().set_track_info(main, info)
+    }
+
     fn rebuild_midi_mapping(&mut self, main: &MainThread) {
         self.plugin_mut().rebuild_midi_mapping(main);
     }
@@ -633,7 +652,7 @@ impl<W: Wraps> EditorWindow for W {
         main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
+    ) -> PluginResult<Size> {
         self.plugin_mut().open_editor(main, parent, scale)
     }
 
@@ -669,15 +688,11 @@ impl<W: Wraps> EditorWindow for W {
         self.plugin_mut().editor_capabilities(main)
     }
 
-    fn set_editor_size(
-        &mut self,
-        main: &MainThread,
-        requested: EditorSize,
-    ) -> PluginResult<EditorSize> {
+    fn set_editor_size(&mut self, main: &MainThread, requested: Size) -> PluginResult<Size> {
         self.plugin_mut().set_editor_size(main, requested)
     }
 
-    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<EditorSize> {
+    fn poll_editor_resize_request(&mut self, main: &MainThread) -> Option<Size> {
         self.plugin_mut().poll_editor_resize_request(main)
     }
 }

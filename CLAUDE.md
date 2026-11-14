@@ -8,7 +8,10 @@ crate docs of what you touch. The reasoning behind a rule is in
 ## Commands
 
 `cargo xtask <recipe>` wraps everything (`cargo xtask help`; `--dry-run` prints the
-commands). `cargo xtask ci` runs what CI runs.
+commands). `cargo xtask ci` runs what CI runs. `cargo xtask gates` (rustfmt, xtask's
+tests and the source gates, seconds and no build) is what CI fails fastest on: run it
+before a push, or once per clone `git config core.hooksPath .githooks` to have
+`.githooks/pre-push` run it.
 
 ```bash
 cargo build
@@ -52,9 +55,10 @@ std only. A rule the compiler already enforces is not a gate.
 - **Golden digests** go through `tutti_fixtures::assert_golden`: asserted on the recorded
   libm (x86_64, glibc 2.39), skipped elsewhere, required in CI (`TUTTI_GOLDEN=require`).
   Re-record only for an argued libm move, with the owner.
-- **One integration binary per area**: `tests/<area>/main.rs`, one `mod` per file. A file
-  is its own binary only when it must be (a `#[global_allocator]`, `harness = false`,
-  `cfg(loom)`).
+- **One integration binary per area**: `tests/<area>/main.rs`, one `mod` per file. An area
+  binary installs `assert_no_alloc::AllocDisabler` once and its allocation tests are
+  modules in it; a file is its own binary only for a different allocator (counting,
+  no-free), `harness = false`, or `cfg(loom)`.
 - **A test must be able to fail.** It asserts a spec property, an analytic figure or an
   invariant, and its name says which. Delete a test that cannot fail: one that is always
   true, asserts only that nothing panicked, or compares a value with the function that
@@ -100,7 +104,8 @@ std only. A rule the compiler already enforces is not a gate.
   `Graph::connect(from, to)` over ports taken from keys; params are methods of the key.
 - **One failure rule:** a call that names a node or port that does not exist fails at the
   call with a named error, never later and never as a default. A port that goes missing
-  after a successful call reads silence. Removal returns a `#[must_use] Result`.
+  after a successful call reads silence, except a tap whose every source was removed:
+  it ends (`Pull::Ended`) once drained. Removal returns a `#[must_use] Result`.
 - The session graph declicks wiring (`connect` fades in unless `.hard()`); a test that
   renders a session wire for another reason wires `.hard()`.
 - An inlet whose rate is not the graph's is refused, never resampled.
@@ -127,8 +132,8 @@ std only. A rule the compiler already enforces is not a gate.
   `tutti-alsa-ffi` and `tutti-coremidi-ffi`. Everything above them forbids `unsafe`.
   Test-only `unsafe` is `tutti-fixtures`'.
 - New lock-free or `unsafe` runtime structure goes in `tutti-rt`, with a loom model that
-  runs the shipped code. The publish cell is its own crate, `arc-lend`, which names
-  nothing of tutti's.
+  runs the shipped code. The publish cell is the `arc-lend` crate from its own repository
+  (github.com/tutti-audio/arc-lend); a change to it is made there.
 - Store-load pairs use `SeqCst` fences, not `SeqCst` accesses.
 - A platform difference sits behind one seam: the `cfg` chooses a platform module, never
   each item.
@@ -141,7 +146,7 @@ std only. A rule the compiler already enforces is not a gate.
   tests before adding one, and ship a replacement with any omission.
 - A number becomes a unit with `new` and leaves with `get`; there is no `From` between a
   unit and its raw. Convert between units with the named converters.
-- Measurements are not controls: `Confidence`, `Correlation` and `Pan` are readings.
+- Measurements are not controls: `Confidence`, `Correlation` and `StereoBalance` are readings.
 - Types stop at C ABI, IPC and wire boundaries; say why in a comment there.
 - Add a unit only for a distinct range or a distinct algebra.
 ### Range-checked values
@@ -151,6 +156,8 @@ std only. A rule the compiler already enforces is not a gate.
   agreeing with `new`, serde through `try_from`, and named `clamped`/`masked` only where a
   hot path or the wire needs them. No public field, no infallible `From<Raw>`. Test it with
   `tutti_fixtures::check_range_contract`.
+- Write a new range-checked type with `tutti_types::ranged!`, never by hand or with a
+  crate-local macro; a hand-written one moves to it when its file is touched.
 - Make a wrong value unwritable before adding a runtime check for it.
 
 ### Edges and buffers
@@ -190,6 +197,9 @@ std only. A rule the compiler already enforces is not a gate.
 - A pure algorithm over slices goes in `tutti-dsp` (a measurement in `tutti-measure`); a
   node file holds only the `Node` adapter.
 - A new trait states its boundary in one sentence without "and".
+- An error type derives `thiserror::Error` with its text in `#[error(..)]`; a hand
+  `impl Error for` is a row of the gate's allow-list with its reason (`cargo xtask
+  check-errors`), and a `pub` type named `...Error` implements `Error`.
 - Naming: an algorithm uses the theory name, a spec keeps its own, a *frame* is one value
   per channel, a *sample* is one value. A user-facing node API keeps the control word.
 - A comment states what the code does and the invariant it holds, in the present tense;
@@ -210,7 +220,7 @@ adapter is [tutti-audio/bevy-tutti](https://github.com/tutti-audio/bevy-tutti).
 **Layering.** Normal and build dependencies point strictly down this list
 (dev-dependencies may go anywhere); `cargo xtask check-layout` holds it:
 
-0. `arc-lend`, `tutti-alsa-ffi`, `tutti-coremidi-ffi`, `tutti-ump`, `tutti-types`,
+0. `tutti-alsa-ffi`, `tutti-coremidi-ffi`, `tutti-ump`, `tutti-types`,
    `tutti-plugin-ipc-ffi`
 1. `tutti-rt`, `tutti-midi-protocol`, `tutti-midi-device`, `tutti-curve`
 2. `tutti-graph`, `tutti-dsp`, `tutti-modulation`, `tutti-metering`, `tutti-codec`,

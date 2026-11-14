@@ -1,6 +1,5 @@
 //! The in-process plugin's control side: its [`Lifecycle`], with the
-//! Processor lent to the node's realtime end through a threaded [`Hand`]
-//! (doc 016 §2.6; doc 021 step 4a-3).
+//! Processor lent to the node's realtime end through a threaded [`Hand`].
 //!
 //! The audio thread never reaches this: it renders through the Processor the
 //! node's [`Rt`] holds, and takes no lock. The control side (the handle, the
@@ -36,6 +35,8 @@ pub(super) struct Changes {
     /// The plugin raised [`Request::IoChanged`](tutti_plugin_types::Request::IoChanged): its pin counts or latency
     /// may differ.
     pub(super) io: bool,
+    /// What the plugin asked the transport to do, in the order it asked.
+    pub(super) transport: Vec<tutti_plugin_types::TransportRequest>,
 }
 
 /// A plugin of hosting `F` and where it is in its life.
@@ -176,6 +177,7 @@ impl<F: Loaded> Instance<F> {
                     Notice::LatencyChanged(latency) => changes.latency = Some(latency),
                     Notice::TailChanged(tail) => changes.tail = Some(tail),
                     Notice::IoChanged => changes.io = true,
+                    Notice::Transport(request) => changes.transport.push(request),
                     Notice::Refused { reason, .. }
                     | Notice::Stuck { reason }
                     | Notice::Lost { reason } => refused = Some(reason.to_string()),
@@ -277,9 +279,8 @@ impl<F: Loaded> Instance<F> {
     /// `rt` on return. Without, the recall waits for the audio thread's next
     /// poll and a later [`pump`](Self::pump) finishes it.
     ///
-    /// A plugin that refuses the rate renders nothing until a rate it takes
-    /// (doc 016's rule for every format); the figures it recomputes are read
-    /// after the activation.
+    /// A plugin that refuses the rate renders nothing until a rate it takes, as every format does.
+    /// The figures it recomputes are read after the activation.
     ///
     /// # Errors
     ///

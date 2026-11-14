@@ -18,6 +18,8 @@ default = []
 # `tutti_nodes::testing` — stimulus and plumbing nodes for tests, examples and
 # benches (`Const`, `Osc`, `Through`, `Split`, `Sink`).
 testing = []
+# `Serialize`/`Deserialize` on the node settings a project saves (`MetronomeMode`).
+serde = ["dep:serde"]
 
 [dependencies]
 # Value vocabulary (the `Curve` trait), for `impl Curve for Trajectory`.
@@ -46,14 +48,13 @@ tutti-transport = { version = "0.0.1", path = "../tutti-transport" }
 
 # `VbapError`.
 thiserror = { workspace = true }
+serde = { version = "1", optional = true, default-features = false, features = ["derive"] }
 
 [dev-dependencies]
 libm = "0.2.15"
-tutti-nodes = { path = ".", features = ["testing"] }
+tutti-nodes = { path = ".", features = ["testing", "serde"] }
+serde_json = "1"
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
-# `check_range_contract` for `TailCeiling`, and `Seconds`'s serde for it.
-serde = "1"
-tutti-types = { path = "../tutti-types", default-features = false, features = ["serde"] }
 approx = "0.5"
 assert_no_alloc = { version = "1", default-features = false }
 criterion.workspace = true

@@ -515,12 +515,12 @@ fn everything() -> Vec<PeHeader> {
     let mut full = PeRequest::new(ResourceName::new("X-Custom").unwrap());
     full.res_id = ResourceId::new("a_1");
     full.mutual_encoding = Some(PeEncoding::ZlibMcoded7);
-    full.flow_control = true;
+    full.flow_control = PeFlowControl::On;
     full.page = Some(PePage {
         offset: 4_000_000_000,
         limit: NonZeroU32::new(u32::MAX).unwrap(),
     });
-    full.set_partial = true;
+    full.set_scope = PeSetScope::Partial;
     full.media_type = MediaType::new("application/x-thing; v=1");
     full.extra
         .insert(

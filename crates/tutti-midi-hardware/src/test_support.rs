@@ -26,7 +26,8 @@ use std::thread::JoinHandle;
 use tutti_graph::UmpAt;
 
 use crate::capability::{EndpointInfo, UmpCapability};
-use crate::devices::{ChangeSink, os_devices};
+use crate::devices::ChangeSink;
+use crate::devices::reporter::os_devices;
 use crate::endpoints::{DeviceOut, InputConnection, MidiEndpoints, Watch};
 use crate::error::{Error, Result};
 use crate::{InputProducerHandle, Pushed};
@@ -328,6 +329,16 @@ pub fn endpoint(raw: u64, name: &str) -> EndpointInfo {
         identity: Identity::alsa(name, "port"),
         name: name.to_string(),
         capability: UmpCapability::midi2(),
+    }
+}
+
+/// Like [`endpoint`], but known by a CoreMIDI unique id (the raw id), the way
+/// a device is told for certain across a replug.
+#[must_use]
+pub fn persistent_endpoint(raw: u32, name: &str) -> EndpointInfo {
+    EndpointInfo {
+        identity: Identity::CoreMidi(raw.cast_signed()),
+        ..endpoint(u64::from(raw), name)
     }
 }
 

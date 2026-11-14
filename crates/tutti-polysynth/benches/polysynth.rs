@@ -28,7 +28,7 @@
 //! `tutti-nodes/benches/engine_render.rs` sets out: steady-state,
 //! fixed-working-set, allocation-free per block. The envelope is flat so the
 //! measured region is a stationary sustain rather than a decaying attack —
-//! the same reason `examples/render_synth_cases.rs` uses one.
+//! the same reason `render_synth_cases` in `testing/tutti-verify` uses one.
 
 use std::hint::black_box;
 use std::num::NonZeroUsize;
@@ -41,8 +41,8 @@ use tutti_fixtures::midi;
 use tutti_graph::contract::Direct;
 use tutti_graph::{Event, Offset};
 use tutti_polysynth::{
-    Adsr, FilterType, OscillatorType, PolySynth, PortamentoConfig, PortamentoMode, SvfMode,
-    SynthConfig, UnisonConfig,
+    Adsr, FilterType, GlideTime, OscillatorType, PolySynth, PortamentoConfig, PortamentoMode,
+    SvfMode, SynthConfig, UnisonConfig,
 };
 use tutti_types::{Amplitude, Hz, Q, Resonance, SampleRate, Samples, Seconds};
 use tutti_ump::{
@@ -83,7 +83,7 @@ fn held(cfg: SynthConfig, n: usize) -> Direct<PolySynth> {
         ..cfg
     };
     let mut synth = Direct::new(PolySynth::new(cfg), SampleRate::of(SR), BLOCK);
-    let at = Offset::new(0, Samples(BLOCK)).expect("inside");
+    let at = Offset::of(Samples(0), Samples(BLOCK));
     let events: Vec<Event> = (0..n)
         .map(|i| {
             midi::note_on(
@@ -213,7 +213,7 @@ fn bench_portamento(c: &mut Criterion) {
                 portamento: Some(PortamentoConfig {
                     mode: PortamentoMode::Always,
                     curve,
-                    time: Seconds(10_000.0),
+                    time: GlideTime::of(Seconds(10_000.0)),
                     constant_time: true,
                 }),
                 ..config()
@@ -273,7 +273,7 @@ fn bench_events(c: &mut Criterion) {
     ];
     let events: Vec<Event> = (0..BLOCK)
         .map(|i| {
-            let at = Offset::new(i, Samples(BLOCK)).expect("inside");
+            let at = Offset::of(Samples(i), Samples(BLOCK));
             Event::midi(at, Ump::from(wire[i % wire.len()]))
         })
         .collect();

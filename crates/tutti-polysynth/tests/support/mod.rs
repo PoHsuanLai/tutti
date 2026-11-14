@@ -13,7 +13,7 @@ use tutti_graph::UmpAt;
 
 use tutti_graph::contract::{Direct, HAND_EVENT_CAPACITY};
 use tutti_graph::{Event, Offset};
-use tutti_midi_protocol::{MpeMode, MpeZoneConfig, MpeZones};
+use tutti_midi_protocol::{MpeMode, MpeZoneConfig, MpeZones, PitchBendSensitivity};
 use tutti_polysynth::PolySynth;
 use tutti_types::{SampleRate, Samples};
 use tutti_ump::Ump;
@@ -22,8 +22,15 @@ use tutti_ump::Ump;
 /// and every other channel its member, with the default bend ranges.
 pub fn lower_zone() -> MpeMode {
     MpeMode::Zones(
-        MpeZones::new(MpeZoneConfig::lower(MpeZoneConfig::MAX_MEMBERS), None)
-            .expect("a lower zone alone is a layout"),
+        MpeZones::new(
+            MpeZoneConfig::lower(
+                MpeZoneConfig::MAX_MEMBERS,
+                PitchBendSensitivity::MPE_MASTER_DEFAULT,
+                PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+            ),
+            None,
+        )
+        .expect("a lower zone alone is a layout"),
     )
 }
 
@@ -72,7 +79,7 @@ impl Hand {
     /// last frame). `(left, right)`.
     pub fn block(&mut self, frames: usize) -> (&[f32], &[f32]) {
         self.direct.set_block_len(frames);
-        let last = Offset::new(frames - 1, Samples(frames)).expect("inside");
+        let last = Offset::of(Samples(frames - 1), Samples(frames));
         for e in &mut self.queued {
             if e.offset.index() >= frames {
                 e.offset = last;

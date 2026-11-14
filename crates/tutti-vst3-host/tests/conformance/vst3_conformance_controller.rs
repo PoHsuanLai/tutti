@@ -18,8 +18,8 @@ use tutti_vst3_host::{AudioBuffer, InputEvents, PrefetchSupport, TransportInfo};
 const TEST_BLOCK: usize = 1 << 16;
 
 /// The offset `k` frames into a test block.
-fn at(k: u32) -> Offset {
-    Offset::new(usize::try_from(k).unwrap(), Samples(TEST_BLOCK)).unwrap()
+fn at(k: usize) -> Offset {
+    Offset::of(Samples(k), Samples(TEST_BLOCK))
 }
 
 use conformance_support::*;
@@ -139,9 +139,7 @@ fn midi_learn_forwards_from_the_main_thread() {
 /// This is the persistence path: a project save/reload runs exactly this, against every plugin the suite can load.
 #[test]
 fn plugin_state_round_trips() {
-    if !harness_ready() {
-        return;
-    }
+    require_harness();
     let mut failures = Vec::new();
     let mut exercised = 0usize;
 

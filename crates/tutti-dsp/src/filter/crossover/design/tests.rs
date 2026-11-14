@@ -144,7 +144,7 @@ fn a_retarget_lands_whole() {
     let rate = SampleRate::SR_48K;
     let first = d.member(&controls(300.0, 3_000.0), rate);
     let second = d.member(&controls(900.0, 5_000.0), rate);
-    let mut r = d.realized();
+    let mut r = d.realized(rate);
     r.retarget(&first);
     r.process(
         &crate::Feed::new(&[&[0.0; 40]]),
@@ -170,6 +170,25 @@ fn controls_refuse_what_a_crossover_cannot_run() {
     assert!(CrossoverControls::new(&[Hz(f32::NAN)], rate).is_err());
     assert!(CrossoverControls::new(&[Hz(30_000.0)], rate).is_err());
     assert!(CrossoverControls::new(&[], rate).is_err());
+}
+
+/// `CrossoverControls::ordered` is `new` without a rate: it refuses the same structure and
+/// admits a split a rate's Nyquist excludes, which `new` at that rate refuses and the
+/// design clamps at the rate it runs at.
+#[test]
+fn ordered_controls_refuse_structure_and_leave_nyquist_to_the_rate() {
+    assert!(CrossoverControls::ordered(&[Hz(100.0), Hz(1_000.0)]).is_ok());
+    assert!(CrossoverControls::ordered(&[Hz(1_000.0), Hz(100.0)]).is_err());
+    assert!(CrossoverControls::ordered(&[Hz(f32::NAN)]).is_err());
+    assert!(CrossoverControls::ordered(&[Hz(0.0)]).is_err());
+    assert!(CrossoverControls::ordered(&[]).is_err());
+    let high = [Hz(30_000.0)];
+    assert!(CrossoverControls::new(&high, SampleRate::SR_48K).is_err());
+    assert!(CrossoverControls::new(&high, SampleRate::SR_96K).is_ok());
+    assert_eq!(
+        CrossoverControls::ordered(&high),
+        CrossoverControls::new(&high, SampleRate::SR_96K)
+    );
 }
 
 /// The design refuses a band count the tree does not have and an empty layout.

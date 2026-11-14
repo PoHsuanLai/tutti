@@ -4,11 +4,19 @@ use super::*;
 /// These must not compile; the ledger is here so a future contributor does
 /// not "helpfully" add them.
 ///
+/// - `CentsSpan + CentsSpan`, `CentsSpan - CentsSpan` — a difference of two
+///   distances can be negative, which is outside the range. Add or subtract as
+///   offsets, `to_cents()` and arithmetic on `Cents`, then `CentsSpan::new` the
+///   result.
+/// - `CentsSpan * f32`, `-CentsSpan` — a negative factor leaves the range.
+///   Scale the raw number and call `new` (or `clamped`, where saturating is
+///   meant).
 /// - `From<raw> for Unit`, `From<Unit> for raw`, so `.into()` between a unit and
 ///   its bare number — a bare float must not become a unit unnamed at the call
 ///   site, and a unit must not leave as a float by an `.into()` that hides which
 ///   quantity it was. Build with `new`, read with `get` (generic code: the
-///   `Unit` trait's `from_raw` / `to_raw`).
+///   `Unit` trait's `from_raw` / `to_raw`). `CentsSpan` is range-checked and has
+///   `From<CentsSpan> for f32` beside `TryFrom<f32>`, as `Depth` does.
 ///
 /// The body is empty and this test cannot fail; see the note in `units/tests.rs`.
 #[test]
@@ -72,4 +80,36 @@ fn the_three_ratios_have_disjoint_ranges() {
     // as a ladder resonance. Same number, different instrument.
     assert!(Q(1.0) > Q::BUTTERWORTH);
     assert_eq!(Resonance(1.0), Resonance::SELF_OSCILLATION);
+}
+
+/// A cents span is finite and not below zero: `new`, `TryFrom`, `of` and serde
+/// agree, and NaN, the infinities and every negative are refused.
+#[cfg(feature = "serde")]
+#[test]
+fn cents_span_keeps_the_range_contract() {
+    tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+        new: CentsSpan::new,
+        get: CentsSpan::get,
+        of: Some(CentsSpan::of),
+        valid: &[0.0, 0.5, 12.0, 1200.0],
+        invalid: &[-0.001, -50.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY],
+    });
+}
+
+/// The one saturating constructor floors a negative at zero and maps NaN to
+/// zero, and `Unit::from_raw` (a parameter cell's read) is it: a cell can hold
+/// any float and a span never leaves its range.
+#[test]
+fn cents_span_saturates_only_by_name_and_through_a_cell() {
+    assert_eq!(CentsSpan::clamped(-10.0), CentsSpan::ZERO);
+    assert_eq!(CentsSpan::clamped(f32::NAN), CentsSpan::ZERO);
+    assert_eq!(CentsSpan::clamped(f32::INFINITY).get(), f32::MAX);
+    assert_eq!(<CentsSpan as Unit>::from_raw(-10.0), CentsSpan::ZERO);
+    assert_eq!(<CentsSpan as Unit>::from_raw(12.0).get(), 12.0);
+}
+
+/// 100 cents is one semitone, by the span's own converter.
+#[test]
+fn cents_span_converts_to_semitones() {
+    assert_eq!(CentsSpan::of(100.0).to_semitones(), Semitones(1.0));
 }

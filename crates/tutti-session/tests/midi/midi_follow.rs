@@ -11,9 +11,7 @@ use tutti_midi_hardware::EndpointId;
 use tutti_midi_hardware::test_support::{FakeBackend, FakeCounters, endpoint};
 use tutti_session::{FollowTempo, MidiError, MidiEvent, Session, SessionEvent, TempoError};
 use tutti_tempo::{TempoMap, TempoPoint, Transition};
-use tutti_types::{
-    Beat, Bpm, ChannelLayout, MaxBlock, MeterChange, MeterMap, SampleRate, Samples, TimeSignature,
-};
+use tutti_types::{Beat, Bpm, MeterChange, MeterMap, SampleRate, TimeSignature};
 use tutti_ump::{Flex, Message, MidiGroup, Ump};
 
 const RATE: f64 = 48_000.0;
@@ -29,11 +27,8 @@ fn rig_with(groups: Option<MidiGroup>) -> (Session, FakeCounters) {
         builder = builder.midi_groups(last);
     }
     let mut s = builder
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .build()
         .expect("builds");
     let _ = s.update();
     s.midi().connect_input("keys").expect("connects");

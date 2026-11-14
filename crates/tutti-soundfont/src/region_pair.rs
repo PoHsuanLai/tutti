@@ -297,6 +297,7 @@ mod tests {
     /// 9.4: a value generator at the preset level adds to the instrument's. The
     /// initial attenuation is in centibels (9.3), the pair reports decibels:
     /// 100 + 50 centibels is 15 dB.
+    /// Spec: sf2.genrule.preset-adds-to-instrument, sf2.gen.initialAttenuation, sf2.units.centibel
     #[test]
     fn a_preset_generator_adds_to_the_instruments_in_its_own_unit() {
         let font = pair(
@@ -311,6 +312,7 @@ mod tests {
     /// 1200 at the instrument and -1200 at the preset is zero timecents: one
     /// second, not the product of 2 s and 0.5 s computed any other way, and a
     /// zone with neither is the default (-12000, about a millisecond).
+    /// Spec: sf2.genrule.preset-adds-to-instrument, sf2.gen.delayVolEnv
     #[test]
     fn times_add_in_timecents() {
         const DELAY_VOL_ENV: u16 = 33;
@@ -328,6 +330,7 @@ mod tests {
     /// range's top) at both levels is 8000, not 16000; an attenuation of 1000
     /// and 1000 centibels is the 1440 of the range (144 dB); a pan of -400 and
     /// -400 is hard left, -500. A sum inside the range is not touched.
+    /// Spec: sf2.error.out-of-range.nearest, sf2.gen.releaseVolEnv, sf2.gen.initialAttenuation, sf2.gen.pan
     #[test]
     fn an_out_of_range_sum_is_replaced_by_the_nearest_value() {
         let both = |generator, amount| pair(vec![(generator, amount)], vec![(generator, amount)]);
@@ -363,6 +366,7 @@ mod tests {
     /// 9.3, absolute percent: pan and the effect sends are in 0.1% units, so a
     /// value of 500 is 50% (pan hard right is +50, hard left -50). The send is
     /// the sum in tenths, unlimited (the voice adds CC 91's modulator first).
+    /// Spec: sf2.units.percent.absolute, sf2.gen.pan, sf2.gen.reverbEffectsSend
     #[test]
     fn pan_and_sends_are_in_tenths_of_a_percent() {
         const PAN: u16 = 17;
@@ -379,6 +383,7 @@ mod tests {
     /// where the instrument zone puts it: the fixture's sample, frames 0 to 2000
     /// looped over 100 to 1900, at its own root key 69, with no exclusive class and
     /// nothing forced.
+    /// Spec: sf2.pdta.pgen.inst-only.ignored
     #[test]
     fn an_instrument_only_generator_at_the_preset_level_is_ignored() {
         const START: u16 = 0;

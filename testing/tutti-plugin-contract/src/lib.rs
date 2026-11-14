@@ -7,7 +7,7 @@
 //! expected figures are in [`spec`], not imported from the plugin. A case a
 //! format cannot pass is a [`Gap`]: it must fail with the stated text, and `N`
 //! must equal the number of gaps, so none is added unnoticed. `hostings` names
-//! the markers the format's loaded type implements (design 021 §3.3): each one
+//! the markers the format's loaded type implements: each one
 //! listed is checked at compile time, and `cargo xtask check-hosting` fails an
 //! impl the list leaves out.
 

@@ -21,8 +21,7 @@
 //! building and committing a graph is allowed to allocate, and the question is
 //! whether it has quietly started allocating far more than its budget.
 //!
-//! **One `#[global_allocator]` per binary**, so this cannot share a file with
-//! `AllocDisabler` — that is why it is its own integration test.
+//! It installs a counting allocator, so it is its own integration binary.
 //!
 //! # Choosing the numbers
 //!

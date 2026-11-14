@@ -18,7 +18,7 @@
 //!
 //! let mut s = Session::builder()
 //!     .outputs_floor(ChannelLayout::MONO)
-//!     .build_offline(SampleRate::SR_48K, ChannelLayout::MONO, MaxBlock::of(Samples(512)))
+//!     .outputs(ChannelLayout::MONO).max_block(MaxBlock::of(Samples(512))).build()
 //!     .unwrap();
 //! let (osc, _) = s.graph().add(ForkByClone(Osc::sine(Hz(1_000.0))));
 //! s.graph().connect(osc, Root).unwrap();
@@ -28,6 +28,26 @@
 //! s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::MONO));
 //! assert!(block.iter().any(|&x| x > 0.9));
 //! ```
+//!
+//! # The two loops
+//!
+//! The control thread owns the [`Session`]. Each frame it calls
+//! [`Session::update`], which runs the [`Phase`]s of [`PHASES`] in order and
+//! returns the [`SessionEvent`]s they raised: [`Phase::Collect`] lands what
+//! the session's jobs sent and frees what the audio thread retired,
+//! [`Phase::Commit`] compiles and sends an edited graph, and the phases around
+//! them serve plugins, modulation, MIDI and reclamation.
+//!
+//! The audio thread runs the other loop: every block it renders the newest
+//! plan it has been handed, without waiting for the control thread.
+//!
+//! Between the two there are queues and no mutable state. A commit travels
+//! to the audio thread over the editor's queue, retired values travel back
+//! over its return queue, and a job on the session's spawner reports over a
+//! channel that [`Phase::Collect`] drains. A call on the [`Graph`] only stages
+//! an edit, in the graph value the control thread holds
+//! ([`Graph::topology`], [`Graph::is_edited`]); nothing reaches the audio
+//! thread until an update's commit sends it.
 //!
 //! Like `tutti-graph`, every module is private: everything is
 //! `tutti_session::Item`. The crate re-exports no crate whole (`cargo xtask check-session`).
@@ -93,13 +113,17 @@ pub use bounce::{
     BounceLatency, BounceRendered, BounceTail, Bounced, BufferMaster, BufferStem, ExportClock,
     FileMaster, FileStem, Master, NoMaster, PrepareEdit, PreparedGraph, Range, Stem, StemGain,
 };
-pub use builder::{SessionBuilder, Workers, root_width};
+#[cfg(feature = "device")]
+pub use builder::OnDevice;
+pub use builder::{Offline, SessionBuilder, Workers, root_width};
 #[cfg(feature = "device")]
 pub use device::{
     Device, DeviceEvent, DeviceLatency, DeviceRestart, DeviceRestarted, LiveSession, RestartError,
     RestartOutcome,
 };
 pub use edge::EdgeGainError;
+#[cfg(feature = "plugin")]
+pub use error::HostPluginError;
 pub use error::{
     ConnectError, Error, HeardTapError, InletError, NoSuchNode, RemoveError, Result, ScheduleError,
     TempoError,
@@ -139,7 +163,7 @@ pub use midi::{
 #[cfg(feature = "midi")]
 pub use midi_event::MidiEvent;
 #[cfg(feature = "midi")]
-pub use midi_follow::FollowTempo;
+pub use midi_follow::{FollowClock, FollowMachineControl, FollowTempo, SendMachineControl};
 #[cfg(feature = "midi-hardware")]
 pub use midi_hardware::Resolution;
 #[cfg(feature = "modulation")]
@@ -179,8 +203,8 @@ pub use session::ModInput;
 pub use session::{PHASES, Phase, PhaseCx, RootTopologyStatus, Session, SessionEvent};
 #[cfg(all(feature = "device", feature = "audio-io"))]
 pub use take::{
-    Armed, InFlight, Placement, Punch, PunchError, Recorded, Rolling, Start, Take, TakeError,
-    TakeEvent, TakeId, TakeTarget, Terms, Window,
+    Armed, InFlight, Placement, Punch, PunchError, Recorded, Rolling, Start, Take, TakeEnd,
+    TakeError, TakeEvent, TakeId, TakeTarget, Terms, Window,
 };
 #[cfg(any(feature = "record", feature = "export"))]
 pub use tutti_dsp::DitherShape;
@@ -195,7 +219,7 @@ pub use tutti_graph::{
     BusError, BusRef, BusSource, Buses, HasParam, HasParams, MissingSource, ParamUnit, Scalar,
 };
 pub use tutti_graph::{
-    CloseError, EventCapacity, Losses, MixError, ModeError, NodeMode, PassError, Stamp,
+    CloseError, CommitError, EventCapacity, Losses, MixError, ModeError, NodeMode, PassError, Stamp,
 };
 #[cfg(feature = "midi")]
 pub use tutti_ump::{MidiChannel, MidiGroup};

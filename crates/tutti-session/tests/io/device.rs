@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tutti_cpal::cpal::StreamError;
+use tutti_cpal::cpal::{Error as StreamError, ErrorKind};
 use tutti_cpal::{
     DeviceId, DeviceSelector, Direction, ManualStreamDriver, OutputSpec, Snapshot, SnapshotSource,
 };
@@ -34,6 +34,7 @@ fn spec_at(rate: f64) -> OutputSpec {
 fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .expect("builds with no device")
         .into_parts();
@@ -72,6 +73,7 @@ fn the_session_publishes_the_meter_and_taps_its_callback_feeds() {
 fn the_session_reads_the_load_its_callback_measures() {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .expect("builds with no device")
         .into_parts();
@@ -93,6 +95,7 @@ fn the_session_reads_the_load_its_callback_measures() {
 fn a_rerate_keeps_the_published_compensation_in_step_with_the_plan() {
     let (driver, old) = ManualStreamDriver::new();
     let (mut s, mut device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .expect("builds with no device")
         .into_parts();
@@ -222,6 +225,7 @@ fn policy() -> DevicePolicy {
 fn the_watch_reports_what_the_host_lists() {
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .unwrap()
         .into_parts();
@@ -282,6 +286,7 @@ fn the_watch_reports_what_the_host_lists() {
 fn following_the_default_restarts_and_reports_the_rate() {
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, mut device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(44_100.0), driver)
         .unwrap()
         .into_parts();
@@ -335,6 +340,7 @@ fn following_the_default_restarts_and_reports_the_rate() {
 fn an_explicit_device_is_not_replaced_by_the_default() {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .unwrap()
         .into_parts();
@@ -349,7 +355,7 @@ fn an_explicit_device_is_not_replaced_by_the_default() {
     fake.show(&["A", "B"], Some("B"));
     assert!(wants(&poll(&mut session, base, 0)).is_empty());
     fake.show(&["B"], Some("B"));
-    stream.fail(StreamError::DeviceNotAvailable);
+    stream.fail(StreamError::new(ErrorKind::DeviceNotAvailable));
     assert!(
         wants(&poll(&mut session, base, 5_000)).is_empty(),
         "A gone, B is not a substitute"
@@ -366,6 +372,7 @@ fn an_explicit_device_is_not_replaced_by_the_default() {
 fn a_disconnect_fault_asks_for_a_restart_once() {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .unwrap()
         .into_parts();
@@ -379,7 +386,7 @@ fn a_disconnect_fault_asks_for_a_restart_once() {
     let base = Instant::now();
     fake.show(&["A", "B"], Some("A"));
     poll(&mut session, base, 0);
-    stream.fail(StreamError::DeviceNotAvailable);
+    stream.fail(StreamError::new(ErrorKind::DeviceNotAvailable));
     let events = poll(&mut session, base, 10);
     assert!(
         events
@@ -398,6 +405,7 @@ fn a_disconnect_fault_asks_for_a_restart_once() {
 fn a_flapping_device_is_not_restarted_on_every_change() {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .unwrap()
         .into_parts();
@@ -414,7 +422,7 @@ fn a_flapping_device_is_not_restarted_on_every_change() {
     let mut asked = 0;
     for k in 0..100u64 {
         if k % 2 == 0 {
-            stream.fail(StreamError::DeviceNotAvailable);
+            stream.fail(StreamError::new(ErrorKind::DeviceNotAvailable));
             fake.show(&[], None);
         } else {
             fake.show(&["A"], Some("A"));
@@ -431,6 +439,7 @@ fn a_flapping_device_is_not_restarted_on_every_change() {
 fn a_refused_restart_keeps_the_old_spec_and_is_retried_later() {
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, mut device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .unwrap()
         .into_parts();
@@ -481,6 +490,7 @@ fn a_refused_restart_keeps_the_old_spec_and_is_retried_later() {
 fn a_restart_that_stopped_the_stream_is_retried() {
     let (driver, _stream) = ManualStreamDriver::new();
     let mut live = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .unwrap();
     let fake = Fake::default();
@@ -527,6 +537,7 @@ fn a_restart_that_stopped_the_stream_is_retried() {
 fn a_stale_wanted_restart_does_not_replace_a_later_choice() {
     let (driver, _stream) = ManualStreamDriver::new();
     let mut live = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .unwrap();
     let fake = Fake::default();
@@ -574,6 +585,7 @@ fn a_stale_wanted_restart_does_not_replace_a_later_choice() {
 fn a_fault_after_a_restart_is_reported_again() {
     let (driver, _first) = ManualStreamDriver::new();
     let (mut session, mut device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .unwrap()
         .into_parts();
@@ -583,7 +595,7 @@ fn a_fault_after_a_restart_is_reported_again() {
     session
         .restart_on(&mut device, spec_at(48_000.0), driver, None)
         .unwrap();
-    second.fail(StreamError::DeviceNotAvailable);
+    second.fail(StreamError::new(ErrorKind::DeviceNotAvailable));
     let events = poll(&mut session, base, 0);
     assert!(
         events
@@ -594,7 +606,7 @@ fn a_fault_after_a_restart_is_reported_again() {
     session
         .restart_on(&mut device, spec_at(48_000.0), driver, None)
         .unwrap();
-    third.fail(StreamError::DeviceNotAvailable);
+    third.fail(StreamError::new(ErrorKind::DeviceNotAvailable));
     let events = poll(&mut session, base, 20);
     assert!(
         events
@@ -609,6 +621,7 @@ fn a_fault_after_a_restart_is_reported_again() {
 fn a_host_can_hold_restarts() {
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .unwrap()
         .into_parts();
@@ -640,6 +653,7 @@ fn a_host_can_hold_restarts() {
 fn a_stalled_backend_run_becomes_a_lost_stream() {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .unwrap()
         .into_parts();
@@ -654,11 +668,7 @@ fn a_stalled_backend_run_becomes_a_lost_stream() {
     fake.show(&["A", "B"], Some("A"));
     poll(&mut session, base, 0);
 
-    let backend = || StreamError::BackendSpecific {
-        err: tutti_cpal::cpal::BackendSpecificError {
-            description: "POLLERR".into(),
-        },
-    };
+    let backend = || StreamError::with_message(ErrorKind::BackendError, "POLLERR");
     stream.fail(backend());
     let events = poll(&mut session, base, 10);
     assert!(events.iter().any(|e| matches!(e, SessionEvent::Device(DeviceEvent::Fault(f)) if f.kind == tutti_cpal::StreamFaultKind::Backend)));
@@ -684,6 +694,7 @@ fn the_render_worker_start_hook_runs_once_per_live_helper() {
     let (_session, _device) = Session::builder()
         .render_workers(Workers::of(4))
         .render_worker_start(move |i| hook.lock().unwrap().push(i))
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .expect("builds with no device")
         .into_parts();
@@ -708,6 +719,7 @@ fn per_core_workers_start_a_helper_for_every_core_but_the_callbacks() {
     let _live = Session::builder()
         .render_workers(Workers::PerCore)
         .render_worker_start(move |i| hook.lock().unwrap().push(i))
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .expect("builds with no device");
     let helpers: Vec<usize> = (1..cores).collect();
@@ -734,6 +746,7 @@ fn indices_after(seen: &Mutex<Vec<usize>>, n: usize) -> Vec<usize> {
 fn the_heard_tap_reopens_at_the_width_of_the_device_after_a_restart() {
     let (driver, _old) = ManualStreamDriver::new();
     let (mut s, mut device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .expect("builds with no device")
         .into_parts();
@@ -777,6 +790,7 @@ fn the_heard_tap_reopens_at_the_width_of_the_device_after_a_restart() {
 fn the_session_lists_the_outputs_once_and_retries_a_failed_start() {
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .unwrap()
         .into_parts();
@@ -815,6 +829,7 @@ fn a_restart_onto_a_device_that_cannot_place_the_declared_root_is_refused() {
         .root_topology(tutti_types::ChannelTopology::unassigned(
             ChannelLayout::QUAD,
         ))
+        .device(Default::default())
         .build_device_on(wide(48_000.0), driver)
         .expect("four buses place on six channels")
         .into_parts();
@@ -848,6 +863,7 @@ fn a_refused_declaration_is_retried_on_a_restart() {
     let buses = tutti_types::ChannelTopology::unassigned(ChannelLayout::QUAD);
     let (driver, _stream) = ManualStreamDriver::new();
     let (mut session, mut device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .unwrap()
         .into_parts();
@@ -895,6 +911,7 @@ impl Node for AlwaysPanics {
 fn a_panic_in_the_render_is_a_device_fault_event() {
     let (driver, stream) = ManualStreamDriver::new();
     let (mut session, _device) = Session::builder()
+        .device(Default::default())
         .build_device_on(spec_at(48_000.0), driver)
         .expect("builds with no device")
         .into_parts();
@@ -947,7 +964,9 @@ fn start_when_listed(retry_startup: bool) -> Vec<DeviceSelector> {
         let driver = &mut driver;
         let ran = watch.retry_start(&mut events, |selector| {
             asked.lock().unwrap().push(selector);
-            Session::builder().build_device_on(spec_at(48_000.0), driver.take().expect("one start"))
+            Session::builder()
+                .device(Default::default())
+                .build_device_on(spec_at(48_000.0), driver.take().expect("one start"))
         });
         (ran, events)
     };

@@ -403,13 +403,13 @@ impl Property for BypassEffect {
     type Value = u32;
 }
 
-/// `LastRenderError`: The status of the unit's last failed render.
+/// `LastRenderStatus`: `kAudioUnitProperty_LastRenderError`, the status of the unit's last failed render.
 #[derive(Debug, Clone, Copy)]
-pub struct LastRenderError;
+pub struct LastRenderStatus;
 
-impl sealed::Sealed for LastRenderError {}
+impl sealed::Sealed for LastRenderStatus {}
 
-impl Property for LastRenderError {
+impl Property for LastRenderStatus {
     const ID: u32 = sys::kAudioUnitProperty_LastRenderError;
     type Value = i32;
 }

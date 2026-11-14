@@ -133,20 +133,9 @@ impl TryFrom<u32> for BeatsPerBar {
 }
 
 /// A numerator outside `1..=`[`MAX_BEATS_PER_BAR`] (see [`BeatsPerBar::new`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("beats per bar must be in 1..={}, got {}", MAX_BEATS_PER_BAR, .0)]
 pub struct InvalidBeatsPerBar(pub u32);
-
-impl core::fmt::Display for InvalidBeatsPerBar {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "beats per bar must be in 1..={MAX_BEATS_PER_BAR}, got {}",
-            self.0
-        )
-    }
-}
-
-impl core::error::Error for InvalidBeatsPerBar {}
 
 impl Default for BeatsPerBar {
     fn default() -> Self {
@@ -261,20 +250,9 @@ impl TryFrom<u32> for NoteValue {
 
 /// A denominator that is not a power of two in `1..=`[`MAX_NOTE_VALUE`] (see
 /// [`NoteValue::new`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("a note value is a power of two from 1 to {}, got {}", MAX_NOTE_VALUE, .0)]
 pub struct InvalidNoteValue(pub u32);
-
-impl core::fmt::Display for InvalidNoteValue {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "a note value is a power of two from 1 to {MAX_NOTE_VALUE}, got {}",
-            self.0
-        )
-    }
-}
-
-impl core::error::Error for InvalidNoteValue {}
 
 impl Default for NoteValue {
     fn default() -> Self {
@@ -1281,12 +1259,7 @@ mod tests {
         }
 
         // And the round trip still holds for legal values.
-        let seven_eight = seven_eight();
-        let json = serde_json::to_string(&seven_eight).unwrap();
-        assert_eq!(
-            serde_json::from_str::<TimeSignature>(&json).unwrap(),
-            seven_eight
-        );
+        tutti_fixtures::check_round_trip(&seven_eight(), r#"{"beats_per_bar":7,"note_value":8}"#);
     }
 
     /// Non-finite beats are dropped rather than poisoning the map: a NaN makes

@@ -6,7 +6,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool as StdAtomicBool;
 use tutti_graph::UmpAt;
-use tutti_types::Bpm;
+use tutti_types::{Bpm, Seconds};
 use tutti_ump::{Message, MidiGroup, System};
 
 /// The System message a packet carries.
@@ -108,7 +108,11 @@ fn drain_all(receiver: &crate::MidiReceiver) -> Vec<UmpAt> {
     loop {
         let n = receiver.poll_into(&mut buf);
         // The ring's stamps here are block offsets (the rig queues them so).
-        out.extend(buf[..n].iter().map(|&(stamp, ump)| at(stamp, ump)));
+        out.extend(
+            buf[..n]
+                .iter()
+                .map(|&(stamp, ump)| at(usize::try_from(stamp).unwrap(), ump)),
+        );
         if n < buf.len() {
             break;
         }
@@ -435,7 +439,7 @@ fn a_rate_change_moves_the_tick_spacing() {
 fn a_rate_change_keeps_the_mtc_quarter_frame_on_time() {
     let (mut cm, transport, cons) = master(Bpm::of(120.0), SampleRate::SR_44K1);
     cm.set_send_mtc(true);
-    cm.set_mtc_fps(SmpteFrameRate::Fps25);
+    cm.set_mtc_fps(MtcRate::Fps25);
     transport.set_playing(true);
     let (mut beat, mut frame) = (0.0, 0);
     let run = (&mut beat, &mut frame);
@@ -474,7 +478,7 @@ fn a_rate_change_keeps_the_mtc_quarter_frame_on_time() {
 #[test]
 fn the_mtc_grid_is_closed_form() {
     let rate = 44_100.0;
-    let fps = SmpteFrameRate::Fps2997Ndf;
+    let fps = MtcRate::Fps2997Df;
     let (mut cm, transport, cons) = master(Bpm::of(120.0), SampleRate::of(rate));
     cm.set_send_mtc(true);
     cm.set_mtc_fps(fps);
@@ -491,7 +495,7 @@ fn the_mtc_grid_is_closed_form() {
     let quarters = of(&events, 0xF1);
     assert!(quarters.len() > 8_000, "{} quarter-frames", quarters.len());
     for (k, &at) in quarters.iter().enumerate() {
-        let due = ((k as f64 * rate) / (fps.fps() * 4.0)).floor() as u64;
+        let due = ((k as f64 * rate) / (SmpteFrameRate::from(fps).fps() * 4.0)).floor() as u64;
         assert_eq!(at, due, "quarter-frame {k}");
     }
 }
@@ -506,8 +510,6 @@ fn generated_clock_round_trips_through_decoder() {
 
     let block = 256usize;
     let beats_per_sample = 120.0 / 60.0 / sr;
-    let ns_per_sample = 1_000_000_000.0 / sr;
-    let origin = std::time::Instant::now();
     let mut beat = 0.0f64;
     let mut sample_clock = 0u64;
 
@@ -517,10 +519,7 @@ fn generated_clock_round_trips_through_decoder() {
         transport.set_beat(beat);
         cm.tick(block);
         for ev in drain_all(&cons) {
-            let at = origin
-                + std::time::Duration::from_nanos(
-                    ((sample_clock + ev.0.get() as u64) as f64 * ns_per_sample) as u64,
-                );
+            let at = Seconds::new((sample_clock + ev.0.get() as u64) as f64 / sr);
             decoder.feed(&ev.1, at);
         }
         beat += block as f64 * beats_per_sample;
@@ -530,7 +529,7 @@ fn generated_clock_round_trips_through_decoder() {
     assert_eq!(decoder.transport_state(), ClockTransportState::Playing);
     let tempo = decoder.tempo_bpm().expect("decoder derived a tempo");
     assert!(
-        !tempo.differs_from(Bpm::of(120.0), 2.0),
+        !tempo.differs_from(Bpm::of(120.0), Bpm::of(2.0)),
         "round-trip tempo ~120, got {tempo:?}"
     );
 }
@@ -540,7 +539,7 @@ fn mtc_quarter_frames_round_trip_to_a_timecode() {
     let sr = 48_000.0;
     let (mut cm, transport, cons) = master(Bpm::of(120.0), SampleRate::of(sr));
     cm.set_send_mtc(true);
-    cm.set_mtc_fps(SmpteFrameRate::Fps25);
+    cm.set_mtc_fps(MtcRate::Fps25);
     transport.set_playing(true);
 
     // 25 fps → 100 quarter-frames/sec → one every 480 samples. Run enough
@@ -568,7 +567,7 @@ fn mtc_quarter_frames_round_trip_to_a_timecode() {
 
 /// Plays 5 s of MTC from 58 s plus `offset` samples (so 1:00 is crossed) into a decoder, and
 /// checks every assembled timecode against the clock the master read.
-fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
+fn mtc_loopback(rate: f64, fps: MtcRate, offset: f64) {
     let (mut cm, transport, cons) = master(Bpm::of(120.0), SampleRate::of(rate));
     cm.set_send_mtc(true);
     cm.set_mtc_fps(fps);
@@ -606,7 +605,7 @@ fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
         // cycle spells is that frame: the decoder reports it two frames on
         // (MTC: a receiver keeps an internal offset of +2 frames), and the two differ by under the sample the event is
         // placed on.
-        let (num, den) = fps.ratio();
+        let (num, den) = SmpteFrameRate::from(fps).ratio();
         let lag = piece0_at - (tc.to_seconds().get() - 2.0 * den as f64 / num as f64);
         assert!(
             lag.abs() < 2.0 / rate,
@@ -620,7 +619,7 @@ fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
         cycles += 1;
     }
     assert!(
-        f64::from(cycles) > 5.0 * fps.fps() / 2.0 - 3.0,
+        f64::from(cycles) > 5.0 * SmpteFrameRate::from(fps).fps() / 2.0 - 3.0,
         "{cycles} cycles"
     );
     assert_eq!(
@@ -636,12 +635,12 @@ fn mtc_loopback(rate: f64, fps: SmpteFrameRate, offset: f64) {
 #[test]
 fn outbound_mtc_assembles_whole_valid_timecodes_across_a_minute() {
     for (rate, fps) in [
-        (48_000.0, SmpteFrameRate::Fps24),
-        (48_000.0, SmpteFrameRate::Fps25),
-        (48_000.0, SmpteFrameRate::Fps2997Df),
-        (48_000.0, SmpteFrameRate::Fps30),
-        (44_100.0, SmpteFrameRate::Fps2997Df),
-        (44_100.0, SmpteFrameRate::Fps24),
+        (48_000.0, MtcRate::Fps24),
+        (48_000.0, MtcRate::Fps25),
+        (48_000.0, MtcRate::Fps2997Df),
+        (48_000.0, MtcRate::Fps30),
+        (44_100.0, MtcRate::Fps2997Df),
+        (44_100.0, MtcRate::Fps24),
     ] {
         // Offsets that put 1:00 on, and in the middle of, a cycle.
         for offset in [0.0, 1_000.0, 5_000.0] {
@@ -654,30 +653,21 @@ fn outbound_mtc_assembles_whole_valid_timecodes_across_a_minute() {
 // that frame, floored to an even one.
 #[test]
 fn timecode_rounds_to_the_nearest_even_frame() {
-    let at = |pos: f64, fps| timecode_at(pos, SampleRate::SR_48K, fps).to_string();
-    let f25 = SmpteFrameRate::Fps25;
+    let at =
+        |pos: f64, fps| timecode_at(Seconds::new(pos / SampleRate::SR_48K.get()), fps).to_string();
+    let f25 = MtcRate::Fps25;
     assert_eq!(at(3_840.0, f25), "00:00:00:02");
     assert_eq!(at(3_840.0 - 1e-7, f25), "00:00:00:02");
     assert_eq!(at(1_920.0, f25), "00:00:00:00");
     assert_eq!(at(7_680.0 - 1e-7, f25), "00:00:00:04");
     // Drop-frame count 1800 starts at sample 2_882_880 (60.06 s).
-    let df = SmpteFrameRate::Fps2997Df;
+    let df = MtcRate::Fps2997Df;
     assert_eq!(at(2_882_880.0, df), "00:01:00:02");
     assert_eq!(at(2_882_880.0 - 1e-7, df), "00:01:00:02");
     assert_eq!(at(2_882_880.0 - 1_601.6, df), "00:00:59:28");
-    let t30 = SmpteFrameRate::Fps30;
+    let t30 = MtcRate::Fps30;
     assert_eq!(at(2_880_000.0, t30), "00:01:00:00");
     assert_eq!(at(2_880_000.0 - 1e-7, t30), "00:01:00:00");
-}
-
-// MTC has no non-drop 29.97 code: Ndf is sent with the drop-frame one.
-#[test]
-fn non_drop_2997_goes_out_with_the_29_97_rate_code() {
-    let tc = SmpteTimecode::from_frame_count(5, SmpteFrameRate::Fps2997Ndf);
-    let ndf = mtc_cycle_nibbles(&tc, SmpteFrameRate::Fps2997Ndf);
-    assert_eq!((ndf >> 28) & 0x06, 2 << 1);
-    let df = mtc_cycle_nibbles(&tc, SmpteFrameRate::Fps2997Df);
-    assert_eq!(ndf, df);
 }
 
 /// A rig at 120 BPM and 48 kHz (24 000 frames a beat, a tick every 1 000)
@@ -989,7 +979,7 @@ fn every_event_goes_out_on_the_masters_group() {
 fn the_settings_word_round_trips_every_combination() {
     for enabled in [false, true] {
         for send_mtc in [false, true] {
-            for fps in SmpteFrameRate::ALL {
+            for fps in MtcRate::ALL {
                 let settings = Settings {
                     enabled,
                     send_mtc,
@@ -1011,7 +1001,7 @@ fn the_settings_word_round_trips_every_combination() {
 fn a_frame_rate_set_between_blocks_keeps_the_pending_quarter_frame() {
     let (mut cm, transport, cons) = master(Bpm::of(120.0), SampleRate::SR_48K);
     cm.set_send_mtc(true);
-    cm.set_mtc_fps(SmpteFrameRate::Fps25);
+    cm.set_mtc_fps(MtcRate::Fps25);
     transport.set_playing(true);
     let (mut beat, mut frame) = (0.0, 0);
     let run = (&mut beat, &mut frame);
@@ -1021,8 +1011,8 @@ fn a_frame_rate_set_between_blocks_keeps_the_pending_quarter_frame() {
     );
     assert_eq!(before.last(), Some(&10_080), "setup: every 480 frames");
 
-    cm.set_mtc_fps(SmpteFrameRate::Fps30);
-    assert_eq!(cm.mtc_fps(), SmpteFrameRate::Fps30);
+    cm.set_mtc_fps(MtcRate::Fps30);
+    assert_eq!(cm.mtc_fps(), MtcRate::Fps30);
     let run = (&mut beat, &mut frame);
     let events = run_at(&mut cm, &transport, &cons, 48_000.0, (512, 20), run);
     assert_eq!(of(&events, 0xF2), Vec::<u64>::new(), "not a seek");

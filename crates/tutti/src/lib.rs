@@ -51,7 +51,7 @@
 //!
 //! To play through a sound card, turn on `device` and let the session (the
 //! `session` feature, on by default) open it and build the graph at the rate it
-//! reports: `SessionBuilder::build_device` hands back a `LiveSession`, the
+//! reports: `SessionBuilder::<OnDevice>::build` hands back a `LiveSession`, the
 //! `Session` and its `Device` (dropping it stops the stream), and `examples/headless_engine.rs` plays a tone in under twenty
 //! lines. To write a file
 //! instead, turn on `export` (it brings the `codec` module with it) and bounce the
@@ -341,8 +341,8 @@ pub mod midi {
     #[cfg(feature = "midi-hardware")]
     pub use tutti_midi_hardware::{
         ChannelCount, ChannelProfile, CiChange, CiPeerInfo, DeviceId, DeviceInfo, DeviceQuery,
-        Learned, ListedProfile, Match, PeerProfiles, ProfileError, ProfileSwitch, ProfilesChange,
-        SavedDevice, Whole, WholeProfile,
+        Learned, ListedProfile, Match, PeerId, PeerProfiles, ProfileError, ProfileSwitch,
+        ProfilesChange, SavedDevice, Whole, WholeProfile,
     };
     #[cfg(all(feature = "session", feature = "midi-hardware"))]
     pub use tutti_session::Resolution;
@@ -404,12 +404,12 @@ pub use tutti_transport::{
 
 // Units, channels, buffers, the edge traits and the musical meter.
 pub use tutti_types::{
-    Amplitude, At, BarNumber, Beat, BeatDuration, Bpm, Cents, ChannelLayout, ChannelTopology, Db,
-    Depth, FiniteSource, Frame, Hz, Interleaved, InterleavedMut, Latency, LoopRange,
-    LoopRangeError, MaxBlock, Meter, MeterMap, Moment, Note, NoteValue, Param, ParamAddr,
-    PhaseIncrement, PitchClass, Pull, Q, SamplePosition, SampleRate, Samples, Seconds, Semitones,
-    Sink, SinkFailed, Source, Speaker, StereoPlanes, Stop, Tail, TimeSignature, UnitAddr,
-    UnitParam, Velocity,
+    Amplitude, At, BarNumber, Beat, BeatDuration, Bpm, Cents, CentsSpan, ChannelLayout,
+    ChannelTopology, Db, Depth, FiniteSource, Frame, Hz, Interleaved, InterleavedMut, Latency,
+    LoopRange, LoopRangeError, MaxBlock, Meter, MeterMap, Moment, Note, NoteValue, Param,
+    ParamAddr, PhaseIncrement, PitchClass, Pull, Q, SamplePosition, SampleRate, Samples, Seconds,
+    Semitones, Sink, SinkFailed, Source, Speaker, StereoPlanes, Stop, Tail, TimeSignature,
+    UnitAddr, UnitParam, Velocity,
 };
 pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 

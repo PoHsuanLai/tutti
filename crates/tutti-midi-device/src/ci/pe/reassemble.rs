@@ -10,10 +10,11 @@ use std::num::{NonZeroU8, NonZeroUsize};
 use std::time::Instant;
 
 use super::chunk::{ChunkNo, ChunkPosition, ChunkTotal, PeChunk, PeRequestId};
-use super::flow::{PE_TIMEOUT, PeMessageKind, PeSignal, PeTerminator, TimeoutWait};
+use super::flow::{PE_TIMEOUT, PeMessageKind, PeSignal, PeTerminator};
 use super::header::{PeHeader, PeHeaderError, PeSubscription};
 use super::limits::NotInRange;
 use crate::Muid;
+use crate::TimeoutWait;
 
 /// The most messages received at once from all peers: 1 to 128, the Request IDs
 /// there are (M2-103 §5.3). A message past it is refused.
@@ -236,7 +237,7 @@ struct Stream {
     /// The number of the last chunk taken.
     last: ChunkNo,
     deadline: Instant,
-    flow: bool,
+    flow: PeFlowControl,
 }
 
 impl Stream {
@@ -414,7 +415,7 @@ impl PeReassembler {
             PeHeader::Request(r) | PeHeader::Subscription(PeSubscription::Start(r)) => {
                 r.flow_control
             }
-            _ => false,
+            _ => PeFlowControl::Off,
         };
         self.streams.push(Stream {
             peer,
@@ -426,7 +427,11 @@ impl PeReassembler {
             declared: chunk.total(),
             last: ChunkNo::FIRST,
             deadline: now + PE_TIMEOUT,
-            flow: asks || reply_flow == PeFlowControl::On,
+            flow: if reply_flow == PeFlowControl::On {
+                PeFlowControl::On
+            } else {
+                asks
+            },
         });
         Ok(self.streams.len() - 1)
     }
@@ -434,7 +439,7 @@ impl PeReassembler {
     /// The step for a chunk the message already has.
     fn repeat(stream: &Stream) -> PeStep {
         PeStep::Pending {
-            send: stream.flow.then_some(PeSignal::SendNext {
+            send: (stream.flow == PeFlowControl::On).then_some(PeSignal::SendNext {
                 request_id: stream.request_id,
                 chunk: stream.last,
             }),
@@ -495,7 +500,8 @@ impl PeReassembler {
         stream.data.extend_from_slice(chunk.data());
         stream.last = number;
         stream.deadline = now + PE_TIMEOUT;
-        let acknowledge = stream.flow && (!last || stream.kind == PeMessageKind::GET_REPLY);
+        let acknowledge =
+            stream.flow == PeFlowControl::On && (!last || stream.kind == PeMessageKind::GET_REPLY);
         let send = acknowledge.then_some(PeSignal::SendNext {
             request_id: id,
             chunk: number,
@@ -541,8 +547,8 @@ impl PeReassembler {
     }
 
     /// Extends the timeout of a message by the wait its sender asked for in a
-    /// Timeout Wait ACK, added to the time that is left (M2-103 §12.2.1).
-    /// Returns whether the message is held.
+    /// Timeout Wait ACK, added to the time that is left (M2-103 §12.2.1). Returns
+    /// whether the message is held.
     pub fn extend(
         &mut self,
         peer: Muid,
@@ -552,7 +558,7 @@ impl PeReassembler {
     ) -> bool {
         match self.find(peer, kind, request_id) {
             Some(stream) => {
-                stream.deadline += wait.duration();
+                wait.extend(&mut stream.deadline);
                 true
             }
             None => false,

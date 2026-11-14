@@ -14,14 +14,13 @@ use crate::common;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tutti_types::MaxBlock;
 
 use tutti_graph::CrossfadeCurve;
 use tutti_graph::NodeKey;
 use tutti_nodes::{DistortionNode, ShapeKind};
 use tutti_session::{OutPort, ParamRef, Root, RouteSpec, Session};
 use tutti_types::AtomicF32;
-use tutti_types::{ChannelLayout, Depth, Drive, SampleRate, Samples, Seconds, UnitParam};
+use tutti_types::{ChannelLayout, Depth, Drive, Seconds, UnitParam};
 
 use common::probe::ProbeUnit;
 
@@ -29,11 +28,8 @@ const BASE: f32 = 5.0;
 
 fn session() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::MONO,
-            MaxBlock::of(Samples(1_024)),
-        )
+        .outputs(ChannelLayout::MONO)
+        .build()
         .expect("builds")
 }
 
@@ -87,7 +83,7 @@ fn add_addresses_a_hosts_param_node() {
 fn add_addresses_an_engine_node() {
     let mut s = session();
     let node = DistortionNode::new(ShapeKind::Tanh, Drive::new(BASE));
-    let cell = node.drive();
+    let cell = node.drive().as_atomic();
     let (key, _) = s.graph().add(node);
     modulate_drive(&mut s, key.erase());
     assert_knob_is(&s, key.erase(), &cell);

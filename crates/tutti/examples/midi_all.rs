@@ -14,13 +14,13 @@
 //!
 //! CI runs it as a test (`test = true`).
 //!
-//! **Not built yet, so not here:** MIDI Time Code out, MIDI-CI (discovery,
-//! profiles, property exchange are only a codec: `tutti-midi-device`'s
-//! `CiMessage`).
+//! **Not covered here:** MIDI Time Code out, and the MIDI-CI session
+//! ([`Midi::enable_ci`](tutti::Midi::enable_ci) and
+//! [`Midi::ci_peers`](tutti::Midi::ci_peers)), which needs a peer device.
 
 use tutti::midi::{self, MidiRouteRule, TakePlacement};
 use tutti::midi_file::{FileEvent, SmfFormat};
-use tutti::midi_protocol::{MpeMode, MpeZoneConfig, MpeZones};
+use tutti::midi_protocol::{MpeMode, MpeZoneConfig, MpeZones, PitchBendSensitivity};
 use tutti::polysynth::{PolySynth, SynthConfig};
 use tutti::ump::U7;
 use tutti::{
@@ -57,7 +57,10 @@ fn session() -> Result<Session, Error> {
         } else {
             builder
         };
-        builder.build_offline(RATE, ChannelLayout::STEREO, MaxBlock::of(Samples(BLOCK)))
+        builder
+            .sample_rate(RATE)
+            .max_block(MaxBlock::of(Samples(BLOCK)))
+            .build()
     };
     // A machine with no MIDI sequencer fails to open the OS layer: say so, and
     // run on without it.
@@ -91,7 +94,15 @@ fn run() -> Result<Outcome, Box<dyn std::error::Error>> {
     // MPE is set once, on the session: the ingest reads it, and a synth added
     // after is built in it (the session's mode wins over the synth's own
     // `SynthConfig::mpe`).
-    let zone = MpeZones::new(MpeZoneConfig::lower(7), None).ok_or("one lower zone")?;
+    let zone = MpeZones::new(
+        MpeZoneConfig::lower(
+            7,
+            PitchBendSensitivity::MPE_MASTER_DEFAULT,
+            PitchBendSensitivity::MPE_MEMBER_DEFAULT,
+        ),
+        None,
+    )
+    .ok_or("one lower zone")?;
     s.midi().set_mpe(MpeMode::Zones(zone));
 
     // A synth as an instrument: its strip is wired to the master.

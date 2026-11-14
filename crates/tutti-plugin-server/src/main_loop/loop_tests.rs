@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use tutti_clap_test_plugin::Site;
 use tutti_fixtures::main_thread;
 use tutti_plugin_ipc::{AudioSlab, BridgeMessage, HostMessage, ProcessAudioData};
-use tutti_plugin_types::{BridgeError, BridgeResult, ContentScale, EditorSize, Load, SampleFormat};
+use tutti_plugin_types::{BridgeError, BridgeResult, ContentScale, Load, SampleFormat};
 
 use super::{Native, serve_every};
 
@@ -408,10 +408,7 @@ fn an_editor_request_with_no_plugin_is_refused_not_ignored() {
             scale: ContentScale::IDENTITY,
         }),
         Step::Send(HostMessage::SetEditorSize {
-            size: EditorSize {
-                width: 10,
-                height: 10,
-            },
+            size: dpi::PhysicalSize::new(10, 10).into(),
         }),
         Step::Send(HostMessage::CloseEditor),
     ]);
@@ -448,8 +445,8 @@ impl Drop for SlowPaint {
     }
 }
 
-/// **A slow editor paint on the main loop delays no block** (doc 029 section
-/// 6.5). The plugin's timer, served by the loop's tick, takes 250 ms each time,
+/// **A slow editor paint on the main loop delays no block**. The plugin's timer, served by the
+/// loop's tick, takes 250 ms each time,
 /// which is what a slow `editor_idle` does to the loop. The host sends a block
 /// every 5 ms through all of it, and each must be answered well inside a block
 /// deadline, including the blocks sent and answered entirely while the loop

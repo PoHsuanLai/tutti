@@ -18,10 +18,12 @@ pub(super) fn convert(error: Symphonia) -> DecodeError {
             SeekErrorKind::ForwardOnly => "the stream only seeks forward",
             SeekErrorKind::OutOfRange => "the position is out of range",
             SeekErrorKind::InvalidTrack => "the track does not exist",
+            _ => "the container cannot seek there",
         })),
         Symphonia::Unsupported(m) => DecodeError::Unsupported(m.into()),
         Symphonia::LimitError(m) => DecodeError::Limit(m.into()),
         Symphonia::ResetRequired => DecodeError::Malformed("the decoder needs a reset".into()),
+        _ => DecodeError::Malformed("the decoder failed".into()),
     }
 }
 

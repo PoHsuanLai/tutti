@@ -44,8 +44,8 @@ mod main_view;
 // reference CLAP plugin in process, with an editor open (an X11 window id).
 #[cfg(all(feature = "clap", unix, not(target_os = "macos")))]
 mod plugin_event_sources;
-// A hosted plugin's parameters through the session's views (design 029
-// step 3): gestures, typed units, rescans; a fake backend.
+// A hosted plugin's parameters through the session's views: gestures, typed units, rescans; a
+// fake backend.
 #[cfg(feature = "plugin")]
 mod plugin_params;
 // Work handed to the main thread runs on the session's update.
@@ -67,7 +67,7 @@ mod vst2_params;
 // process) and a file that loads by path (CLAP, in a real `plugin-server`).
 #[cfg(any(feature = "clap", feature = "vst2"))]
 mod plugin_presets;
-// Diagnostics and buses (design 029 step 4): the counts either hosting reads the
+// Diagnostics and buses: the counts either hosting reads the
 // same way, an aux input wired through the plugin's bus handles, a server named
 // and ended.
 #[cfg(any(feature = "clap", feature = "vst2"))]

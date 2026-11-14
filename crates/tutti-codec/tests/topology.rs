@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use tutti_codec::{FileIn, Wave};
+use tutti_codec::{DecodeError, FileIn, Wave};
 use tutti_types::{ChannelLayout, ChannelTopology, Speaker::*};
 
 fn asset(name: &str) -> PathBuf {
@@ -90,15 +90,15 @@ fn a_wave_mask_names_each_channels_speaker() {
     );
 }
 
-/// A speaker the vocabulary cannot name keeps its channel, as
-/// `Unknown(bit index)`: bit 25 is symphonia's second LFE, and the file's
-/// channels are not renumbered around it.
+/// A WAVE channel mask names the 18 standard speakers; a bit past them is a
+/// mask the container refuses, as unsupported, rather than a channel the file
+/// would feed to no speaker.
 #[test]
-fn a_speaker_with_no_name_keeps_its_channel() {
-    let wave = Wave::from_bytes(extensible(2, 0x0200_0001)).expect("decodes");
-    assert_eq!(wave.topology().positions(), [FrontLeft, Unknown(25)]);
-    assert_eq!(wave.channels(), 2);
-    assert!((wave.at(1, 0) - 0.02).abs() < 1e-6);
+fn a_mask_bit_past_the_standard_speakers_is_refused() {
+    assert!(matches!(
+        Wave::from_bytes(extensible(2, 0x0200_0001)),
+        Err(DecodeError::Unsupported(_))
+    ));
 }
 
 /// Sample channel `n` is topology entry `n`: the LFE of a 5.1 file is the

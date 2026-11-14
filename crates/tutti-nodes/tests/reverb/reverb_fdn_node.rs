@@ -1,13 +1,12 @@
 //! `FamilyNode<FdnFamily>` as the graph runs it: its ports
 //! (the freeze only where the design can freeze), its tail (the network's own,
-//! unbounded while frozen), the freeze itself, a modulated decay, and
-//! `ReverbKind`. Every figure is from the network's own queries or the
+//! unbounded while frozen), the freeze itself and a modulated decay. Every figure is from the network's own queries or the
 //! definition of a freeze, not from another reverb's render.
 
 use std::sync::Arc;
 use tutti_types::MaxBlock;
 
-use tutti_dsp::{Family, FdnControls, FdnFamily, System};
+use tutti_dsp::{Family, FdnControls, FdnFamily, FreeverbControls, FreeverbFamily, System};
 use tutti_graph::contract::{Driven, assert_honest_tail, assert_param_fork, drive_input, prepared};
 use tutti_graph::{
     Env, GraphBuilder, Node, ParamIn, ParamNode, PlayClock, Prepare, Status, TransportChanges,
@@ -15,7 +14,7 @@ use tutti_graph::{
 };
 use tutti_modulation::ControlProgram;
 use tutti_nodes::automation::ControlLaneNode;
-use tutti_nodes::{FamilyNode, FdnNode, ReverbKind, SpawnedReverb};
+use tutti_nodes::{FamilyNode, FdnNode};
 use tutti_types::{
     AtomicF32, ChannelLayout, Db, Frame, Mix, SampleRate, Samples, Seconds, Tail, UnitAddr,
     UnitParam,
@@ -347,16 +346,13 @@ fn a_non_finite_write_is_ignored() {
     }
 }
 
-/// `ReverbKind` spawns the matching node and nothing else.
+/// A live Freeverb node has the room and the damping as params, a live FDN node
+/// its eleven controls, and the FDN is stereo out.
 #[test]
-fn a_kind_spawns_its_node() {
-    let SpawnedReverb::Freeverb(f) = ReverbKind::Freeverb.spawn() else {
-        panic!("a Freeverb")
-    };
+fn a_live_node_has_its_designs_params() {
+    let f = FamilyNode::live(FreeverbFamily, FreeverbControls::GENERAL_MIDI);
     assert_eq!(f.param_set().params().count(), 2, "the room, the damping");
-    let SpawnedReverb::Fdn(n) = ReverbKind::Fdn(freezable()).spawn() else {
-        panic!("an FDN")
-    };
+    let n = FamilyNode::live(freezable(), FdnControls::DEFAULT);
     assert_eq!(n.param_set().params().count(), 11);
     assert_eq!(n.shape().audio_out(), ChannelLayout::STEREO);
 }

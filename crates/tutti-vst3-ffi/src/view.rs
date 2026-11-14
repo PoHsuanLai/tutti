@@ -12,30 +12,38 @@ use vst3::Steinberg::{
 };
 use vst3::{ComPtr, ComWrapper};
 
-use tutti_plugin_types::{ContentScale, EditorSize, MainThread, WindowHandle};
+use dpi::Size;
+use tutti_plugin_types::{ContentScale, EditorUnit, MainThread, WindowHandle};
 
 use crate::com::HostPlugFrame;
 use crate::error::{Vst3Error, check, is_ok};
 
 /// Why an editor could not be opened.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum EditorError {
     /// The plugin has no edit controller to ask for a view.
+    #[error("the plugin has no edit controller")]
     NoController,
     /// `createView` returned nothing.
+    #[error("createView returned nothing")]
     NoView,
     /// `isPlatformTypeSupported` refused this platform's window type; the field
     /// is its name.
+    #[error("the plugin view does not support platform type {0}")]
     PlatformRefused(String),
     /// `IPlugView::attached` failed.
-    Attach(Vst3Error),
+    #[error("IPlugView::attached failed")]
+    Attach(#[source] Vst3Error),
 }
 
 /// The editor of an open plugin: its view and the frame it was handed.
 pub(crate) struct Editor {
     pub(crate) view: ComPtr<IPlugView>,
     pub(crate) plug_frame: ComWrapper<HostPlugFrame>,
+    /// The scale the editor opened with or was last given: what a size in the
+    /// other unit is converted at.
+    scale: ContentScale,
 }
 
 /// The window type this platform's editors attach to.
@@ -60,6 +68,41 @@ fn platform_type_name(platform_type: FIDString) -> String {
         .to_string()
 }
 
+/// Whether `platform_type` names a window whose geometry is in logical pixels
+/// (an `NSView` or a `UIView`), where the view carries its backing scale itself.
+fn uses_logical_pixels(platform_type: FIDString) -> bool {
+    use vst3::Steinberg::{kPlatformTypeNSView, kPlatformTypeUIView};
+    if platform_type.is_null() {
+        return false;
+    }
+    let name = platform_type_name(platform_type);
+    [kPlatformTypeNSView, kPlatformTypeUIView]
+        .iter()
+        .any(|&t| name == platform_type_name(t))
+}
+
+/// The unit a `ViewRect` of a view embedded as `platform_type` is in (`ViewRect`
+/// has no unit of its own): device pixels on Windows and X11, points on an
+/// `NSView` or a `UIView`.
+fn unit_of(platform_type: FIDString) -> EditorUnit {
+    if uses_logical_pixels(platform_type) {
+        EditorUnit::Logical
+    } else {
+        EditorUnit::Physical
+    }
+}
+
+/// `width` by `height` as this platform's `ViewRect` counts them: device pixels on
+/// Windows and X11, points on macOS. The one place a VST3 size gets its unit.
+#[must_use]
+pub fn rect_size(width: u32, height: u32) -> Size {
+    rect_unit().size(width, height)
+}
+
+fn rect_unit() -> EditorUnit {
+    unit_of(native_platform_type())
+}
+
 /// The factor `setContentScaleFactor` sends for a view embedded as
 /// `platform_type` in a window of backing scale `scale`, or `None` where it
 /// must not be sent.
@@ -72,15 +115,10 @@ fn platform_type_name(platform_type: FIDString) -> String {
 /// CLAP host withholds `set_scale` on cocoa for the same reason. VST3 takes a
 /// `float`; a display's scale is far inside its precision.
 fn content_scale_for(platform_type: FIDString, scale: ContentScale) -> Option<f32> {
-    use vst3::Steinberg::{kPlatformTypeNSView, kPlatformTypeUIView};
     if platform_type.is_null() {
         return None;
     }
-    let name = platform_type_name(platform_type);
-    let logical = [kPlatformTypeNSView, kPlatformTypeUIView]
-        .iter()
-        .any(|&t| name == platform_type_name(t));
-    (!logical).then_some(scale.get() as f32)
+    (!uses_logical_pixels(platform_type)).then_some(scale.get() as f32)
 }
 
 /// Does this `isPlatformTypeSupported` result mean "no"?
@@ -200,22 +238,24 @@ pub fn set_view_focus(_main: &MainThread, view: &ComPtr<IPlugView>, focused: boo
 
 /// The extent of a rect a plugin filled in, or `None` for one that is not a
 /// size: a negative extent, or one whose subtraction overflows.
-fn size_of_rect(rect: &ViewRect) -> Option<EditorSize> {
+pub(crate) fn size_of_rect(rect: &ViewRect) -> Option<Size> {
     let extent = |high: i32, low: i32| high.checked_sub(low).and_then(|n| u32::try_from(n).ok());
-    Some(EditorSize {
-        width: extent(rect.right, rect.left)?,
-        height: extent(rect.bottom, rect.top)?,
-    })
+    Some(rect_unit().size(
+        extent(rect.right, rect.left)?,
+        extent(rect.bottom, rect.top)?,
+    ))
 }
 
-/// The rect for `size`, each extent saturating at `i32::MAX` (a rect cannot
-/// hold more, and a wrap would be negative).
-fn rect_of_size(size: EditorSize) -> ViewRect {
+/// The rect for `size` (converted at `scale` into the rect's unit), each extent
+/// saturating at `i32::MAX` (a rect cannot hold more, and a wrap would be
+/// negative).
+fn rect_of_size(size: Size, scale: ContentScale) -> ViewRect {
+    let (width, height) = rect_unit().native(size, scale);
     ViewRect {
         left: 0,
         top: 0,
-        right: i32::try_from(size.width).unwrap_or(i32::MAX),
-        bottom: i32::try_from(size.height).unwrap_or(i32::MAX),
+        right: i32::try_from(width).unwrap_or(i32::MAX),
+        bottom: i32::try_from(height).unwrap_or(i32::MAX),
     }
 }
 
@@ -226,7 +266,7 @@ impl Editor {
         parent: WindowHandle,
         scale: ContentScale,
         plug_frame: ComWrapper<HostPlugFrame>,
-    ) -> Result<(Self, Option<EditorSize>), EditorError> {
+    ) -> Result<(Self, Option<Size>), EditorError> {
         let platform_type = native_platform_type();
         // SAFETY: a plain call on a live view with a static platform-type id.
         let supported = unsafe { view.isPlatformTypeSupported(platform_type) };
@@ -282,7 +322,14 @@ impl Editor {
             let result = unsafe { view.getSize(&mut rect) };
             is_ok(result).then(|| size_of_rect(&rect)).flatten()
         };
-        Ok((Self { view, plug_frame }, size))
+        Ok((
+            Self {
+                view,
+                plug_frame,
+                scale,
+            },
+            size,
+        ))
     }
 
     /// Withdraws the frame and removes the view.
@@ -294,7 +341,8 @@ impl Editor {
     /// Returns whether it was told: `false` for a logical-pixel view (an
     /// `NSView` carries its scale already, see [`content_scale_for`]) and for a
     /// view without `IPlugViewContentScaleSupport` or one that refused.
-    pub(crate) fn set_scale(&self, scale: ContentScale) -> bool {
+    pub(crate) fn set_scale(&mut self, scale: ContentScale) -> bool {
+        self.scale = scale;
         let Some(factor) = content_scale_for(native_platform_type(), scale) else {
             return false;
         };
@@ -313,8 +361,8 @@ impl Editor {
 
     /// What the view makes of `requested`: the size it would snap to, if it
     /// answers.
-    pub(crate) fn constrain(&self, requested: EditorSize) -> (EditorSize, bool) {
-        let mut rect = rect_of_size(requested);
+    pub(crate) fn constrain(&self, requested: Size) -> (Size, bool) {
+        let mut rect = rect_of_size(requested, self.scale);
         // SAFETY: `rect` is a valid in/out parameter.
         let snapped = is_ok(unsafe { self.view.checkSizeConstraint(&mut rect) });
         // A rect that is not a size is no answer: keep the request, unsnapped.
@@ -325,8 +373,8 @@ impl Editor {
     }
 
     /// Resizes the view to `requested`, or to what it snaps to.
-    pub(crate) fn resize(&self, requested: EditorSize) -> Result<EditorSize, Vst3Error> {
-        let requested_rect = rect_of_size(requested);
+    pub(crate) fn resize(&self, requested: Size) -> Result<Size, Vst3Error> {
+        let requested_rect = rect_of_size(requested, self.scale);
         let mut constrained = requested_rect;
         // SAFETY: `constrained` is a valid in/out parameter.
         let snapped = is_ok(unsafe { self.view.checkSizeConstraint(&mut constrained) });
@@ -339,8 +387,8 @@ impl Editor {
 
 #[cfg(test)]
 mod content_scale_tests {
-    use super::content_scale_for;
-    use tutti_plugin_types::ContentScale;
+    use super::{content_scale_for, unit_of};
+    use tutti_plugin_types::{ContentScale, EditorUnit};
     use vst3::Steinberg::{
         kPlatformTypeHWND, kPlatformTypeNSView, kPlatformTypeUIView, kPlatformTypeX11EmbedWindowID,
     };
@@ -361,11 +409,24 @@ mod content_scale_tests {
         assert_eq!(content_scale_for(kPlatformTypeUIView, two), None);
         assert_eq!(content_scale_for(std::ptr::null(), two), None);
     }
+
+    /// **A `ViewRect` is in device pixels for an HWND or X11 view and in
+    /// points for an `NSView` or `UIView`.**
+    #[test]
+    fn a_rect_is_in_the_unit_of_its_window_system() {
+        for physical in [kPlatformTypeHWND, kPlatformTypeX11EmbedWindowID] {
+            assert_eq!(unit_of(physical), EditorUnit::Physical);
+        }
+        for logical in [kPlatformTypeNSView, kPlatformTypeUIView] {
+            assert_eq!(unit_of(logical), EditorUnit::Logical);
+        }
+    }
 }
 
 #[cfg(test)]
 mod rect_tests {
     use super::*;
+    use dpi::PhysicalSize;
 
     const fn rect(left: i32, top: i32, right: i32, bottom: i32) -> ViewRect {
         ViewRect {
@@ -383,11 +444,8 @@ mod rect_tests {
     #[test]
     fn a_rect_that_is_not_a_size_is_refused() {
         assert_eq!(
-            size_of_rect(&rect(10, 20, 110, 70)),
-            Some(EditorSize {
-                width: 100,
-                height: 50
-            })
+            size_of_rect(&rect(10, 20, 110, 70)).map(|s| s.to_physical::<u32>(1.0)),
+            Some(PhysicalSize::new(100, 50))
         );
         assert_eq!(size_of_rect(&rect(100, 0, 10, 10)), None, "negative width");
         assert_eq!(size_of_rect(&rect(0, 100, 10, 10)), None, "negative height");
@@ -401,10 +459,10 @@ mod rect_tests {
     /// **A size past `i32::MAX` saturates; it does not wrap negative.**
     #[test]
     fn a_size_past_the_rect_saturates() {
-        let r = rect_of_size(EditorSize {
-            width: u32::MAX,
-            height: 3,
-        });
+        let r = rect_of_size(
+            PhysicalSize::new(u32::MAX, 3).into(),
+            ContentScale::IDENTITY,
+        );
         assert_eq!((r.right, r.bottom), (i32::MAX, 3));
     }
 }

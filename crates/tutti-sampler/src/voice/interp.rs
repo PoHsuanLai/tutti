@@ -397,7 +397,7 @@ pub(crate) fn hermite_lanes(out: &mut [f32], y: [&[f32]; 4], t: &[f32]) {
 ///   that image and invent phantom centre content); a file that names its
 ///   channels in another order (7.1 with the rears before the sides) is
 ///   permuted to the engine's. A wave with a channel no speaker names (a
-///   second LFE, a wide or high speaker) is refused when the `Place` is
+///   `Speaker::Unknown` in its topology) is refused when the `Place` is
 ///   built, never played.
 /// - a wave already in the frame's order and width is read channel for
 ///   channel, with no fold.
@@ -658,7 +658,7 @@ impl Place {
     /// # Errors
     ///
     /// - [`PlaceError::Fold`] with [`FoldError::Unnamed`] for a wave with a
-    ///   channel no speaker names (a second LFE, a wide or high speaker), mono
+    ///   channel no speaker names (a `Speaker::Unknown` in its topology), mono
     ///   or not: there is no telling where it should sound.
     /// - [`PlaceError::Fold`] for any other channel the frame cannot place.
     /// - [`PlaceError::Fold`] with [`FoldError::Unplaced`] for a wave wider
@@ -1150,7 +1150,7 @@ mod tests {
         w
     }
 
-    /// A file with a channel no speaker names (a second LFE) is refused when
+    /// A file with a channel no speaker names (`Speaker::Unknown`) is refused when
     /// the placement is built, whatever width it goes to, mono or not; a
     /// source and a voice over it are refused too.
     #[test]
@@ -1338,7 +1338,7 @@ mod tests {
     ) -> Env {
         let mut c = TransportChanges::NONE;
         for &(at, to) in changes {
-            c.push(Offset::new(at, Samples(len)).unwrap(), to).unwrap();
+            c.push(Offset::of(Samples(at), Samples(len)), to).unwrap();
         }
         Env {
             frame: Frame::new(0),

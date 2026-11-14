@@ -1,5 +1,5 @@
 //! The MIDI-CI grammar: the preamble of a message (M2-101 §3.3, Table 1) and the
-//! bodies of Discovery, its reply, Inquiry: Endpoint and its reply, ACK and NAK (§5.5 to §5.8, §5.10, §5.11), built
+//! bodies of Discovery, its reply, Inquiry: Endpoint and its reply, ACK and NAK (§5.5 to §5.8, §5.10, §5.11) and the Process Inquiry messages (§9), built
 //! from `winnow` combinators. This is the one module of the crate that names
 //! `winnow`, and no `winnow` type leaves it: a body is read through
 //! [`discovery_body`] and [`status_body`], which answer `Option`.
@@ -8,7 +8,7 @@
 //! preamble  := 7E device_id 0D sub_id2 version muid muid          -- source, destination
 //! muid      := b b b b                                            -- four bytes; checked after
 //! discovery := manufacturer family model revision categories      -- Table 6 and 8
-//!              max_size path_id [ function_block ]                -- a Version 1 peer stops early
+//!              max_size [ path_id [ function_block ] ]            -- a Version 1 peer stops early
 //! manufacturer := 00 xx yy                                        -- three bytes (M2-104 §7.1.3)
 //! family, model := u7 u7
 //! revision  := u7 u7 u7 u7
@@ -25,6 +25,10 @@
 //! specific_data := profile_id u28 data{len}                       -- Table 28; u28 is four bytes
 //! endpoint_inquiry := status                                     -- Table 9
 //! endpoint_reply   := status len u14 data{len}                    -- Table 11
+//! features  := u7                                                 -- Table 42; reserved bits dropped
+//! report_inquiry := control bitmaps                               -- Table 43; control is 00, 01 or 7F
+//! report_reply   := bitmaps                                       -- Table 45
+//! bitmaps   := system reserved controllers notes                  -- four u7; system is 0 off the Function Block
 //! status    := sub_id2? code? data? details{5} [ len u14 text{len} ]
 //!                                                                 -- ACK and NAK, Tables 13 and 15
 //! ```
@@ -42,9 +46,9 @@ use winnow::token::{any, literal, take};
 use tutti_ump::{DeviceIdentity, FunctionBlockId, ManufacturerId, U7, U14};
 
 use super::{
-    CI_SUB_ID_1, CI_UNIVERSAL_SYSEX, CiCategories, Destination, DetailsData, DiscoveryData,
-    InquiryTarget, MaxSysexSize, MessageText, Muid, ProfileChannels, ProfileId, ProfileLists,
-    SpecificData,
+    CI_SUB_ID_1, CI_UNIVERSAL_SYSEX, CiCategories, CiDeviceId, DataControl, Destination,
+    DetailsData, DiscoveryData, InquiryTarget, MaxSysexSize, MessageText, Muid, ProcessFeatures,
+    ProfileChannels, ProfileId, ProfileLists, ReportScope, SpecificData,
 };
 
 type Res<T> = winnow::ModalResult<T, ContextError>;
@@ -71,6 +75,11 @@ fn wire4(input: &mut &[u8]) -> Res<[u8; 4]> {
 /// A 7-bit data byte as a [`U7`].
 fn u7(input: &mut &[u8]) -> Res<U7> {
     any.verify_map(U7::new).parse_next(input)
+}
+
+/// A [`U7`], or `None` when the message ended before it.
+fn u7_or_none(input: &mut &[u8]) -> Res<Option<U7>> {
+    alt((eof.value(None), u7.map(Some))).parse_next(input)
 }
 
 /// A [`U7`], or its default when the message ended before it.
@@ -147,7 +156,7 @@ fn discovery(is_reply: bool, input: &mut &[u8]) -> Res<DiscoveryData> {
         identity: identity,
         categories: u7.map(|c| CiCategories::from_bits_truncate(c.get())),
         max_sysex_size: max_sysex_size,
-        output_path_id: u7_or_default,
+        output_path_id: u7_or_none,
         function_block: |i: &mut &[u8]| if is_reply {
             function_block(i)
         } else {
@@ -346,4 +355,42 @@ pub(super) fn specific_data_body(mut body: &[u8]) -> Option<(ProfileId, Specific
     )
         .parse_next(&mut body)
         .ok()
+}
+
+/// The Supported Features bitmap of a Reply to Process Inquiry Capabilities
+/// (Table 42), a reserved bit dropped.
+pub(super) fn features_body(mut body: &[u8]) -> Option<ProcessFeatures> {
+    u7.map(|bits| ProcessFeatures::from_bits_truncate(bits.get()))
+        .parse_next(&mut body)
+        .ok()
+}
+
+/// The three bitmaps, with the reserved byte after the first (Tables 43 and 45),
+/// as the scope at `address`: `None` when a byte has its top bit set or System
+/// Messages are set away from the Function Block.
+fn scope(address: CiDeviceId, input: &mut &[u8]) -> Res<ReportScope> {
+    (u7, u7, u7, u7)
+        .verify_map(|(system, _reserved, controllers, notes)| {
+            ReportScope::from_wire(address, system.get(), controllers.get(), notes.get())
+        })
+        .parse_next(input)
+}
+
+/// The Message Data Control and the scope of an Inquiry: MIDI Message Report
+/// (Table 43): `None` for a reserved control.
+pub(super) fn report_inquiry_body(
+    address: CiDeviceId,
+    mut body: &[u8],
+) -> Option<(DataControl, ReportScope)> {
+    (
+        u7.verify_map(|raw| DataControl::new(raw.get())),
+        |i: &mut &[u8]| scope(address, i),
+    )
+        .parse_next(&mut body)
+        .ok()
+}
+
+/// The scope of a Reply to MIDI Message Report (Table 45).
+pub(super) fn report_reply_body(address: CiDeviceId, mut body: &[u8]) -> Option<ReportScope> {
+    scope(address, &mut body).ok()
 }

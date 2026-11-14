@@ -8,11 +8,12 @@ use tutti_plugin_types::MainThread;
 
 use tutti_plugin_types::features::probed;
 use tutti_plugin_types::{
-    AutomationMode, BusRole, ChannelLayout, ClapFeature, ContentScale, Control, EditorPresence,
-    EditorSize, EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamEdit,
+    AutomationMode, BusRole, ChannelLayout, ClapFeature, ContentScale, Control, Delivered,
+    EditorPresence, EditorWindow, FdId, Features, Layout, LoadedPlugin, Normalized, ParamEdit,
     ParamFlags, ParamId, ParamMapping, ParameterInfo, PluginBus, PluginBuses, PluginClass,
     PluginDescriptor, PluginError, PluginResult, PluginTail, PresetId, ProcessWake, RenderMode,
-    RenderModeSupport, Request, RescanScope, Samples, StateUse, TimerId, WindowHandle, Wraps,
+    RenderModeSupport, Request, RescanScope, Samples, StateUse, TimerId, TrackInfo, WindowHandle,
+    Wraps,
 };
 
 use super::ClapLoaded;
@@ -206,6 +207,15 @@ impl ClapLoaded {
     /// itself have asked for more.
     pub fn take_raised(&self, out: &mut Vec<Request>) {
         out.extend(tutti_plugin_types::taken(&self.host_state.requests));
+        self.take_transport(out);
+    }
+
+    /// The transport requests the plugin made since the last take, oldest
+    /// first.
+    fn take_transport(&self, out: &mut Vec<Request>) {
+        let mut asked = Vec::new();
+        self.host_state.transport.drain_into(&mut asked);
+        out.extend(asked.into_iter().map(Request::Transport));
     }
 
     /// [`Control::take_requests`]: what the plugin raised from any thread, and
@@ -221,6 +231,7 @@ impl ClapLoaded {
             self.destroy_editor(main);
         }
         out.extend(tutti_plugin_types::taken(&self.host_state.requests));
+        self.take_transport(out);
         out.extend(
             self.woken
                 .timers
@@ -290,6 +301,26 @@ impl Control for ClapLoaded {
                 self.set_param_automation(main, info.id().get(), state, None);
             }
         }
+    }
+
+    /// What the plugin's `track-info.get` answers from now on; the plugin is
+    /// told (`track-info.changed`) when it differs from the last. A plugin
+    /// without `clap.track-info` is told nothing, and its host callback still
+    /// answers.
+    fn set_track_info(&mut self, main: &MainThread, info: &TrackInfo) -> Delivered {
+        {
+            // A poisoned lock means a thread died holding the value: the
+            // instance's host state is lost, which is the plugin's death here.
+            let Ok(mut held) = self.host_state.track.info.lock() else {
+                return Delivered::PluginDead;
+            };
+            if held.as_ref() == Some(info) {
+                return Delivered::Yes;
+            }
+            *held = Some(info.clone());
+        }
+        self.plugin.track_info_changed(main);
+        Delivered::Yes
     }
 
     /// Normalized `0..=1`; CLAP has no normalization concept, so the plugin
@@ -489,7 +520,8 @@ impl EditorWindow for ClapLoaded {
 
     /// Creates the plugin editor and embeds it into the given native `parent`
     /// window, whose backing-store scale is `scale`, returning the editor's
-    /// initial size.
+    /// initial size, in the unit of the window api (physical pixels; logical points on
+    /// cocoa).
     ///
     /// Follows the CLAP embed sequence: `is_api_supported` → `create` →
     /// `set_scale(scale)` → `get_size` → `set_parent` → `show`. See
@@ -504,7 +536,7 @@ impl EditorWindow for ClapLoaded {
         main: &MainThread,
         parent: WindowHandle,
         scale: ContentScale,
-    ) -> PluginResult<EditorSize> {
+    ) -> PluginResult<dpi::Size> {
         self.embed_editor(main, parent, scale).map_err(plugin_error)
     }
 
@@ -579,17 +611,14 @@ impl EditorWindow for ClapLoaded {
     fn set_editor_size(
         &mut self,
         main: &MainThread,
-        requested: tutti_plugin_types::EditorSize,
-    ) -> tutti_plugin_types::PluginResult<tutti_plugin_types::EditorSize> {
+        requested: dpi::Size,
+    ) -> PluginResult<dpi::Size> {
         ClapLoaded::resize_editor(self, main, requested).map_err(plugin_error)
     }
 
     /// The plugin's pending `gui.request_resize`, once
     /// ([`ClapLoaded::take_editor_resize_request`]).
-    fn poll_editor_resize_request(
-        &mut self,
-        _main: &MainThread,
-    ) -> Option<tutti_plugin_types::EditorSize> {
+    fn poll_editor_resize_request(&mut self, _main: &MainThread) -> Option<dpi::Size> {
         ClapLoaded::take_editor_resize_request(self)
     }
 }

@@ -4,7 +4,7 @@ use thiserror::Error;
 
 /// Why [`Session::open_heard_tap`](crate::Session::open_heard_tap) or
 /// [`Session::close_heard_tap`](crate::Session::close_heard_tap) refused.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Error)]
 #[non_exhaustive]
 pub enum HeardTapError {
     /// The session has no engine, so nothing renders to tap (a detached
@@ -55,7 +55,7 @@ pub enum ScheduleError {
 }
 
 /// The session refused to set the project tempo. Nothing is published.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Error)]
 #[non_exhaustive]
 pub enum TempoError {
     /// The session follows a live tempo (`Midi::follow_tempo`, feature
@@ -81,6 +81,23 @@ impl NoSuchNode {
     pub fn node(self) -> tutti_graph::NodeKey {
         self.0
     }
+}
+
+/// [`Graph::host_plugin`](crate::Graph::host_plugin) refused.
+#[cfg(feature = "plugin")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum HostPluginError {
+    /// The node is not in the graph.
+    #[error(transparent)]
+    NoSuchNode(#[from] NoSuchNode),
+    /// The node already hosts a plugin (added by
+    /// [`Session::add_plugin`](crate::Session::add_plugin),
+    /// [`Graph::insert_plugin`](crate::Graph::insert_plugin) or an earlier
+    /// `host_plugin`): a plugin record is freed on the main thread, so a
+    /// second one is never put over the first.
+    #[error("{0:?} already hosts a plugin")]
+    AlreadyHosted(tutti_graph::NodeKey),
 }
 
 impl From<tutti_transport::ScheduleFull> for Error {
@@ -182,6 +199,22 @@ pub enum ConnectError {
         /// The root's width.
         root_width: usize,
     },
+    /// A main bus narrower than the root has no placement on the root's
+    /// channels.
+    #[error("{from:?}'s main output has no place on the root: {cause}")]
+    RootFold {
+        /// The source node.
+        from: tutti_graph::NodeKey,
+        /// Why its topology does not fold onto the root's.
+        cause: tutti_types::FoldError,
+    },
+    /// A main bus narrower than the root folds onto it only with weights (a
+    /// centre into a root with none): a weighted fold is a bus edge.
+    #[error("{from:?}'s main output folds onto the root only with weights; that is a bus edge")]
+    RootWeighted {
+        /// The source node.
+        from: tutti_graph::NodeKey,
+    },
     /// A bus edge was refused.
     #[error(transparent)]
     Bus(#[from] tutti_graph::BusError),
@@ -206,6 +239,11 @@ pub enum MidiError {
     #[cfg(feature = "midi-hardware")]
     #[error("MIDI-CI Profile: {0}")]
     Profile(#[from] tutti_midi_hardware::ProfileError),
+
+    /// A MIDI Message Report request was refused ([`Midi::report`](crate::Midi::report)).
+    #[cfg(feature = "midi-hardware")]
+    #[error("MIDI-CI Process Inquiry: {0}")]
+    Report(#[from] tutti_midi_hardware::ReportError),
 
     /// A MIDI file could not be read, built or written.
     #[error("MIDI file: {0}")]
@@ -298,6 +336,24 @@ pub enum MidiError {
     /// `Midi::unfollow_tempo` with no tempo being followed.
     #[error("the session is not following a tempo")]
     NotFollowing,
+
+    /// `Midi::unfollow_clock` with no clock being followed.
+    #[error("the session is not following a MIDI clock")]
+    NotFollowingClock,
+
+    /// `Midi::unfollow_machine_control` with no Machine Control being followed.
+    #[error("the session is not following MIDI Machine Control")]
+    NotFollowingMachineControl,
+
+    /// `Midi::stop_sending_machine_control` with no Machine Control being sent.
+    #[error("the session is not sending MIDI Machine Control")]
+    NotSendingMachineControl,
+
+    /// A tempo has one source: `Midi::follow_tempo` and a Beat Clock
+    /// `Midi::follow_clock` each publish the tempo map, so one is refused while
+    /// the other is followed.
+    #[error("another follower already publishes the tempo; unfollow it first")]
+    TempoSourceTaken,
 
     /// The hardware input's routes have one declarer: the session's own
     /// (`Midi::route`, `Midi::set_route_fallback`) or a host's

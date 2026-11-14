@@ -1,4 +1,4 @@
-//! The session's spawner (design 029 §3.4): work that blocks (a file load, a
+//! The session's spawner: work that blocks (a file load, a
 //! plugin round trip, a recording's pump) runs on a thread the host's
 //! spawner gives it, and what it reports lands on the control thread in
 //! [`Session::update`], in the order it was sent.

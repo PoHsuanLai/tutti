@@ -49,8 +49,10 @@ tutti-nodes = { path = "../tutti-nodes", default-features = false, features = ["
 tutti-graph = { path = "../tutti-graph", features = ["contract"] }
 criterion.workspace = true
 approx = "0.5"
-# `check_range_contract`'s serde shape, for `UnisonVoices`.
+# `check_range_contract`'s serde shape, for `UnisonVoices` and `GlideTime`
+# (whose raw is `Seconds`).
 serde = "1"
+tutti-types = { path = "../tutti-types", default-features = false, features = ["serde"] }
 tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 assert_no_alloc = { version = "1", default-features = false }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }

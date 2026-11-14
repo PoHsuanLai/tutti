@@ -1,34 +1,8 @@
 use proptest::prelude::*;
 use tutti_ump::{ManufacturerId, MidiChannel, U7};
 
+use super::super::testing::{DST, channel, decoded, header_on, preamble, to_dst, unread};
 use super::super::*;
-
-const SRC: u32 = 0x0123_4567;
-const DST: u32 = 0x0007_7777;
-
-fn muid(raw: u32) -> Muid {
-    Muid::new(raw).unwrap()
-}
-
-fn header(device_id: CiDeviceId) -> CiHeader {
-    CiHeader {
-        device_id,
-        ci_version: CI_VERSION,
-        source: muid(SRC),
-    }
-}
-
-/// `7E <id> 0D <sub> 02 src dst`, the preamble of a Version 2 message.
-fn preamble(device_id: u8, sub: u8, destination: [u8; 4]) -> Vec<u8> {
-    let mut bytes = vec![0x7E, device_id, 0x0D, sub, 0x02];
-    bytes.extend(muid(SRC).to_bytes());
-    bytes.extend(destination);
-    bytes
-}
-
-fn to_dst() -> [u8; 4] {
-    muid(DST).to_bytes()
-}
 
 const BROADCAST: [u8; 4] = [0x7F; 4];
 
@@ -42,24 +16,6 @@ fn vendor() -> ProfileId {
 
 fn one_byte_vendor() -> ProfileId {
     ProfileId::from_bytes([0x41, 0x00, 0x00, 0x07, 0x08]).unwrap()
-}
-
-fn decoded(bytes: &[u8]) -> CiMessage {
-    match CiMessage::decode(bytes) {
-        Decoded::Message(message) => message,
-        other => panic!("a message, got {other:?}"),
-    }
-}
-
-fn unread(bytes: &[u8]) -> Unread {
-    match CiMessage::decode(bytes) {
-        Decoded::Unread(unread) => unread,
-        other => panic!("an Unread, got {other:?}"),
-    }
-}
-
-fn channel(n: u8) -> CiDeviceId {
-    CiDeviceId::Channel(MidiChannel::of(n))
 }
 
 impl ProfileId {
@@ -83,6 +39,16 @@ fn a_standard_profile_id_is_7e_bank_number_version_level() {
     assert_eq!(
         (p.bank(), p.number(), p.version(), p.level()),
         (U7::of(1), U7::of(2), U7::of(3), U7::of(4))
+    );
+}
+
+/// M2-120 Table 4: the MPE Profile's five bytes.
+#[test]
+fn the_mpe_profile_id_is_table_4_of_m2_120() {
+    assert_eq!(ProfileId::MPE.to_bytes(), [0x7E, 0x31, 0x00, 0x01, 0x01]);
+    assert_eq!(
+        ProfileId::from_bytes([0x7E, 0x31, 0x00, 0x01, 0x01]),
+        Some(ProfileId::MPE)
     );
 }
 
@@ -125,21 +91,21 @@ fn a_profile_id_that_is_not_one_is_refused() {
 fn the_inquiry_is_table_17_byte_for_byte() {
     // Device ID is the address asked; no body.
     let message = CiMessage::ProfileInquiry {
-        header: header(channel(3)),
-        to: muid(DST),
+        header: header_on(channel(3)),
+        to: Muid::of(DST),
     };
     let want = preamble(0x03, 0x20, to_dst());
     assert_eq!(message.encode(), want);
     assert_eq!(decoded(&want), message);
     assert_eq!(SUB_ID2_PROFILE_INQUIRY, 0x20);
-    assert_eq!(message.destination(), Destination::Muid(muid(DST)));
+    assert_eq!(message.destination(), Destination::Muid(Muid::of(DST)));
 }
 
 #[test]
 fn the_reply_is_table_18_enabled_list_then_disabled_list() {
     let message = CiMessage::ProfileReply {
-        header: header(CiDeviceId::Group),
-        to: muid(DST),
+        header: header_on(CiDeviceId::Group),
+        to: Muid::of(DST),
         profiles: ProfileLists::new(vec![piano(), vendor()], vec![one_byte_vendor()]).unwrap(),
     };
     let mut want = preamble(0x7E, 0x21, to_dst());
@@ -160,8 +126,8 @@ fn the_reply_is_table_18_enabled_list_then_disabled_list() {
 fn a_reply_declaring_no_profiles_is_two_zero_counts() {
     // §7.13.
     let message = CiMessage::ProfileReply {
-        header: header(CiDeviceId::FunctionBlock),
-        to: muid(DST),
+        header: header_on(CiDeviceId::FunctionBlock),
+        to: Muid::of(DST),
         profiles: ProfileLists::none(),
     };
     let mut want = preamble(0x7F, 0x21, to_dst());
@@ -193,8 +159,8 @@ fn a_list_of_more_than_14_bits_is_refused_and_the_most_is_written() {
     );
     let full = ProfileLists::new(vec![id; 0x3FFF], Vec::new()).unwrap();
     let message = CiMessage::ProfileReply {
-        header: header(CiDeviceId::FunctionBlock),
-        to: muid(DST),
+        header: header_on(CiDeviceId::FunctionBlock),
+        to: Muid::of(DST),
         profiles: full.clone(),
     };
     let bytes = message.encode();
@@ -208,8 +174,8 @@ fn a_list_of_more_than_14_bits_is_refused_and_the_most_is_written() {
 #[test]
 fn set_on_is_table_24_with_the_channels_requested_lsb_first() {
     let message = CiMessage::SetProfileOn {
-        header: header(channel(0)),
-        to: muid(DST),
+        header: header_on(channel(0)),
+        to: Muid::of(DST),
         profile: piano(),
         channels: ProfileChannels::of(130),
     };
@@ -238,8 +204,8 @@ fn a_version_1_set_on_has_no_channels_field_and_reads_as_zero() {
 #[test]
 fn set_off_is_table_25_with_two_reserved_bytes_that_are_ignored() {
     let message = CiMessage::SetProfileOff {
-        header: header(CiDeviceId::Group),
-        to: muid(DST),
+        header: header_on(CiDeviceId::Group),
+        to: Muid::of(DST),
         profile: piano(),
     };
     let mut want = preamble(0x7E, 0x23, to_dst());
@@ -255,7 +221,7 @@ fn set_off_is_table_25_with_two_reserved_bytes_that_are_ignored() {
 #[test]
 fn enabled_and_disabled_reports_are_tables_26_and_27_to_the_broadcast_muid() {
     for (sub, enabled) in [(0x24u8, true), (0x25, false)] {
-        let (header, profile, channels) = (header(channel(9)), piano(), ProfileChannels::of(3));
+        let (header, profile, channels) = (header_on(channel(9)), piano(), ProfileChannels::of(3));
         let message = if enabled {
             CiMessage::ProfileEnabled {
                 header,
@@ -299,11 +265,11 @@ fn a_version_1_report_has_no_channel_count_and_reads_as_zero() {
 #[test]
 fn added_and_removed_reports_are_tables_20_and_21_to_the_broadcast_muid() {
     let added = CiMessage::ProfileAdded {
-        header: header(CiDeviceId::FunctionBlock),
+        header: header_on(CiDeviceId::FunctionBlock),
         profile: vendor(),
     };
     let removed = CiMessage::ProfileRemoved {
-        header: header(CiDeviceId::FunctionBlock),
+        header: header_on(CiDeviceId::FunctionBlock),
         profile: vendor(),
     };
     for (message, sub) in [(&added, 0x26u8), (&removed, 0x27)] {
@@ -320,8 +286,8 @@ fn added_and_removed_reports_are_tables_20_and_21_to_the_broadcast_muid() {
 #[test]
 fn the_details_inquiry_is_table_22_and_the_reply_table_23() {
     let inquiry = CiMessage::ProfileDetailsInquiry {
-        header: header(channel(2)),
-        to: muid(DST),
+        header: header_on(channel(2)),
+        to: Muid::of(DST),
         profile: piano(),
         target: InquiryTarget::NUMBER_OF_CHANNELS,
     };
@@ -336,8 +302,8 @@ fn the_details_inquiry_is_table_22_and_the_reply_table_23() {
     }
     .to_data();
     let reply = CiMessage::ProfileDetailsReply {
-        header: header(channel(2)),
-        to: muid(DST),
+        header: header_on(channel(2)),
+        to: Muid::of(DST),
         profile: piano(),
         target: InquiryTarget::NUMBER_OF_CHANNELS,
         data: data.clone(),
@@ -369,11 +335,11 @@ fn a_details_reply_whose_length_runs_past_the_message_or_holds_a_non_data_byte_i
 fn profile_specific_data_is_table_28_with_a_four_byte_length() {
     let data = SpecificData::new(vec![1, 2, 3]).unwrap();
     for (to, wire) in [
-        (Destination::Muid(muid(DST)), to_dst()),
+        (Destination::Muid(Muid::of(DST)), to_dst()),
         (Destination::Broadcast, BROADCAST),
     ] {
         let message = CiMessage::ProfileSpecificData {
-            header: header(channel(15)),
+            header: header_on(channel(15)),
             to,
             profile: vendor(),
             data: data.clone(),
@@ -388,8 +354,8 @@ fn profile_specific_data_is_table_28_with_a_four_byte_length() {
     }
     // A length of 128 is `00 01 00 00`.
     let long = CiMessage::ProfileSpecificData {
-        header: header(channel(0)),
-        to: Destination::Muid(muid(DST)),
+        header: header_on(channel(0)),
+        to: Destination::Muid(Muid::of(DST)),
         profile: piano(),
         data: SpecificData::new(vec![9; 128]).unwrap(),
     };
@@ -459,7 +425,7 @@ fn a_malformed_profile_message_is_unread_and_nakked_0x41_on_its_address() {
     bytes.extend([0x7E, 1, 2]);
     let unread = unread(&bytes);
     assert_eq!(unread.reason, UnreadReason::Malformed);
-    let CiMessage::Nak { header, nak, .. } = unread.nak(muid(DST)).unwrap() else {
+    let CiMessage::Nak { header, nak, .. } = unread.nak(Muid::of(DST)).unwrap() else {
         panic!("a NAK")
     };
     assert_eq!(header.device_id, channel(5));
@@ -473,8 +439,8 @@ fn a_nak_for_an_unsupported_profile_carries_status_04_and_the_profile_id() {
     let nak = Nak::new(U7::of(0x22), Nak::STATUS_PROFILE_NOT_SUPPORTED)
         .with_details(piano().to_bytes().map(U7::of));
     let message = CiMessage::Nak {
-        header: header(channel(1)),
-        to: muid(DST),
+        header: header_on(channel(1)),
+        to: Muid::of(DST),
         nak,
     };
     let bytes = message.encode();
@@ -543,11 +509,11 @@ fn any_data() -> impl Strategy<Value = Vec<u8>> {
 }
 
 fn head() -> impl Strategy<Value = CiHeader> {
-    any_address().prop_map(header)
+    any_address().prop_map(header_on)
 }
 
 fn to() -> impl Strategy<Value = Muid> {
-    Just(muid(DST))
+    Just(Muid::of(DST))
 }
 
 fn any_message() -> impl Strategy<Value = CiMessage> {
@@ -623,7 +589,7 @@ fn any_message() -> impl Strategy<Value = CiMessage> {
                 to: if broadcast {
                     Destination::Broadcast
                 } else {
-                    Destination::Muid(muid(DST))
+                    Destination::Muid(Muid::of(DST))
                 },
                 profile,
                 data: SpecificData::new(data).unwrap(),

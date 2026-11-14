@@ -201,34 +201,22 @@ impl ParamPorts {
 }
 
 /// Why a list cannot be a node's [`ParamPorts`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ParamPortsError {
     /// More params than [`MAX_PARAM_PORTS`].
+    #[error("{count} modulatable params past a node's {}", MAX_PARAM_PORTS)]
     TooMany {
         /// How many were listed.
         count: usize,
     },
     /// An address (kind and index) listed twice.
+    #[error("{0:?} is declared modulatable twice")]
     Duplicate(UnitAddr),
     /// [`NodeMix::ADDR`]: the graph's own, which a node's mix is driven at.
+    #[error("{0:?} is reserved for a node's mix")]
     Reserved(UnitAddr),
 }
-
-impl std::fmt::Display for ParamPortsError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::TooMany { count } => write!(
-                f,
-                "{count} modulatable params past a node's {MAX_PARAM_PORTS}"
-            ),
-            Self::Duplicate(p) => write!(f, "{p:?} is declared modulatable twice"),
-            Self::Reserved(p) => write!(f, "{p:?} is reserved for a node's mix"),
-        }
-    }
-}
-
-impl std::error::Error for ParamPortsError {}
 
 impl Default for ParamPorts {
     fn default() -> Self {
@@ -980,7 +968,7 @@ mod tests {
     fn a_ramp_lands_on_its_last_frame() {
         let ev = |at: usize, t: f32, len: usize| {
             Event::ramp(
-                Offset::new(at, Samples(16)).expect("in block"),
+                Offset::of(Samples(at), Samples(16)),
                 ParamRamp::new(ParamKey::<Hz>::CUTOFF, Hz(t), Samples(len)),
             )
         };
@@ -1019,7 +1007,7 @@ mod tests {
     #[test]
     fn a_ramp_after_a_first_segment_on_its_frame_starts_from_the_base() {
         use crate::event::ParamSegment;
-        let at = Offset::new(4, Samples(8)).expect("in block");
+        let at = Offset::of(Samples(4), Samples(8));
         let seg = ParamSegment::new(
             ParamKey::<Hz>::CUTOFF,
             Hz(5.0),
@@ -1062,7 +1050,7 @@ mod tests {
             for (from, target) in [(0.0f32, 1.0f32), (0.3, -7.9), (440.0, 1234.5)] {
                 let frames = len + 4;
                 let events = [Event::ramp(
-                    Offset::new(1, Samples(frames)).expect("in block"),
+                    Offset::of(Samples(1), Samples(frames)),
                     ParamRamp::new(ParamKey::<Hz>::CUTOFF, Hz(target), Samples(len)),
                 )];
                 let mut r = Ramp::default();
@@ -1120,7 +1108,7 @@ mod tests {
     fn corners_are_where_the_trajectory_changes_piece() {
         use crate::event::ParamSegment;
         let key = ParamKey::<Hz>::CUTOFF;
-        let at = |i: usize| Offset::new(i, Samples(64)).expect("in block");
+        let at = |i: usize| Offset::of(Samples(i), Samples(64));
         let seg = |from: f32, to: f32, len: usize| {
             ParamSegment::new(key, Hz(from), Hz(to), Samples(len), Law::Linear)
         };

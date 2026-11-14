@@ -29,7 +29,8 @@ type GetPluginFactoryFn = unsafe extern "system" fn() -> *mut IPluginFactory;
 pub const HOST_NAME: &str = "vst3-host";
 
 /// Why a module could not be opened.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{stage}: {reason}")]
 pub struct LoadError {
     /// Which loading step failed.
     pub stage: LoadStage,
@@ -37,22 +38,16 @@ pub struct LoadError {
     pub reason: String,
 }
 
-impl std::fmt::Display for LoadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.stage, self.reason)
-    }
-}
-
-impl std::error::Error for LoadError {}
-
 /// Why a plugin could not be created from a class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum CreateError {
     /// `createInstance` refused or returned nothing.
-    Create(Vst3Error),
+    #[error("createInstance refused or returned nothing")]
+    Create(#[source] Vst3Error),
     /// The component does not implement `IAudioProcessor`, which a host
     /// cannot render without.
+    #[error("the component does not implement IAudioProcessor")]
     NoAudioProcessor,
 }
 

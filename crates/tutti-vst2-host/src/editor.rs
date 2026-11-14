@@ -6,12 +6,20 @@
 
 use crate::error::{Result, Vst2Error};
 use crate::loaded::Vst2Loaded;
-use crate::types::{EditorSize, WindowHandle};
-use tutti_plugin_types::MainThread;
+use crate::types::WindowHandle;
+use dpi::Size;
+use tutti_plugin_types::{EditorUnit, MainThread};
+
+/// `width` by `height` as an `ERect` extent counts them: device pixels on Windows and
+/// X11, points on macOS, which is how the window system counts its own windows. The one
+/// place a VST2 size gets its unit.
+pub(crate) fn rect_size(width: u32, height: u32) -> Size {
+    EditorUnit::WINDOWING.size(width, height)
+}
 
 impl Vst2Loaded {
     /// Opens the plugin's editor embedded in `parent` and returns its size in
-    /// pixels.
+    /// the unit of an `ERect`: pixels, or points on macOS.
     ///
     /// `parent` is the native view or window to embed into (`NSView*` on
     /// macOS, `HWND` on Windows, an X11 window id on Linux). While the editor is
@@ -34,7 +42,7 @@ impl Vst2Loaded {
         &mut self,
         main: &MainThread,
         parent: WindowHandle,
-    ) -> Result<EditorSize> {
+    ) -> Result<Size> {
         if !self.instance.has_editor() {
             return Err(Vst2Error::EditorError("Plugin has no editor".into()));
         }
@@ -65,9 +73,6 @@ impl Vst2Loaded {
         } else {
             self.instance.editor_size(main)
         };
-        Ok(EditorSize {
-            width: w as u32,
-            height: h as u32,
-        })
+        Ok(rect_size(w as u32, h as u32))
     }
 }

@@ -55,7 +55,7 @@ pub fn decodable_extensions() -> &'static [&'static str] {
 ///
 /// # Derived, not written down
 ///
-/// Every reader already declares its own extensions in a `Descriptor` — the
+/// Every reader already declares its own extensions in its probe data — the
 /// same data the probe registers itself from — so a hand-written list here
 /// would be a second copy of something upstream owns, and would drift
 /// (`OggReader` declares seven extensions, `MpaReader` three).
@@ -65,12 +65,12 @@ pub fn decodable_extensions() -> &'static [&'static str] {
 /// that this crate's `decode-wav` resolves to `symphonia/{wav,pcm}` and never
 /// `symphonia/aiff`.
 ///
-/// A `LazyLock` rather than a `const`, because `Descriptor::extensions` is only
+/// A `LazyLock` rather than a `const`, because `ProbeableFormat::probe_data` is only
 /// reachable through a trait method. The work is a few slice copies, once per
 /// process.
 static EXTENSIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
     #[cfg(decode)]
-    use symphonia::core::probe::QueryDescriptor;
+    use symphonia::core::formats::probe::ProbeableFormat;
 
     #[allow(
         unused_mut,
@@ -84,8 +84,8 @@ static EXTENSIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock:
     #[cfg(decode)]
     macro_rules! add {
         ($reader:ty) => {
-            for d in <$reader as QueryDescriptor>::query() {
-                for e in d.extensions {
+            for d in <$reader as ProbeableFormat<'static>>::probe_data() {
+                for e in d.spec.extensions {
                     if !exts.contains(e) {
                         exts.push(e);
                     }
@@ -102,13 +102,13 @@ static EXTENSIONS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock:
     // be exactly the lie this module exists to stop. Adding it is one line in
     // this crate's `Cargo.toml` plus an arm here.
     #[cfg(feature = "decode-wav")]
-    add!(symphonia::default::formats::WavReader);
+    add!(symphonia::default::formats::WavReader<'static>);
     #[cfg(feature = "decode-flac")]
-    add!(symphonia::default::formats::FlacReader);
+    add!(symphonia::default::formats::FlacReader<'static>);
     #[cfg(feature = "decode-mp3")]
-    add!(symphonia::default::formats::MpaReader);
+    add!(symphonia::default::formats::MpaReader<'static>);
     #[cfg(feature = "decode-ogg")]
-    add!(symphonia::default::formats::OggReader);
+    add!(symphonia::default::formats::OggReader<'static>);
 
     // The descriptors are upstream data, so the case guarantee this module's
     // docs make is asserted rather than assumed. symphonia documents them as

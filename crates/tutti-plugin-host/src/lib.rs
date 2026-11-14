@@ -1,5 +1,5 @@
 #![doc = include_str!("../README.md")]
-//! The format-generic half of plugin hosting (design 021, step 4a).
+//! The format-generic half of plugin hosting.
 //!
 //! What a loaded plugin's host side needs whatever process the plugin runs in,
 //! and whatever its format: the main-thread control surface
@@ -37,7 +37,7 @@ mod walk_tests;
 pub use control_handle::{MainThreadControl, PluginHandle, PluginStatus};
 pub use controls::{ForkedSources, NodeControls, PluginControls, lock_tail};
 pub use listeners::{
-    InvalidateSink, Listener, Notice, ParameterChangeSink, RefreshSink, Subscription,
+    InvalidateSink, Listener, Notice, ParameterChangeSink, RefreshSink, Subscription, TransportSink,
 };
 pub use liveness::{Liveness, Verdict};
 pub use meter::PluginMeter;

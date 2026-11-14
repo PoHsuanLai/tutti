@@ -446,7 +446,7 @@ fn a_diagonal_network_is_the_identity_a_comb_a_line_with_a_positive_sign() {
     use crate::Setup;
     let rate = SampleRate::SR_48K;
     let d = freezable();
-    let mut k = d.realized();
+    let mut k = d.realized(rate);
     k.prepare(
         &d.reach(&Reach::at(rate)),
         &Setup {
@@ -506,7 +506,7 @@ fn a_diffusion_ramp_keeps_a_frozen_tails_energy() {
     use crate::Setup;
     let rate = SampleRate::SR_48K;
     let d = freezable();
-    let mut k = d.realized();
+    let mut k = d.realized(rate);
     k.prepare(
         &d.reach(&Reach::at(rate)),
         &Setup {
@@ -570,7 +570,7 @@ fn the_bounds_dominate_where_rounding_matters() {
     let bound = d.reach(&reach);
     for k in 1..100 {
         let c = FdnControls {
-            decay: [d.max_decay(); 3],
+            decay: [d.max_decay; 3],
             size: Mix(1.0),
             diffusion: Mix(k as f32 / 100.0),
             pre_delay: MAX_PRE_DELAY,

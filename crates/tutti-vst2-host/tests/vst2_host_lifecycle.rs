@@ -568,6 +568,7 @@ fn editor_idle_reaches_an_open_editor() {
         .open_editor(&main_thread(), parent, ContentScale::IDENTITY)
         .expect("the probe opens");
     // `effEditGetRect` is the probe's 320 by 240, read before `effEditOpen`.
+    let size = size.to_physical::<u32>(1.0);
     assert_eq!((size.width, size.height), (320, 240));
     instance.loaded_mut().editor_idle(&main_thread());
     instance.loaded_mut().editor_idle(&main_thread());
@@ -770,7 +771,7 @@ fn midi_is_delivered_in_the_piece_it_falls_in() {
 
     let at = |frame: usize, note: u8| {
         (
-            Offset::new(frame, Samples(200)).unwrap(),
+            Offset::of(Samples(frame), Samples(200)),
             midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, note, 0x4000),
         )
     };
@@ -797,7 +798,7 @@ fn the_realtime_flag_is_set_live_and_clear_offline() {
     let _guard = lock_probe();
     let mut instance = load(BLOCK);
     let note = [(
-        Offset::new(10, Samples(64)).unwrap(),
+        Offset::of(Samples(10), Samples(64)),
         midi::note_on(MidiGroup::FIRST, MidiChannel::FIRST, 60, 0x4000),
     )];
     let flags = |instance: &mut Active| {

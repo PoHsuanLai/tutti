@@ -221,22 +221,10 @@ impl DelayMember {
         Feedback::stable_pair(self.feedback, self.cross)
     }
 
-    /// The routing the cross-feedback goes through.
-    #[must_use]
-    pub fn routing(&self) -> &Routing {
-        &self.routing
-    }
-
-    /// The interpolation of the reads.
-    #[must_use]
-    pub fn interpolation(&self) -> InterpolationMode {
-        self.interpolation
-    }
-
     /// Whether the channels recirculate into each other: a routing and a cross-feedback
     /// that is not zero.
     #[must_use]
-    pub fn is_coupled(&self) -> bool {
+    fn is_coupled(&self) -> bool {
         self.gains().1.get() != 0.0 && !self.routing.is_none()
     }
 
@@ -567,18 +555,6 @@ impl DelayFamily {
         self.max_delay
     }
 
-    /// The interpolation of the reads.
-    #[must_use]
-    pub const fn interpolation(&self) -> InterpolationMode {
-        self.interpolation
-    }
-
-    /// The routing of the cross-feedback.
-    #[must_use]
-    pub const fn routing(&self) -> &Routing {
-        &self.routing
-    }
-
     /// The times of the channels past the first.
     #[must_use]
     pub const fn times(&self) -> &ChannelTimes {
@@ -610,7 +586,7 @@ impl Family for DelayFamily {
         *out = DelayMember::of(self, c, rate);
     }
 
-    fn recurrence(&self) -> DelayRecurrence {
+    fn recurrence(&self, rate: SampleRate) -> DelayRecurrence {
         DelayRecurrence {
             width: self.width(),
             interpolation: self.interpolation,
@@ -618,7 +594,7 @@ impl Family for DelayFamily {
             routing: self.routing,
             routed: !self.routing.is_none(),
             max_secs: self.max_delay.get().to_f32(),
-            rate: SampleRate::DEFAULT,
+            rate,
             cap: 0,
         }
     }
@@ -720,7 +696,8 @@ pub struct DelayRecurrence {
     routed: bool,
     /// The longest delay, in seconds, as the lane's `f32`.
     max_secs: f32,
-    /// The prepared rate, and the line's capacity in frames there.
+    /// The rate it runs at, and the line's capacity in frames there (0 until
+    /// prepared).
     rate: SampleRate,
     cap: usize,
 }

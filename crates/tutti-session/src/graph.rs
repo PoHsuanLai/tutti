@@ -55,7 +55,7 @@ use tutti_graph::{
 };
 use tutti_graph::{
     EventCapacity, EventInletNode, EventInletWriter, EventTapId, MeterId, MeterSpec, MissingSource,
-    TapAlign,
+    TapAlign, Topology,
 };
 #[cfg(feature = "plugin")]
 use tutti_types::Latency;
@@ -292,6 +292,9 @@ pub struct Graph {
     /// Edited since the last commit: what `update()` commits on, and what a
     /// local render commits first.
     edited: bool,
+    /// The refusal reported last, until a commit is sent: a spec that keeps
+    /// failing the same way is reported once.
+    refused: Option<CommitError>,
     /// Plans sent, for a host (or a test) asking whether an update sent one.
     commits: u64,
     /// Threads per block, the caller included (`0` for one per core).
@@ -319,6 +322,9 @@ pub struct Graph {
     master_meter: Option<MeterReader>,
     /// Crossfades refused `Busy`, in request order.
     parked: VecDeque<Parked>,
+    /// The nodes [`remove`](Self::remove) took out since the session last
+    /// forgot what it declared on them ([`Graph::take_removed`]).
+    removed: Vec<NodeKey>,
     next_crossfade: u64,
     /// What the root's channels are, when a host declared it
     /// ([`Session::declare_root_topology`](crate::Session::declare_root_topology));
@@ -389,13 +395,15 @@ impl std::fmt::Debug for Graph {
 }
 
 /// What a commit came to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Committed {
     /// Sent.
     Sent,
-    /// Refused for good (logged): the same spec fails the same way, so
-    /// nothing to retry until the next edit.
-    Refused,
+    /// Refused, with why. The plan sent last keeps playing and the edit flag
+    /// stays set, so each update tries the spec again until an edit fixes it;
+    /// [`Session::update`](crate::Session::update) reports a refusal once, as
+    /// [`SessionEvent::CommitRefused`](crate::SessionEvent::CommitRefused).
+    Refused(CommitError),
     /// Refused for now — the executor has not drained enough commits, or a
     /// re-prepare is between its halves. The edit flag stays set, and the
     /// next update retries.
@@ -463,6 +471,7 @@ impl Graph {
             }),
             nodes: BTreeMap::new(),
             edited: true,
+            refused: None,
             commits: 0,
             render_workers: crate::Workers::SERIAL,
             render_worker_start: None,
@@ -474,6 +483,7 @@ impl Graph {
             next_meter: 1,
             master_meter: Some(master_meter),
             parked: VecDeque::new(),
+            removed: Vec::new(),
             next_crossfade: 0,
             root: None,
             output: None,
@@ -835,18 +845,25 @@ impl Graph {
     ///
     /// # Errors
     ///
-    /// [`NoSuchNode`] when `node` is not in the graph
-    /// (nothing is hosted).
+    /// [`HostPluginError::NoSuchNode`](crate::HostPluginError::NoSuchNode) when
+    /// `node` is not in the graph;
+    /// [`HostPluginError::AlreadyHosted`](crate::HostPluginError::AlreadyHosted)
+    /// when it already hosts a plugin (a plugin's record is freed on the main
+    /// thread, through the graveyard, never replaced where it stands). Nothing
+    /// is hosted on an error.
     #[cfg(feature = "plugin")]
     pub fn host_plugin(
         &mut self,
         node: impl Into<NodeKey>,
         handle: tutti_plugin_host::PluginHandle,
         plugin: tutti_plugin::catalog::PluginRef,
-    ) -> Result<Key<crate::PluginNode>, crate::NoSuchNode> {
+    ) -> Result<Key<crate::PluginNode>, crate::HostPluginError> {
         let node = node.into();
         if !self.nodes.contains_key(&node) {
-            return Err(crate::NoSuchNode::new(node));
+            return Err(crate::NoSuchNode::new(node).into());
+        }
+        if self.plugins.contains_key(&node) {
+            return Err(crate::HostPluginError::AlreadyHosted(node));
         }
         self.plugins
             .insert(node, crate::plugin::HostedPlugin::new(handle, plugin));
@@ -1534,7 +1551,10 @@ impl Graph {
     ///
     /// The graph's one removal for a node, whatever it is (a plugin, an inlet,
     /// a clip). The edges fade out first (a declicked removal): the node stays
-    /// in the editor, rendering, until they have.
+    /// in the editor, rendering, until they have. A crossfade waiting on it is
+    /// dropped, and the session forgets what it declared on it (modulation,
+    /// MIDI routes, an input's capture) at its next update, as
+    /// [`Session::remove`](crate::Session::remove) does at once.
     ///
     /// # Errors
     ///
@@ -1549,6 +1569,10 @@ impl Graph {
         if let Some(record) = self.plugins.remove(&node) {
             self.graveyard.bury(record);
         }
+        // A crossfade waiting on it would only fail at its retry, dropping
+        // the incoming node then: drop it here, on the control thread.
+        self.parked.retain(|p| p.node != node);
+        self.removed.push(node);
         // The edges it feeds fade out first: the node stays in the editor,
         // rendering, until they have.
         self.editor.remove_declicked(node);
@@ -1567,6 +1591,14 @@ impl Graph {
         self.fed_edges.retain(|_, s| !s.is_empty());
         self.edited = true;
         Ok(())
+    }
+
+    /// The nodes removed since the last call: what the session forgets its
+    /// own declarations on (modulation, MIDI, inputs), whichever way the
+    /// removal came, [`Session::remove`](crate::Session::remove) or the
+    /// graph's own.
+    pub(crate) fn take_removed(&mut self) -> Vec<NodeKey> {
+        std::mem::take(&mut self.removed)
     }
 
     /// How many nodes the graph holds.
@@ -2048,9 +2080,13 @@ impl Graph {
     ///   input);
     /// - a [`Key`] (or [`NodeKey`]) into a key, or into [`Root`]: **a main
     ///   bus**, channel `c` of the source into channel `c` of the sink. The two
-    ///   must be the same width, and a bus into the root may be narrower than
-    ///   it (it feeds the first channels); a connection never truncates or
-    ///   zero-fills, so a width change is a bus edge;
+    ///   must be the same width. A bus into the root may be narrower than it:
+    ///   it is placed by speaker, on the topology the root was declared with,
+    ///   else on the engine's order for the root's width
+    ///   ([`Fold::to_width`](tutti_types::Fold::to_width)), so a mono source
+    ///   feeds both channels of a stereo root at gain 1.0. A placement that
+    ///   would weight a channel (a centre into a root with none) is refused:
+    ///   a weighted fold is a bus edge. A connection never truncates;
     /// - a [`BusSource`] into a [`BusRef`] (`key.bus_out(i)`,
     ///   `key.bus_in(i)`) or into [`Root`]: **a bus edge**, a fold between two
     ///   declared topologies, lowered at the commit to one weighted lane per
@@ -2245,6 +2281,10 @@ impl Graph {
             Ok::<_, ConnectError>((first, bus.width()))
         };
         let (out_first, out_width) = main(&out_buses, from)?;
+        let out_topology = out_buses
+            .main_bus()
+            .map(|(_, bus)| bus.topology)
+            .ok_or(ConnectError::NoMainBus(from))?;
         match to {
             MainSink::Node(to) => {
                 if from == to {
@@ -2278,9 +2318,43 @@ impl Graph {
                         root_width,
                     });
                 }
-                Ok((0..out_width)
-                    .map(|c| (OutPort::new(from, out_first + c), Root::output(c)))
-                    .collect())
+                if out_width == root_width {
+                    return Ok((0..out_width)
+                        .map(|c| (OutPort::new(from, out_first + c), Root::output(c)))
+                        .collect());
+                }
+                // A narrower bus is placed on the root by speaker: the root's
+                // declared topology, else the engine's order for its width. A
+                // bus that names no speaker is read in the engine's order for
+                // its width, as `Fold::to_width` reads it.
+                let source = tutti_types::ChannelTopology::from(out_topology);
+                let fold = match self.root_topology() {
+                    Some(root) => {
+                        let placed = if source.is_unassigned() {
+                            tutti_types::ChannelTopology::assumed(source.layout()).unwrap_or(source)
+                        } else {
+                            source
+                        };
+                        tutti_types::Fold::between(&placed, root)
+                    }
+                    None => tutti_types::Fold::to_width(
+                        &source,
+                        // The root's width is a `ChannelLayout`'s: every call
+                        // that sizes it takes one.
+                        ChannelLayout::try_from(root_width).expect("a root width fits a layout"),
+                    ),
+                }
+                .map_err(|cause| ConnectError::RootFold { from, cause })?;
+                let mut wires = Vec::new();
+                for c in 0..root_width {
+                    for (k, weight) in fold.contributions(c) {
+                        if weight != 1.0 {
+                            return Err(ConnectError::RootWeighted { from });
+                        }
+                        wires.push((OutPort::new(from, out_first + k), Root::output(c)));
+                    }
+                }
+                Ok(wires)
             }
         }
     }
@@ -2775,6 +2849,18 @@ impl Graph {
         self.widen_refusal
     }
 
+    /// The audio wiring as it stands: the nodes, the edges into every input
+    /// port, the root's output sources and its input width, including edits
+    /// no commit has sent yet ([`is_edited`](Self::is_edited)). A read-only
+    /// view of what [`connect`](Self::connect) and its kin write; the
+    /// graph's other declarations (event edges, params, modes) are not part
+    /// of it.
+    ///
+    /// An edge that is fading out stays here until its fade ends.
+    pub fn topology(&self) -> &Topology {
+        &self.editor.spec().topology
+    }
+
     /// The topology the root was declared with, if one was.
     pub fn root_topology(&self) -> Option<&tutti_types::ChannelTopology> {
         self.root.as_ref()
@@ -2995,23 +3081,31 @@ impl Graph {
         self.editor.take_unreported_event_losses()
     }
 
-    /// `Editor::commit`. `Sent` clears the edit flag; `Retry` keeps it.
+    /// `Editor::commit`. `Sent` clears the edit flag; `Refused` and `Retry` keep it.
     pub(crate) fn commit(&mut self) -> Committed {
         match self.editor.commit() {
             Ok(()) => {
                 self.edited = false;
+                self.refused = None;
                 self.commits += 1;
                 self.pump_local();
                 Committed::Sent
             }
             Err(CommitError::Backpressure | CommitError::Repreparing) => Committed::Retry,
-            Err(e) => {
-                // Not retried: the same spec fails the same way next update.
-                // The next edit marks the graph edited again.
-                tracing::error!("graph: commit refused: {e}");
-                Committed::Refused
-            }
+            // Kept edited: an edit the flag does not see (a mix, a mode) can
+            // make the same spec compile.
+            Err(e) => Committed::Refused(e),
         }
+    }
+
+    /// Whether `e` differs from the refusal reported last since a commit was
+    /// sent, remembering it: a refusal is reported once, not every update.
+    pub(crate) fn newly_refused(&mut self, e: &CommitError) -> bool {
+        if self.refused.as_ref() == Some(e) {
+            return false;
+        }
+        self.refused = Some(e.clone());
+        true
     }
 
     /// Render one frame on the local executor, under `transport`.

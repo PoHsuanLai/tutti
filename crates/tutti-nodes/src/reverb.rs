@@ -257,10 +257,29 @@ enum Mode<C> {
 /// cuts the room off, resets the realization and parks ([`Status::Idle`]): the state
 /// is below -60 dB, and an idle node is a fresh one when it wakes.
 pub struct FamilyNode<F: NodeFamily> {
+    rig: Rig<F>,
+    /// What [`prepare`](Node::prepare) builds from the rate it is given: `None` until the
+    /// node is prepared, when nothing holds a value derived from a rate.
+    tuned: Option<Tuned<F>>,
+}
+
+/// What a [`FamilyNode`] is without a rate: the design, its cells and its ports.
+struct Rig<F: NodeFamily> {
     family: F,
-    realization: Realized<F::Recurrence>,
     params: Params<F::Set>,
     mode: Mode<F::Controls>,
+    channels: Channels,
+    /// The output bus, every band of it.
+    out: OutBus,
+    /// The side-chain key bus of a keyed family ([`Channels::keyed`]).
+    key: Option<InBus>,
+}
+
+/// A [`FamilyNode`] prepared for one rate and block size: the realization and everything
+/// derived from the rate.
+struct Tuned<F: NodeFamily> {
+    realization: Realized<F::Recurrence>,
+    rate: SampleRate,
     /// The model the realization was last retargeted to: designed in place.
     network: Box<F::Member>,
     /// The longest-ringing model of a modulated block, for the tail only.
@@ -275,12 +294,6 @@ pub struct FamilyNode<F: NodeFamily> {
     /// [`System::latency`], the blank's, so it does not move with a control) and what the
     /// realization adds to it ([`Realized::latency`]).
     latency: Samples,
-    rate: SampleRate,
-    channels: Channels,
-    /// The output bus, every band of it.
-    out: OutBus,
-    /// The side-chain key bus of a keyed family ([`Channels::keyed`]).
-    key: Option<InBus>,
     /// Frames of ring-out after the last non-silent input frame that the
     /// settings in force since may still need.
     ring: u64,
@@ -295,21 +308,23 @@ pub struct FamilyNode<F: NodeFamily> {
 
 impl<F: NodeFamily> std::fmt::Debug for FamilyNode<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FamilyNode")
-            .field("rate", &self.rate)
-            .field("channels", &self.channels)
-            .field("ceiling", &self.ceiling)
-            .field("ring", &self.ring)
-            .field("since", &self.since)
-            .finish_non_exhaustive()
+        let mut d = f.debug_struct("FamilyNode");
+        d.field("channels", &self.rig.channels);
+        if let Some(t) = &self.tuned {
+            d.field("rate", &t.rate)
+                .field("ceiling", &t.ceiling)
+                .field("ring", &t.ring)
+                .field("since", &t.since);
+        }
+        d.finish_non_exhaustive()
     }
 }
 
 impl<F: NodeFamily> FamilyNode<F> {
-    /// A reverb of `design`, its cells at `controls`, at the default rate (the
-    /// graph's `prepare` re-tunes it). The graph may modulate the cells, so
-    /// its tail ceiling is the design's worst case. Allocates: build it before
-    /// the node goes live.
+    /// A reverb of `design`, its cells at `controls`. The graph may modulate the cells, so
+    /// its tail ceiling is the design's worst case. It has no rate until the graph's
+    /// `prepare` gives it one: it declares no latency and an unknown tail before, and
+    /// renders silence. Allocates: build it before the node goes live.
     #[must_use]
     pub fn live(family: F, controls: F::Controls) -> Self {
         Self::build(family, controls, Mode::Live)
@@ -324,116 +339,112 @@ impl<F: NodeFamily> FamilyNode<F> {
     }
 
     fn build(family: F, controls: F::Controls, mode: Mode<F::Controls>) -> Self {
-        let rate = SampleRate::DEFAULT;
         let channels = family.channels();
         let shape = ports(channels);
         let out = shape.output_bus(0).expect("a design has an output");
         let key = channels
             .key()
             .map(|_| shape.input_bus(1).expect("a keyed design's key is bus 1"));
-        let realization = family.realized();
         let params = Params::new(family.set(&controls), &controls);
-        let (network, longest) = (Box::new(family.blank(rate)), Box::new(family.blank(rate)));
-        let mut node = Self {
-            family,
-            realization,
-            params,
-            mode,
-            network,
-            longest,
-            applied: None,
-            current: 0,
-            ceiling: 0,
-            latency: Samples::ZERO,
-            rate,
-            channels,
-            out,
-            key,
-            ring: 0,
-            since: UNBOUNDED,
-            silent: true,
-            position: 0,
-        };
-        node.retune(rate, MaxBlock::of(Samples(1)));
-        node
-    }
-
-    /// Prepares the realization for `rate` and sizes everything that depends on it.
-    fn retune(&mut self, rate: SampleRate, max_block: MaxBlock) {
-        self.rate = rate;
-        let capacity = self.family.capacity(self.rate);
-        self.realization.prepare(
-            &capacity,
-            &Setup {
-                rate: self.rate,
-                max_block,
+        Self {
+            rig: Rig {
+                family,
+                params,
+                mode,
+                channels,
+                out,
+                key,
             },
-        );
-        self.applied = None;
-        // A block cadence's realization glides its own coefficients between the designs of
-        // its blocks, so the reader lands a moved cell whole there.
-        self.params.retune(rate, F::SAMPLING != Cadence::BLOCK);
-        // Latency has one home per cause: the member's and the
-        // realization's, summed here once. It is the blank member's: a latency that moved
-        // with a control would be a shape the graph cannot follow (the contract's `latency`
-        // case holds every member to it).
-        self.latency = Samples(
-            self.family
-                .blank(self.rate)
-                .latency()
-                .get()
-                .saturating_add(self.realization.latency().get()),
-        );
-        self.ceiling = match self.mode {
-            Mode::Live => frames(capacity.tail(), self.rate),
-            Mode::Fixed(controls) => {
-                self.family
-                    .member_into(&controls, self.rate, &mut self.network);
-                frames(self.network.tail(TAIL_FLOOR), self.rate)
-            }
-        };
-        self.clear();
-    }
-
-    /// Back to silence: no ring-out owed, no input heard.
-    fn clear(&mut self) {
-        self.realization.reset();
-        self.silent = true;
-        self.ring = 0;
-        self.since = UNBOUNDED;
-        self.position = 0;
-        self.params.land();
-    }
-
-    /// Designs `controls` into the node's network and retargets the realization.
-    fn apply(&mut self, controls: F::Controls) {
-        self.family
-            .member_into(&controls, self.rate, &mut self.network);
-        self.realization.retarget(&self.network);
-        if self.family.rings() == Rings::Tracks {
-            self.current = frames(self.network.tail(TAIL_FLOOR), self.rate);
+            tuned: None,
         }
-        self.applied = Some(controls);
     }
 
     /// The controls the model was last designed from, for a node's own tests.
     #[cfg(test)]
     pub(crate) fn applied(&self) -> Option<F::Controls> {
-        self.applied
+        self.tuned.as_ref().and_then(|t| t.applied)
+    }
+}
+
+impl<F: NodeFamily> Tuned<F> {
+    /// Prepares a realization for `rate` and sizes everything that depends on it.
+    fn new(rig: &mut Rig<F>, rate: SampleRate, max_block: MaxBlock) -> Self {
+        let capacity = rig.family.capacity(rate);
+        let mut realization = rig.family.realized(rate);
+        realization.prepare(&capacity, &Setup { rate, max_block });
+        // A block cadence's realization glides its own coefficients between the designs of
+        // its blocks, so the reader lands a moved cell whole there.
+        rig.params.retune(rate, F::SAMPLING != Cadence::BLOCK);
+        let mut network = Box::new(rig.family.blank(rate));
+        let longest = Box::new(rig.family.blank(rate));
+        // Latency has one home per cause: the member's and the
+        // realization's, summed here once. It is the blank member's: a latency that moved
+        // with a control would be a shape the graph cannot follow (the contract's `latency`
+        // case holds every member to it).
+        let latency = Samples(
+            network
+                .latency()
+                .get()
+                .saturating_add(realization.latency().get()),
+        );
+        let ceiling = match rig.mode {
+            Mode::Live => frames(capacity.tail(), rate),
+            Mode::Fixed(controls) => {
+                rig.family.member_into(&controls, rate, &mut network);
+                frames(network.tail(TAIL_FLOOR), rate)
+            }
+        };
+        let mut tuned = Self {
+            realization,
+            rate,
+            network,
+            longest,
+            applied: None,
+            current: 0,
+            ceiling,
+            latency,
+            ring: 0,
+            since: UNBOUNDED,
+            silent: true,
+            position: 0,
+        };
+        tuned.clear(rig);
+        tuned
+    }
+
+    /// Back to silence: no ring-out owed, no input heard.
+    fn clear(&mut self, rig: &mut Rig<F>) {
+        self.realization.reset();
+        self.silent = true;
+        self.ring = 0;
+        self.since = UNBOUNDED;
+        self.position = 0;
+        rig.params.land();
+    }
+
+    /// Designs `controls` into the node's network and retargets the realization.
+    fn apply(&mut self, rig: &Rig<F>, controls: F::Controls) {
+        rig.family
+            .member_into(&controls, self.rate, &mut self.network);
+        self.realization.retarget(&self.network);
+        if rig.family.rings() == Rings::Tracks {
+            self.current = frames(self.network.tail(TAIL_FLOOR), self.rate);
+        }
+        self.applied = Some(controls);
     }
 
     /// How many frames of the block may still sound, and the tail it reports:
     /// the tail owed is measured from the last non-silent input frame, the longer
     /// figure held until a shorter decay has been heard out.
-    fn cut(&mut self, io: &mut Io<'_>) -> usize {
+    fn cut(&mut self, rig: &Rig<F>, io: &mut Io<'_>) -> usize {
         let size = io.frames();
-        let inputs = self.channels.input_width();
+        let inputs = rig.channels.input_width();
         let mut current = self.current;
-        if matches!(self.mode, Mode::Live)
-            && let Some(longest) = self.params.longest(io)
+        if matches!(rig.mode, Mode::Live)
+            && let Some(longest) = rig.params.longest(io)
             && Some(longest) != self.applied
         {
-            self.family
+            rig.family
                 .member_into(&longest, self.rate, &mut self.longest);
             current = current.max(frames(self.longest.tail(TAIL_FLOOR), self.rate));
         }
@@ -479,12 +490,12 @@ impl<F: NodeFamily> FamilyNode<F> {
     /// Renders `frames` of the block through the realization: the main input, the
     /// key bus of a keyed family and the lanes of the controls the family reads per frame
     /// ([`ControlRead::Fast`](crate::ControlRead::Fast)), each cut to `frames`.
-    fn render(&mut self, io: &mut Io<'_>, frames: Frames<usize>) {
+    fn render(&mut self, rig: &Rig<F>, io: &mut Io<'_>, frames: Frames<usize>) {
         if frames.is_empty() {
             return;
         }
-        let inputs = self.channels.input_width();
-        let lanes = self.params.lanes(io);
+        let inputs = rig.channels.input_width();
+        let lanes = rig.params.lanes(io);
         let (ins, mut outs) = io.split();
         let mut input: [&[f32]; MAX_BUS_CHANNELS] = [&[]; MAX_BUS_CHANNELS];
         for (c, slot) in input.iter_mut().enumerate().take(inputs) {
@@ -492,7 +503,7 @@ impl<F: NodeFamily> FamilyNode<F> {
         }
         let mut key: [&[f32]; MAX_BUS_CHANNELS] = [&[]; MAX_BUS_CHANNELS];
         let mut keys = 0;
-        if let Some(bus) = self.key {
+        if let Some(bus) = rig.key {
             for (slot, ch) in key.iter_mut().zip(ins.bus(bus).channels()) {
                 *slot = &ch[frames.clone()];
                 keys += 1;
@@ -500,11 +511,11 @@ impl<F: NodeFamily> FamilyNode<F> {
         }
         let mut output: [&mut [f32]; MAX_BUS_CHANNELS] =
             std::array::from_fn(|_| Default::default());
-        let channels = outs.bus(self.out).into_channels();
+        let channels = outs.bus(rig.out).into_channels();
         for (slot, ch) in output.iter_mut().zip(channels) {
             *slot = &mut ch[frames.clone()];
         }
-        let width = self.channels.output_width();
+        let width = rig.channels.output_width();
         let mut feed = Feed::new(&input[..inputs]).with_key(&key[..keys]);
         for (i, lane) in lanes.iter().enumerate() {
             if let Some(lane) = lane {
@@ -521,7 +532,7 @@ impl<F: NodeFamily> FamilyNode<F> {
     /// the last design designs and retargets before it renders. The steps that did
     /// not move render together, in one call, with the model held; the rest of a
     /// segment an earlier block began is rendered with the model that block set.
-    fn render_steps(&mut self, io: &mut Io<'_>, position: u64) {
+    fn render_steps(&mut self, rig: &mut Rig<F>, io: &mut Io<'_>, position: u64) {
         // Only a stream grid steps (`process`): a block cadence designs once, at the
         // block's last frame, so a step's solve is its first frame and a corner
         // inside a step is never read before the frames it designs.
@@ -538,7 +549,7 @@ impl<F: NodeFamily> FamilyNode<F> {
         let mut held = 0;
         let mut from = 0;
         loop {
-            let corner = self.params.corner_from(io, from);
+            let corner = rig.params.corner_from(io, from);
             let (cut, solve_at) = match (grid.peek().copied(), corner) {
                 (Some((cut, solve)), Some(c)) if cut <= c => {
                     grid.next();
@@ -557,18 +568,18 @@ impl<F: NodeFamily> FamilyNode<F> {
                 frame: solve_at,
                 rate: self.rate,
             };
-            let target = self.params.read(io, at);
+            let target = rig.params.read(io, at);
             if self
                 .applied
                 .as_ref()
-                .is_none_or(|applied| self.params.moved(applied, &target))
+                .is_none_or(|applied| rig.params.moved(applied, &target))
             {
-                self.render(io, held..cut);
-                self.apply(target);
+                self.render(rig, io, held..cut);
+                self.apply(rig, target);
                 held = cut;
             }
         }
-        self.render(io, held..size);
+        self.render(rig, io, held..size);
     }
 }
 
@@ -629,62 +640,76 @@ fn ports(channels: Channels) -> Shape {
 }
 
 impl<F: NodeFamily> Node for FamilyNode<F> {
+    /// The ports and cells always; latency, tail and cost from the prepared rate. Unprepared,
+    /// a node declares no latency and a tail that is unknown (or none, for a family that
+    /// does not ring), and the graph reads the rest after `prepare`.
     fn shape(&self) -> Shape {
-        let addrs = match self.mode {
-            Mode::Live => self.params.addrs(),
+        let rig = &self.rig;
+        let addrs = match rig.mode {
+            Mode::Live => rig.params.addrs(),
             Mode::Fixed(_) => &[],
         };
-        ports(self.channels)
-            .with_cost(cost(self.realization.effort()))
-            .with_latency(Latency::new(self.latency))
-            .with_tail(match self.family.rings() {
-                Rings::Tracks => tail_of(self.ceiling),
+        let shape = ports(rig.channels).with_param_addrs(addrs);
+        let Some(t) = &self.tuned else {
+            return shape.with_tail(match rig.family.rings() {
+                Rings::Silent => Tail::None,
+                _ => Tail::Unknown,
+            });
+        };
+        shape
+            .with_cost(cost(t.realization.effort()))
+            .with_latency(Latency::new(t.latency))
+            .with_tail(match rig.family.rings() {
+                Rings::Tracks => tail_of(t.ceiling),
                 Rings::Unknown => Tail::Unknown,
                 Rings::Silent => Tail::None,
-                Rings::Ceiling(c) => Tail::Finite(c.get().to_samples_ceil(self.rate)),
+                Rings::Ceiling(c) => Tail::Finite(c.get().to_samples_ceil(t.rate)),
             })
-            .with_param_addrs(addrs)
     }
 
     fn prepare(&mut self, p: &Prepare) {
-        self.retune(p.sample_rate(), p.max_block());
+        self.tuned = Some(Tuned::new(&mut self.rig, p.sample_rate(), p.max_block()));
     }
 
     fn process(&mut self, _cx: &Cx<'_>, mut io: Io<'_>) -> Status {
+        let Self { rig, tuned } = self;
+        let Some(t) = tuned else {
+            return Status::Silent;
+        };
         let size = io.frames();
         if size == 0 {
             return Status::Modified;
         }
-        let position = self.position;
-        self.position += size as u64;
+        let position = t.position;
+        t.position += size as u64;
 
         // The controls at the block's last frame, and whether the design moves
         // inside the block: a driven port, or a cell that moved past the dead-band
         // (it glides across the block, one design per step of the grid).
-        let target = match self.mode {
+        let target = match rig.mode {
             Mode::Fixed(c) => c,
             Mode::Live => {
-                self.params.begin(position);
-                self.params.read(
+                rig.params.begin(position);
+                rig.params.read(
                     &io,
                     At {
                         position,
                         frame: size - 1,
-                        rate: self.rate,
+                        rate: t.rate,
                     },
                 )
             }
         };
-        let moved = |applied: &F::Controls| self.params.moved(applied, &target);
+        let moved = |applied: &F::Controls| rig.params.moved(applied, &target);
         let stepped = F::SAMPLING != Cadence::BLOCK
-            && matches!(self.mode, Mode::Live)
-            && (self.params.driven(&io) || self.applied.as_ref().is_some_and(moved));
-        if !stepped && self.applied.as_ref().is_none_or(moved) {
-            self.apply(target);
+            && matches!(rig.mode, Mode::Live)
+            && (rig.params.driven(&io) || t.applied.as_ref().is_some_and(moved));
+        if !stepped && t.applied.as_ref().is_none_or(moved) {
+            t.apply(rig, target);
         }
 
-        let cut = if self.family.rings() == Rings::Tracks {
-            self.cut(&mut io)
+        let cut = if rig.family.rings() == Rings::Tracks {
+            t.cut(rig, &mut io)
         } else {
             size
         };
@@ -693,26 +718,26 @@ impl<F: NodeFamily> Node for FamilyNode<F> {
         // floor, and the input has been silent for longer than the realization's
         // latency, so the output is silent.
         if cut == 0 {
-            if !self.silent {
-                self.realization.reset();
-                self.silent = true;
+            if !t.silent {
+                t.realization.reset();
+                t.silent = true;
             }
             return Status::Idle;
         }
 
         if stepped {
-            self.render_steps(&mut io, position);
+            t.render_steps(rig, &mut io, position);
         } else {
-            self.render(&mut io, 0..cut);
+            t.render(rig, &mut io, 0..cut);
         }
         if cut < size {
             let (_, mut outs) = io.split();
-            for ch in outs.bus(self.out).into_channels() {
+            for ch in outs.bus(rig.out).into_channels() {
                 ch[cut..size].fill(0.0);
             }
-            if !self.silent {
-                self.realization.reset();
-                self.silent = true;
+            if !t.silent {
+                t.realization.reset();
+                t.silent = true;
             }
         }
 
@@ -720,12 +745,14 @@ impl<F: NodeFamily> Node for FamilyNode<F> {
     }
 
     fn reset(&mut self) {
-        self.clear();
+        if let Some(t) = &mut self.tuned {
+            t.clear(&mut self.rig);
+        }
     }
 
     fn param_base(&self, k: usize) -> Option<f32> {
-        match self.mode {
-            Mode::Live => self.params.base(k),
+        match self.rig.mode {
+            Mode::Live => self.rig.params.base(k),
             Mode::Fixed(_) => None,
         }
     }
@@ -736,24 +763,28 @@ impl<F: NodeFamily> Node for FamilyNode<F> {
 impl<F: NodeFamily> Clone for FamilyNode<F> {
     fn clone(&self) -> Self {
         Self {
-            family: self.family.clone(),
-            realization: self.realization.fresh(),
-            params: self.params.clone(),
-            mode: self.mode,
-            network: self.network.clone(),
-            longest: self.longest.clone(),
-            applied: self.applied,
-            current: self.current,
-            ceiling: self.ceiling,
-            latency: self.latency,
-            rate: self.rate,
-            channels: self.channels,
-            out: self.out,
-            key: self.key,
-            ring: 0,
-            since: UNBOUNDED,
-            silent: true,
-            position: 0,
+            rig: Rig {
+                family: self.rig.family.clone(),
+                params: self.rig.params.clone(),
+                mode: self.rig.mode,
+                channels: self.rig.channels,
+                out: self.rig.out,
+                key: self.rig.key,
+            },
+            tuned: self.tuned.as_ref().map(|t| Tuned {
+                realization: t.realization.fresh(),
+                rate: t.rate,
+                network: t.network.clone(),
+                longest: t.longest.clone(),
+                applied: t.applied,
+                current: t.current,
+                ceiling: t.ceiling,
+                latency: t.latency,
+                ring: 0,
+                since: UNBOUNDED,
+                silent: true,
+                position: 0,
+            }),
         }
     }
 }
@@ -762,8 +793,8 @@ impl<F: NodeFamily> ParamNode for FamilyNode<F> {
     /// In a live node the algorithm's cells; a fixed one has none.
     fn param_set(&self) -> ParamSet {
         let set = ParamSet::builder();
-        match self.mode {
-            Mode::Live => self.params.bind(set).build(),
+        match self.rig.mode {
+            Mode::Live => self.rig.params.bind(set).build(),
             Mode::Fixed(_) => set.build(),
         }
     }
@@ -771,7 +802,7 @@ impl<F: NodeFamily> ParamNode for FamilyNode<F> {
     /// A clone with every cell detached (at its value now) and the room empty.
     fn fork_fresh(&self) -> Self {
         let mut fork = self.clone();
-        fork.params.detach();
+        fork.rig.params.detach();
         fork
     }
 }
@@ -803,21 +834,6 @@ mod tail_ceiling_tests {
     use tutti_types::Seconds;
 
     use super::TailCeiling;
-
-    // The shape `check_range_contract` checks is serde's; `TailCeiling` has none in the
-    // library (nothing persists it), so the check runs on the same `try_from` shape here.
-    impl serde::Serialize for TailCeiling {
-        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-            self.0.serialize(s)
-        }
-    }
-
-    impl<'de> serde::Deserialize<'de> for TailCeiling {
-        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-            Self::try_from(<Seconds as serde::Deserialize>::deserialize(d)?)
-                .map_err(serde::de::Error::custom)
-        }
-    }
 
     /// `TailCeiling` keeps the range-checked shape: `new` refuses a NaN, an infinite or a
     /// negative time and never clamps, `of` agrees, and `TryFrom` carries the refused raw,

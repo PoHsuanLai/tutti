@@ -109,6 +109,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use tutti_plugin::MainThread;
 
+use dpi::Size;
 use tutti_graph::NodeKey;
 use tutti_plugin::catalog::{
     AudioConfig, Catalog, Hosting, Plugin as HostPlugin, PluginRef, PluginState,
@@ -119,8 +120,8 @@ use tutti_plugin_host::{
     NodeControls, Notice, PluginControls, PluginHandle, PluginStatus, Subscription,
 };
 use tutti_plugin_types::{
-    BridgeError, EditorSize, Normalized, ParamEdit, ParamId, PluginFailure, PluginInvalidation,
-    PluginRefresh, PluginTail,
+    BridgeError, Normalized, ParamEdit, ParamId, PluginFailure, PluginInvalidation, PluginRefresh,
+    PluginTail,
 };
 use tutti_types::{SampleRate, Samples, Seconds};
 
@@ -477,7 +478,7 @@ pub(crate) enum PluginLiveness {
     },
 }
 
-/// How a hosted plugin is doing ([`Plugin::health`], design 029 section 2.6):
+/// How a hosted plugin is doing ([`Plugin::health`]):
 /// one reading of what the engine latched, the session's debounce and its
 /// recovery.
 ///
@@ -514,8 +515,7 @@ pub enum PluginHealth {
 }
 
 /// What happened to a hosted plugin, as the session's
-/// [`SessionEvent::Plugin`] reports it (design 029
-/// section 3.3): the node, and what changed.
+/// [`SessionEvent::Plugin`] reports it: the node, and what changed.
 ///
 /// One stream carries both what a plugin reports (its own edit of a
 /// parameter, a new tail) and every transition of its life (death, reload,
@@ -583,9 +583,9 @@ pub enum PluginChange {
     /// collapsing panel), found while [`MainSession::update`](crate::MainSession::update)
     /// serviced the editor. Answer with
     /// [`EditorView::resize`](crate::EditorView::resize) after sizing the window
-    /// it lives in. The size is in the platform's own pixels, as
-    /// [`EditorSize`] says.
-    EditorWantsSize(EditorSize),
+    /// it lives in. The size is in the plugin's format's own unit, as
+    /// [`Opened::Embedded`](crate::Opened::Embedded)'s is.
+    EditorWantsSize(Size),
     /// A hosted plugin was declared dead
     /// (`tutti_plugin_host::Liveness`) with recovery off: its node was
     /// removed. Reported once. With recovery on the death is
@@ -1063,7 +1063,7 @@ impl Key<PluginNode> {
 }
 
 /// A hosted plugin, lent by [`Session::plugin`]: its identity, and the
-/// surfaces the session holds for it (design 029 section 3.1).
+/// surfaces the session holds for it.
 ///
 /// A view borrows the session, so it cannot outlive the plugin it names: a
 /// node that is removed or replaced while one is held is a borrow error, and
@@ -1113,7 +1113,7 @@ impl<'a> Plugin<'a> {
     }
 
     /// How the plugin is doing: running, stalled, dead and about to be
-    /// written off, or being reloaded (design 029 section 2.6).
+    /// written off, or being reloaded.
     pub fn health(&self) -> PluginHealth {
         let hosted = self.hosted;
         match &hosted.status {
@@ -1135,13 +1135,13 @@ impl<'a> Plugin<'a> {
     }
 
     /// The plugin's diagnostics: its server, its dropouts and losses, and the
-    /// latency and tail the graph holds for it (design 029 section 2.7).
+    /// latency and tail the graph holds for it.
     pub fn diagnostics(&self) -> Diagnostics<'a> {
         Diagnostics::new(self.hosted, self.figures)
     }
 
     /// The plugin's buses as the graph's bus handles, to wire with
-    /// `Graph::connect` (design 029 section 3.5).
+    /// `Graph::connect`.
     pub fn buses(&self) -> PluginBuses<'a> {
         PluginBuses::new(self.node, self.hosted)
     }
@@ -1155,7 +1155,7 @@ impl<'a> Plugin<'a> {
 
     /// The plugin's parameters: what it declares, read at load and again when
     /// it announces a rescan, and the value of each, kept current from what the
-    /// plugin reports and the host sets (design 029 section 2.3).
+    /// plugin reports and the host sets.
     pub fn params(&self) -> Params<'a> {
         Params::new(self.node, self.hosted)
     }

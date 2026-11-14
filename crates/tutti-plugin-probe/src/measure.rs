@@ -1,4 +1,4 @@
-//! The measuring probe (doc 023 section 6): activate a plugin and hold its
+//! The measuring probe: activate a plugin and hold its
 //! claimed tail and latency against what it renders.
 //!
 //! [`measure_at`] is one experiment at one configuration, over any
@@ -42,8 +42,8 @@ use tutti_ump::{
     Address, Attribute, Message, MidiChannel, MidiGroup, NoteNumber, NoteVelocity, Ump, Voice2,
 };
 
-/// The impulse an effect is given, on every input channel (doc 023 section 6:
-/// 0.1, not 1.0, for the nonlinear plugins). **The probe measures at this
+/// The impulse an effect is given, on every input channel (0.1, not 1.0, for the nonlinear
+/// plugins). **The probe measures at this
 /// level**: a figure is of that stimulus, not a bound for a nonlinear plugin (a
 /// gate or an expander may never open at 0.1, which reads as `Silent`).
 pub const IMPULSE: Amplitude = Amplitude(0.1);
@@ -78,7 +78,7 @@ pub const NOTE: u8 = 60;
 /// M2-115 section 3).
 const VELOCITY: u16 = 0x8000;
 
-/// The configurations the probe measures at, in order (doc 023 section 6): a
+/// The configurations the probe measures at, in order: a
 /// figure can depend on the rate and the block.
 pub const CONFIGS: [(SampleRate, MaxBlock); 2] = [
     (SampleRate::SR_48K, MaxBlock::of(Samples(512))),
@@ -192,7 +192,7 @@ fn note(on: bool, offset: usize, block: usize) -> UmpAt {
             attribute,
         }
     };
-    let offset = Offset::new(offset, Samples(block)).expect("an offset inside its block");
+    let offset = Offset::new(Samples(offset), Samples(block)).expect("an offset inside its block");
     (offset, Ump::from(Message::Midi2(address, voice)))
 }
 

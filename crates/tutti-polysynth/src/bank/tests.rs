@@ -15,7 +15,7 @@ fn flat() -> Adsr {
 }
 
 fn bank(osc: OscillatorType, filter: FilterType, env: Adsr) -> VoiceBank {
-    VoiceBank::new(osc, &filter, &env, sr(), 16, 1)
+    VoiceBank::new(osc, &filter, &env, sr(), 16, UnisonVoices::ONE)
 }
 
 /// Start `lane` sounding at `freq` with unity gains, as a note-on would.
@@ -347,7 +347,7 @@ fn every_lane_starts_on_its_own_noise_seed() {
         &flat(),
         sr(),
         16,
-        7,
+        UnisonVoices::of(7),
     );
     let seeds: Vec<u32> = bank.rng.iter().flat_map(|g| g.to_array()).collect();
     assert!(seeds.len() >= 16 * 7);

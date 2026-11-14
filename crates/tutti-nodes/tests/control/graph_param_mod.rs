@@ -916,11 +916,14 @@ fn mix_cases() -> Vec<MixCase> {
         .chain([MixCase {
             name: "convolver mix",
             make: |w| {
-                parts_of(tutti_nodes::ConvolverNode::shared_ir(
-                    ChannelLayout::try_from(w).expect("a test width is small"),
-                    &[0.0, 0.0, 1.0, -0.5],
-                    64,
-                ))
+                parts_of(
+                    tutti_nodes::ConvolverNode::shared_ir(
+                        ChannelLayout::try_from(w).expect("a test width is small"),
+                        &[0.0, 0.0, 1.0, -0.5],
+                        64,
+                    )
+                    .unwrap(),
+                )
             },
         }])
         .collect();
@@ -989,7 +992,7 @@ fn plain_distortion(d: f32) -> Vec<f32> {
 #[test]
 fn an_authored_write_moves_the_base_under_modulation() {
     let node = DistortionNode::with_channels(1u16, ShapeKind::Tanh, Drive::new(1.0));
-    let cell = node.drive();
+    let cell = node.drive().as_atomic();
     let mut g = GraphBuilder::new(ChannelLayout::MONO, ChannelLayout::MONO);
     let (n, _) = g.add_with_controls(node);
     g.connect_input(0, n, 0).connect_output(n, 0, 0);

@@ -8,9 +8,9 @@
 //! different digest.
 //!
 //! WAV and AIFF are integer and exact arithmetic and asserted everywhere. FLAC
-//! is asserted through `assert_golden`, on the target the figures were recorded
-//! on, because its encoder calls libm (the window's cosine, the Rice parameter's
-//! logarithm).
+//! is not pinned: its bytes are the encoder library's choice (and call libm),
+//! so its suite holds what the format promises instead, that every level decodes
+//! back to the quantized input, and that the levels differ.
 
 #![cfg(any(
     feature = "encode-wav",
@@ -106,32 +106,77 @@ fn aiff_bytes_are_pinned() {
     }
 }
 
-/// The five FLAC levels that differ, as the libFLAC-ish levels they replace:
-/// 0, 1 and 2, 3, 4 to 6, 7 and 8. Their digests differ on this input, so a
-/// level mapped to another's coding options shows.
-#[cfg(feature = "encode-flac")]
+/// The file `format` writes for the input, decoded back: one `Vec` per channel.
+#[cfg(all(feature = "encode-flac", feature = "encode-wav"))]
+fn decoded(format: Format, channels: u16, frames: usize) -> Vec<Vec<f32>> {
+    let layout = ChannelLayout::from(channels);
+    let spec = Spec::of_width(format, layout, SampleRate::SR_44K1);
+    let samples = input(usize::from(channels), frames);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("written");
+    let mut encoder = Encoder::create_file(&spec, &path).unwrap();
+    encoder.write(Interleaved::new(&samples, layout)).unwrap();
+    encoder.finish().unwrap();
+    let wave = tutti_codec::Wave::read(&path).unwrap();
+    assert_eq!(
+        wave.channels(),
+        usize::from(channels),
+        "{format:?} channels"
+    );
+    (0..wave.channels())
+        .map(|c| wave.channel(c).to_vec())
+        .collect()
+}
+
+/// FLAC is lossless: at every level and depth, the file decodes to exactly the
+/// samples the WAV writer of the same depth stores, which is the one
+/// quantization (and whose bytes are pinned above).
+#[cfg(all(feature = "encode-flac", feature = "encode-wav"))]
 #[test]
-fn flac_bytes_are_pinned_at_every_level() {
+fn flac_decodes_to_the_quantized_input_at_every_level() {
     use tutti_codec::FlacLevel::{Best, Fast, Fastest, Medium, Standard};
     use tutti_codec::IntDepth::{Int16, Int24};
-    // (level, depth, channels, frames, digest)
-    for (level, depth, channels, frames, digest) in [
-        (Fastest, Int16, 2u16, 10_000usize, 0xe06e_af14_e0be_7037u64),
-        (Fast, Int16, 2, 10_000, 0x7521_4d0d_dc41_93f9),
-        (Medium, Int16, 2, 10_000, 0x8365_73b7_024f_6725),
-        (Standard, Int16, 2, 10_000, 0xa471_70e5_dfa1_101a),
-        (Best, Int16, 2, 10_000, 0x0146_e259_f2aa_01ca),
-        (Fastest, Int16, 6, 10_000, 0x2550_5523_58ce_2e63),
-        (Best, Int16, 6, 10_000, 0x93ce_97d3_76f6_2bba),
-        (Standard, Int24, 1, 3, 0xe374_c1fe_f602_d961),
-        (Standard, Int24, 2, 3, 0x4efd_2790_718a_3b4f),
-        (Standard, Int24, 2, 0, 0x304f_3d17_993a_f031),
-    ] {
-        let (_, got) = written(Format::Flac { depth, level }, channels, frames);
-        tutti_fixtures::assert_golden(
-            &format!("FLAC {level:?} {depth:?} {channels}ch {frames}"),
-            got,
-            digest,
-        );
+    use tutti_codec::Pcm;
+    for (depth, pcm) in [(Int16, Pcm::Int16), (Int24, Pcm::Int24)] {
+        for (channels, frames) in [(1u16, 3usize), (2, 10_000), (6, 10_000)] {
+            let quantized = decoded(Format::Wav(pcm), channels, frames);
+            for level in [Fastest, Fast, Medium, Standard, Best] {
+                assert_eq!(
+                    decoded(Format::Flac { depth, level }, channels, frames),
+                    quantized,
+                    "FLAC {level:?} {depth:?} {channels}ch {frames}"
+                );
+            }
+        }
+    }
+}
+
+/// The five levels code this input with different options, so no level is
+/// mapped onto another's: their files differ pairwise.
+#[cfg(feature = "encode-flac")]
+#[test]
+fn the_flac_levels_write_different_files() {
+    use tutti_codec::FlacLevel::{Best, Fast, Fastest, Medium, Standard};
+    use tutti_codec::IntDepth::Int16;
+    let files: Vec<_> = [Fastest, Fast, Medium, Standard, Best]
+        .into_iter()
+        .map(|level| {
+            (
+                level,
+                written(
+                    Format::Flac {
+                        depth: Int16,
+                        level,
+                    },
+                    2,
+                    10_000,
+                ),
+            )
+        })
+        .collect();
+    for (i, (a, fa)) in files.iter().enumerate() {
+        for (b, fb) in &files[i + 1..] {
+            assert_ne!(fa, fb, "FLAC {a:?} and {b:?} wrote the same file");
+        }
     }
 }

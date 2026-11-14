@@ -105,33 +105,24 @@ use tutti_types::{ChannelLayout, FoldError, InterleavedMut, SampleRate, Samples,
 pub const DEFAULT_BLOCK_CAPACITY: Samples = Samples(8192);
 
 /// Why [`Engine::new`] refused a graph.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum GraphEngineError {
     /// The executor is not the editor's: they were not built together.
+    #[error("the executor is not the editor's")]
     NotAPair,
     /// What the editor already sent is past what the engine can run: more
     /// than [`MAX_ROOT_CHANNELS`] global outputs, or a `MaxBlock` above the
     /// block capacity.
+    #[error("the graph is past the engine's limits: {0}")]
     Limits(CommitError),
     /// Another engine holds `transport`'s audio side (its motion machine,
     /// playhead and commands): one built over it, or over a clone of it, is
     /// still alive. Two would both consume every seek and both write the
     /// playhead ([`Transport::audio`](tutti_transport::Transport::audio)).
+    #[error("{0}")]
     TransportHeld(AudioTaken),
 }
-
-impl core::fmt::Display for GraphEngineError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::NotAPair => f.write_str("the executor is not the editor's"),
-            Self::Limits(e) => write!(f, "the graph is past the engine's limits: {e}"),
-            Self::TransportHeld(e) => write!(f, "{e}"),
-        }
-    }
-}
-
-impl std::error::Error for GraphEngineError {}
 
 /// The transport as a graph block sees it.
 type GraphTransport = tutti_graph::TransportPosition;
@@ -768,7 +759,7 @@ impl Engine {
                     pieces.ran();
                     cursor += s;
                     t = transport.restate();
-                    if let Some(o) = Offset::new(cursor, Samples(frames)) {
+                    if let Some(o) = Offset::new(Samples(cursor), Samples(frames)) {
                         pieces.change(o, t);
                     }
                     continue;
@@ -796,7 +787,7 @@ impl Engine {
                 aim = None;
             }
             t = now;
-            match Offset::new(cursor, Samples(frames)) {
+            match Offset::new(Samples(cursor), Samples(frames)) {
                 Some(o) if cursor > 0 => pieces.change(o, t),
                 _ => walk.start = t,
             }

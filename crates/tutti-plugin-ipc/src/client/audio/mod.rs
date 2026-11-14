@@ -27,9 +27,10 @@ use crate::protocol::{
     ScaleChanges, TransportChanges, TransportInfo,
 };
 use crate::transport::shm::AudioSlab;
+use dpi::Size;
 use tutti_plugin_types::{
-    BlockStatus, BridgeResult, ContentScale, Delivered, EditorError, EditorSize, PluginFailure,
-    StateError, StateUse,
+    BlockStatus, BridgeResult, ContentScale, Delivered, EditorError, PluginFailure, StateError,
+    StateUse,
 };
 use tutti_types::SampleRate;
 
@@ -187,6 +188,16 @@ impl AudioBridge {
         }
     }
 
+    /// Tells the listener of a transport request made in the editor instance
+    /// the host holds (it is not the server's to report), on the calling
+    /// thread, as it tells one the server sent.
+    pub(super) fn report_transport(&self, request: tutti_plugin_types::TransportRequest) {
+        let listener = self.listener.lock().clone();
+        if let Some(listener) = listener {
+            listener(BridgeEvent::Transport { request });
+        }
+    }
+
     /// Whether the server died or the bridge lost it. Latched.
     pub fn is_crashed(&self) -> bool {
         self.lifecycle.is_crashed()
@@ -324,6 +335,16 @@ impl AudioBridge {
         } else {
             Delivered::Dropped
         }
+    }
+
+    /// Queues what the host says of the plugin's track, saying **why** if it
+    /// did not go. Main thread: the value is boxed here, off the audio thread.
+    pub fn set_track_info(&self, info: &tutti_plugin_types::TrackInfo) -> Delivered {
+        delivery(self.lifecycle.is_crashed(), || {
+            self.channels.push_command(Command::SetTrackInfo {
+                info: Box::new(info.clone()),
+            })
+        })
     }
 
     /// Queues a rate change. Realtime-safe; `false` when it was not queued.
@@ -572,7 +593,7 @@ impl AudioBridge {
         }
     }
 
-    // --- The editor in the server (doc 029 section 6.5) ---
+    // --- The editor in the server ---
 
     /// Opens the editor in the server: embedded in `parent` (the platform
     /// number of the host's window), or the plugin's own floating window for
@@ -586,11 +607,11 @@ impl AudioBridge {
         &self,
         parent: Option<u64>,
         scale: ContentScale,
-    ) -> std::result::Result<Option<EditorSize>, EditorError> {
+    ) -> std::result::Result<Option<Size>, EditorError> {
         if self.lifecycle.is_crashed() {
             return Err(EditorError::PluginCrashed);
         }
-        let (ask_resp, reply) = ask::<std::result::Result<Option<EditorSize>, String>>();
+        let (ask_resp, reply) = ask::<std::result::Result<Option<Size>, String>>();
         if !self.channels.push_command(Command::OpenEditor {
             parent,
             scale,
@@ -620,14 +641,11 @@ impl AudioBridge {
     /// # Errors
     ///
     /// As [`open_editor_in_server`](Self::open_editor_in_server).
-    pub fn set_editor_size_in_server(
-        &self,
-        size: EditorSize,
-    ) -> std::result::Result<EditorSize, EditorError> {
+    pub fn set_editor_size_in_server(&self, size: Size) -> std::result::Result<Size, EditorError> {
         if self.lifecycle.is_crashed() {
             return Err(EditorError::PluginCrashed);
         }
-        let (ask_resp, reply) = ask::<std::result::Result<EditorSize, String>>();
+        let (ask_resp, reply) = ask::<std::result::Result<Size, String>>();
         if !self
             .channels
             .push_command(Command::SetEditorSize { size, reply })
@@ -643,7 +661,7 @@ impl AudioBridge {
 
     /// The size the server's editor asked its window to take since the last
     /// call.
-    pub fn take_editor_wants_size(&self) -> Option<EditorSize> {
+    pub fn take_editor_wants_size(&self) -> Option<Size> {
         self.lifecycle.take_editor_wants()
     }
 
@@ -899,5 +917,35 @@ mod tests {
 
         channels.set_sample_rate(SampleRate::SR_192K);
         assert_eq!(channels.sample_rate(), SampleRate::SR_192K);
+    }
+}
+
+/// What a push of a command comes to: nothing is queued for a plugin that is
+/// gone, and a full queue refuses it. `push` runs only for a live plugin.
+fn delivery(crashed: bool, push: impl FnOnce() -> bool) -> Delivered {
+    if crashed {
+        Delivered::PluginDead
+    } else if push() {
+        Delivered::Yes
+    } else {
+        Delivered::Dropped
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+
+    /// A command that was queued is `Yes`; one the full queue refused is
+    /// `Dropped`, which a later call may cure; a dead plugin is `PluginDead`,
+    /// and its queue is not even tried.
+    #[test]
+    fn a_push_is_delivered_dropped_or_to_a_dead_plugin_each_by_itself() {
+        assert_eq!(delivery(false, || true), Delivered::Yes);
+        assert_eq!(delivery(false, || false), Delivered::Dropped);
+        assert_eq!(
+            delivery(true, || panic!("a dead plugin's queue is not tried")),
+            Delivered::PluginDead
+        );
     }
 }

@@ -79,7 +79,7 @@ impl MidiEncoder {
     pub fn new(buses: usize) -> Self {
         let buses = buses.clamp(1, usize::from(MidiGroup::COUNT));
         Self {
-            notes: PerNoteState::new(buses, PitchBendSensitivity::MPE_DEFAULT.semitones()),
+            notes: PerNoteState::new(buses, PitchBendSensitivity::MPE_MEMBER_DEFAULT.semitones()),
             buses,
             groups_dropped: 0,
             unsendable_dropped: 0,

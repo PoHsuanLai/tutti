@@ -175,10 +175,15 @@ until it is un-parked. `vendor/` is third-party and never restyled.
 - **D5. Links** (`C-LINK`): types and methods are intra-doc links; a link
   rustdoc cannot resolve, a redundant explicit target, or a public doc linking
   a private item fails CI (`cargo xtask doc`, `check-doc-features`).
-- **D6. Comments say why** (`M-NO-META-DESIGN-DOCUMENTATION`). A comment that
-  restates the code, narrates a change ("now", "previously", "moved from"), or
-  records a mutation run is a finding. Crate and module docs describe the end
-  state, not the design journey: history belongs in the commit message.
+- **D6. A comment states what the code does and the invariant it holds**
+  (`M-NO-META-DESIGN-DOCUMENTATION`): safety, ordering, real-time, in the
+  present tense; rustdoc documents the item. Everything else is deleted, not
+  rewritten: history, why something was added, past failures, removed names,
+  transitional notes ("for now", "not yet", "until"), citations of design docs
+  or audits, restatements of a gate or `CLAUDE.md`, and rationale for a
+  default. Git holds the history. A finding on this rule is fixed by deleting
+  the text, never by rewording it. `cargo xtask check-comments` holds the
+  citations it can see to a per-file baseline that only falls.
 - **D7. Docs agree with the code** (`CLAUDE.md`: "a comment or doc that
   disagrees with the code is the bug"), and are updated in the PR that changes
   the code.
@@ -187,7 +192,7 @@ until it is un-parked. `vendor/` is third-party and never restyled.
 - **D9. Rustdoc is the documentation** (owner, 2026-11-13). What a reader needs
   to use or change an item lives in its rustdoc: the item's doc, its module's
   doc, or its crate's doc. A comment or doc never points elsewhere for it: no
-  "doc 013", "design 021 §5", "as built (T2)", plan item numbers or lane
+  "doc 013", "design 0NN §5", "as built (T2)", plan item numbers or lane
   names, which rustdoc cannot render and a reader cannot follow. A design
   decision a user must know (why a type refuses something, what a guarantee
   costs) is written where the item is, in a sentence. `docs/design/` is being
@@ -286,6 +291,28 @@ terms:
 - **P6. Licences** (`C-PERMISSIVE`): `MIT OR Apache-2.0`, both licence files at
   the root; code derived from elsewhere carries its notice and licence file
   (`tutti-soundfont`'s rustysynth notice is the model).
+
+## S. Crates that support `no_std`
+
+A crate that runs on a target with no operating system follows these rules; the
+list of such crates is `NO_STD_CRATES` in `xtask/src/recipes.rs`.
+
+- **S1. `#![no_std]`** at the root, with `extern crate alloc` only in a crate
+  that allocates. A crate that needs no allocator does not link `alloc`.
+- **S2. `std` is a feature that adds** (`C9`): it turns on items that need the
+  operating system and never changes what the rest does. It is on by default
+  only when the crate already had `std`-only API; a new crate leaves it off.
+- **S3. Errors implement `core::error::Error`**, not `std::error::Error`
+  (`E1`). `thiserror` 2 with `default-features = false` derives it.
+- **S4. Float maths is `libm`**, on every build, never the `std` float methods
+  (`f32::sin`, `powf`, ...), so a result does not depend on the target's
+  libm.
+- **S5. No spin locks.** A `no_std` crate takes no lock; shared state goes
+  through `tutti-rt` (`CLAUDE.md`).
+- **S6. The build is the check.** `cargo xtask check-no-std` builds each listed
+  crate, bare and with each of its features, for `thumbv7em-none-eabihf`
+  (`rustup target add thumbv7em-none-eabihf`); CI's dark-features job runs it.
+  A `std` use fails to compile there, so no text gate looks for the attribute.
 
 ---
 

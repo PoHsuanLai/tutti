@@ -108,11 +108,10 @@
 //! The `tutti` crate re-exports this one as `tutti::polysynth` behind its
 //! `synth` feature.
 //!
-//! ## Examples
+//! ## Verification
 //!
-//! `examples/render_synth_cases.rs` renders a set of configurations to disk;
-//! `examples/verify_synth.py` checks the output against synthesis theory. See
-//! `examples/README.md`.
+//! `testing/tutti-verify` renders a set of configurations to disk and checks
+//! the output against synthesis theory (`cargo xtask verify-audio`).
 //!
 //! ## Features
 //!
@@ -148,7 +147,7 @@ pub use unison::{UnisonConfig, UnisonVoices, UnisonVoicesError};
 mod portamento;
 pub(crate) use portamento::Portamento;
 // Public: these appear in `SynthConfig` (`portamento` field + its config).
-pub use portamento::{PortamentoConfig, PortamentoMode};
+pub use portamento::{GlideTime, GlideTimeError, PortamentoConfig, PortamentoMode};
 
 mod tuning;
 // Public: `Tuning` appears in `SynthConfig`.

@@ -12,7 +12,7 @@
 //!
 //! # The scene
 //!
-//! An offline session (`SessionBuilder::build_offline`), 48 kHz stereo,
+//! An offline session (`Session::builder().build()`), 48 kHz stereo,
 //! rolling:
 //!
 //! - 8 `PolySynth` instruments, saw through a Moog ladder at 1.2 kHz, 16
@@ -164,7 +164,7 @@ impl Node for Hold {
                 self.base + (self.sent as u8 * 3) % 48,
                 0xC000,
             );
-            let at = Offset::new(0, Samples(io.frames())).expect("a non-empty block");
+            let at = Offset::of(Samples(0), Samples(io.frames()));
             if io.event_out(0).push(Event::midi(at, note)).is_ok() {
                 self.sent += 1;
             }
@@ -226,11 +226,9 @@ fn add_stereo(
 fn scene(block: usize, workers: Workers, variant: Variant) -> Session {
     let mut s = Session::builder()
         .render_workers(workers)
-        .build_offline(
-            SampleRate::of(RATE),
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(block)),
-        )
+        .sample_rate(SampleRate::of(RATE))
+        .max_block(MaxBlock::of(Samples(block)))
+        .build()
         .expect("builds");
 
     let mut strips = Vec::new();
@@ -309,10 +307,7 @@ fn scene(block: usize, workers: Workers, variant: Variant) -> Session {
             connect_stereo(&mut s, strip, 0, src);
             if reverb {
                 let send = BusStripNode::stereo();
-                send.volume().store(
-                    Db(-12.0).to_amplitude().get(),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
+                send.set_volume(Db(-12.0).to_amplitude());
                 let (send, _) = s.graph().add(send);
                 connect_stereo(&mut s, send, 0, src);
                 sends.push(send);

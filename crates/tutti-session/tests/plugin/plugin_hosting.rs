@@ -6,7 +6,7 @@ use tutti_plugin::catalog::{Catalog, CatalogConfig, Hosting, PluginRef};
 use tutti_plugin_db::PluginDb;
 use tutti_plugin_types::BridgeError;
 use tutti_session::{PluginLoadRequest, Session};
-use tutti_types::{ChannelLayout, MaxBlock, SampleRate, Samples};
+use tutti_types::{MaxBlock, Samples};
 
 fn main_thread() -> tutti_plugin_types::MainThread {
     tutti_plugin_types::MainThread::claim().expect("one test, one process")
@@ -14,11 +14,8 @@ fn main_thread() -> tutti_plugin_types::MainThread {
 
 fn session() -> Session {
     Session::builder()
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::STEREO,
-            MaxBlock::of(Samples(512)),
-        )
+        .max_block(MaxBlock::of(Samples(512)))
+        .build()
         .expect("an offline session builds")
 }
 
@@ -36,8 +33,8 @@ fn set_server(path: impl AsRef<std::ffi::OsStr>) {
     unsafe { std::env::set_var("TUTTI_PLUGIN_SERVER", path) };
 }
 
-/// **A blacklisted plugin is refused at load, not at open** (design 029 step
-/// 6): the catalog opens nothing, so the refusal is the load's. A load that
+/// **A blacklisted plugin is refused at load, not at open**: the catalog opens nothing, so the
+/// refusal is the load's. A load that
 /// names a catalog that blacklists the plugin fails with the recorded reason,
 /// before any server is looked for (none can be found here, which would be
 /// `ServerNotFound`); the same ref loaded with no catalog is admitted, and so

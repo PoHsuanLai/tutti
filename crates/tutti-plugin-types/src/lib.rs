@@ -9,7 +9,7 @@
 //! [`ParamRange`] / [`ParamFlags`] parts, [`ProcessContext`] and [`ProcessOutput`],
 //! [`TransportInfo`], [`ParameterChanges`] automation queues, note expression and
 //! harmony changes, [`AudioBuffer`] in its f32/f64 forms, editor vocabulary
-//! ([`WindowHandle`], [`EditorSize`], [`EditorCapabilities`]), presets, and the
+//! ([`WindowHandle`], [`EditorUnit`], [`EditorCapabilities`]), presets, and the
 //! [`Features`] capability bitset.
 //!
 //! It also carries the [`bundle`] helpers that find the loadable module inside a
@@ -130,7 +130,7 @@
 //! `default = []`.
 //!
 //! - `serde` — `Serialize`/`Deserialize` on the wire-eligible types
-//!   ([`TransportInfo`], [`ParameterChanges`], [`EditorSize`],
+//!   ([`TransportInfo`], [`ParameterChanges`],
 //!   [`EditorCapabilities`], [`WindowHandle`], and the metadata that rides the
 //!   plugin-load reply). Required by the plugin IPC protocol (postcard); a host
 //!   crate that does no IPC does not pay for the dependency.
@@ -151,7 +151,7 @@
 //! [`ParameterChanges`]: crate::ParameterChanges
 //! [`AudioBuffer`]: crate::AudioBuffer
 //! [`WindowHandle`]: crate::WindowHandle
-//! [`EditorSize`]: crate::EditorSize
+//! [`EditorUnit`]: crate::EditorUnit
 //! [`EditorCapabilities`]: crate::EditorCapabilities
 //! [`Features`]: crate::Features
 //! [`bundle`]: crate::bundle
@@ -217,7 +217,9 @@ mod requests;
 mod sample_format;
 mod state_use;
 mod sysex;
+mod track_info;
 mod transport;
+mod transport_request;
 mod wakeups;
 
 // Test-only global allocator for the no-alloc gates: panics on any heap
@@ -253,7 +255,7 @@ pub use classification::{
 pub use descriptor::{AuComponentType, EditorPresence, PluginClass, PluginDescriptor};
 pub use driver::{Hand, Lifecycle, Seat};
 pub use editor::{
-    AspectRatio, ContentScale, EditorCapabilities, EditorError, EditorSize, InvalidContentScale,
+    AspectRatio, ContentScale, EditorCapabilities, EditorError, EditorUnit, InvalidContentScale,
     KeyEvent, KeyUse, ModifierConvention, ResizeHints, WindowHandle,
 };
 pub use failure::{PluginFailure, TerminationReason};
@@ -265,6 +267,8 @@ pub use points::{PointBuf, PointPool};
 pub use process_wake::ProcessWake;
 pub use requests::{Edit, EditDrain, EditQueue, EditSink, edits, taken};
 pub use state_use::StateUse;
+pub use track_info::{TrackInfo, TrackKind};
+pub use transport_request::TransportRequest;
 // Exported as `PluginResult` only: the bare name `Result` shadows std's under a
 // glob import.
 pub use error::{Delivered, PluginError, PresetError, Result as PluginResult, StateError};

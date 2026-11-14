@@ -73,6 +73,7 @@ units! {
         tutti_nodes::ModDelayNode { Rate => Hz, Depth => Seconds, Feedback => Feedback }
         tutti_nodes::PhaserNode { Rate => Hz, Depth => Depth, Feedback => Feedback }
         tutti_nodes::LfoNode { Depth => Depth, Rate => Hz }
+        tutti_nodes::OscillatorNode { Frequency => Hz, Volume => Amplitude }
         tutti_nodes::FreeverbNode { RoomSize => Mix, Damping => Mix }
         tutti_nodes::FdnNode {
             Decay => Seconds, RoomSize => Mix, Diffusion => Mix, DelayTime => Seconds,

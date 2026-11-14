@@ -20,6 +20,7 @@
 //!                           | 08 mask 12*u7 | 09 mask 12*u14 )        -- octave tuning
 //! change              := key frequency                                -- key, 3-byte word
 //! mask                := u7(0..=3) u7 u7                              -- channels 15-16, 8-14, 1-7
+//! mtc_full            := 01 01 hr mn sc fr                            -- hr is 0rrhhhhh
 //! device_control      := 04 ( 01 u14 | 02 u14 | 03 u14 | 04 00 u7 )   -- volume, balance, tuning
 //! manufacturer        := 00 xx yy | mm                                -- one byte or three
 //! ```
@@ -37,7 +38,7 @@ use winnow::token::{any, literal};
 
 use tutti_ump::{DeviceIdentity, ManufacturerId, NoteNumber, U7, U14};
 
-use super::{GeneralMidi, Recipient, Universal};
+use super::{GeneralMidi, MtcFullMessage, Recipient, Universal};
 use crate::tuning::{
     ChannelMask, KeyChange, KeyChanges, KeyTable, MAX_KEY_CHANGES, OctaveOffsets, Timing,
     TuningFrequency, TuningMessage, TuningName,
@@ -126,6 +127,18 @@ fn device_control(input: &mut &[u8]) -> Res<Universal> {
             preceded(literal(0x04_u8), preceded(u7, u7)).map(Universal::MasterCoarseTuning),
         )),
     )
+    .parse_next(input)
+}
+
+/// `01 01 hr mn sc fr`, the MTC Full Message (M1 p.53 and T-9): the position's
+/// four bytes, the hours byte carrying the rate code above the hours.
+fn mtc_full(input: &mut &[u8]) -> Res<Universal> {
+    preceded(
+        (literal(0x01_u8), literal(0x01_u8)),
+        (any, any, any, any)
+            .verify_map(|(hr, mn, sc, fr)| MtcFullMessage::from_wire(hr, mn, sc, fr)),
+    )
+    .map(Universal::MtcFullMessage)
     .parse_next(input)
 }
 
@@ -340,6 +353,7 @@ fn addressed(input: &mut &[u8]) -> Res<(Recipient, Universal, Option<U7>)> {
         ))
         .parse_next(input)?,
         REAL_TIME => alt((
+            mtc_full.map(plain),
             device_control.map(plain),
             tuning(Timing::RealTime).map(tuned),
         ))

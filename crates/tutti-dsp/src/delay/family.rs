@@ -221,22 +221,10 @@ impl DelayMember {
         Feedback::stable_pair(self.feedback, self.cross)
     }
 
-    /// The routing the cross-feedback goes through.
-    #[must_use]
-    pub fn routing(&self) -> &Routing {
-        &self.routing
-    }
-
-    /// The interpolation of the reads.
-    #[must_use]
-    pub fn interpolation(&self) -> InterpolationMode {
-        self.interpolation
-    }
-
     /// Whether the channels recirculate into each other: a routing and a cross-feedback
     /// that is not zero.
     #[must_use]
-    pub fn is_coupled(&self) -> bool {
+    fn is_coupled(&self) -> bool {
         self.gains().1.get() != 0.0 && !self.routing.is_none()
     }
 
@@ -565,18 +553,6 @@ impl DelayFamily {
     #[must_use]
     pub const fn max_delay(&self) -> MaxDelay {
         self.max_delay
-    }
-
-    /// The interpolation of the reads.
-    #[must_use]
-    pub const fn interpolation(&self) -> InterpolationMode {
-        self.interpolation
-    }
-
-    /// The routing of the cross-feedback.
-    #[must_use]
-    pub const fn routing(&self) -> &Routing {
-        &self.routing
     }
 
     /// The times of the channels past the first.

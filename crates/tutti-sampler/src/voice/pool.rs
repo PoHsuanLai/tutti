@@ -16,7 +16,7 @@ use super::command::{
 use super::loop_span::Loop;
 use super::memory_source::MemorySource;
 use super::slot::{PlaybackSlot, stretch_wanted};
-use super::types::{Playback, SlotId, Voice, VoiceSource};
+use super::types::{Playback, Reach, SlotId, Voice, VoiceSource};
 use crate::lanes::{BlockScratch, UNPREPARED_FRAMES};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use std::sync::Arc;
@@ -160,9 +160,23 @@ pub(crate) struct DrainCounters {
     wave_swaps_ignored: AtomicU64,
     voices_refused: AtomicU64,
     freed_in_callback: AtomicU64,
+    /// Commands the handle has queued: not a drop, so not in [`PoolDrops`]. A
+    /// pool whose count is zero holds the voices it was built with and no
+    /// others, which is what lets a fork copy it.
+    queued: AtomicU64,
 }
 
 impl DrainCounters {
+    /// Whether the handle has queued a command, which the audio thread may
+    /// have applied: the pool's voices are then not known here.
+    pub(crate) fn commanded(&self) -> bool {
+        self.queued.load(Ordering::Relaxed) > 0
+    }
+
+    pub(crate) fn note_queued(&self) {
+        Self::bump(&self.queued);
+    }
+
     pub(crate) fn bump(counter: &AtomicU64) {
         counter.fetch_add(1, Ordering::Relaxed);
     }
@@ -234,11 +248,14 @@ pub struct PoolTooWide {
 /// retirement channel back. Voices placed on the timeline read the transport
 /// from each block's `Env`, frame-exact at their windows' edges.
 ///
-/// A fork of a pool is an empty pool at its width, with no command
-/// queue and no streamer: the voices a pool holds arrived through its queue on
-/// the audio thread, where no control-side copy of them exists to fork. A
-/// host that renders a track's clips offline rebuilds them in a pool of its
-/// own ([`insert`](Self::insert)) before inserting it.
+/// A fork of a pool is a pool at its width holding copies of the voices it was
+/// built with ([`insert`](Self::insert)), with no command queue and no
+/// streamer. That is the pool's state only while its handle has queued nothing:
+/// a voice added or edited through the handle is applied on the audio thread,
+/// where no control-side copy of it exists. So a fork of a pool whose handle
+/// has queued a command is refused, naming the node, and a host that renders a
+/// track's clips offline builds them into the pool with
+/// [`insert`](Self::insert) before inserting it.
 ///
 /// Both source tiers live here side by side, as the `Memory` / `Disk` arms of
 /// [`VoiceSource`]; the slot's read forks on that enum rather than on a trait,
@@ -307,6 +324,11 @@ pub struct VoicePool {
     /// time (`PlaybackSlot::render_into`). Built with the pool and sized
     /// from `Prepare::max_block` in `prepare`, on the control thread.
     scratch: BlockScratch,
+
+    /// Whether a handle still reaches the pool; a fork's is frozen. It
+    /// decides how exactly the pool states its ring-out
+    /// ([`ring_out`](Self::ring_out)).
+    reach: Reach,
 }
 
 // Hand-rolled: `voices` holds non-`Debug` `PlaybackSlot`s (each wraps a sampler +
@@ -347,6 +369,7 @@ impl VoicePool {
             clock: Clock::new(),
             tempo: None,
             scratch: BlockScratch::new(UNPREPARED_FRAMES, channels.count() as usize),
+            reach: Reach::Live,
         }
     }
 
@@ -430,6 +453,19 @@ impl VoicePool {
             streams: Arc::default(),
         };
         (self, handle)
+    }
+
+    /// The ring-out the pool declares ([`Shape::tail`]). A pool a handle can
+    /// still add voices to promises [`Tail::Unbounded`]; a fork's voices are
+    /// all it will ever have, so it states the longest of theirs
+    /// ([`Voice::ring_out`]).
+    fn ring_out(&self) -> Tail {
+        match self.reach {
+            Reach::Live => Tail::Unbounded,
+            Reach::Frozen => self.voices.iter().fold(Tail::None, |tail, slot| {
+                tail.beside(slot.voice.ring_out(Reach::Frozen))
+            }),
+        }
     }
 
     /// Number of voice slots currently materialised (drained from the command
@@ -822,6 +858,7 @@ impl Clone for VoicePool {
             tempo: self.tempo.clone(),
             channels: self.channels,
             scratch: BlockScratch::sized_like(&self.scratch),
+            reach: self.reach,
         }
     }
 }
@@ -833,11 +870,12 @@ impl Default for VoicePool {
 }
 
 impl Node for VoicePool {
-    /// No inputs, [`channels`](Self::channels) outputs; a generator (fed
-    /// out of band, through its queue), never skipped.
+    /// No inputs, [`channels`](Self::channels) outputs; a source (fed out of
+    /// band, through its queue), never skipped, with the ring-out of
+    /// `ring_out`.
     fn shape(&self) -> Shape {
         Shape::source_unassigned(self.channels)
-            .with_tail(Tail::Unbounded)
+            .with_tail(self.ring_out())
             // Its voices arrive while it plays, each a `VoiceNode`'s cost:
             // measured 13 ns per frame and channel at one plain voice, 82 at
             // eight, and one stretched voice alone is 288.
@@ -909,16 +947,36 @@ impl Node for VoicePool {
     }
 }
 
-/// A pool's fork: an empty pool at its width (see "As a graph node").
+/// A pool's fork: the voices it was built with, copied, while no command has
+/// reached it (see "As a graph node").
 struct PoolFork {
     channels: ChannelLayout,
     tempo: Option<TempoReader>,
+    /// The voices the pool held when it became a node, by slot.
+    voices: Vec<(SlotId, Voice)>,
+    /// Shared with the handle: whether a command has been queued since.
+    counters: Arc<DrainCounters>,
 }
 
+/// Why a pool refused a fork: the voices it holds are not known here.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "a voice pool forks only while its handle has queued nothing: its voices \
+     arrive on the audio thread, where no control-side copy of them exists"
+)]
+struct PoolCommanded;
+
 impl ForkSource for PoolFork {
-    fn fork(&self, _mode: ForkMode) -> Result<Forked, ForkCause> {
+    fn fork(&self, mode: ForkMode) -> Result<Forked, ForkCause> {
+        if self.counters.commanded() {
+            return Err(ForkCause::new(PoolCommanded));
+        }
         let mut pool = VoicePool::from_parts(self.channels);
         pool.tempo = self.tempo.clone();
+        for (id, voice) in &self.voices {
+            pool.insert_voice(*id, voice.fork_copy(mode)?);
+        }
+        pool.reach = Reach::Frozen;
         Ok(Forked::new(Box::new(pool)))
     }
 }
@@ -930,6 +988,12 @@ impl IntoNode for VoicePool {
         let fork = PoolFork {
             channels: self.channels,
             tempo: self.tempo.clone(),
+            voices: self
+                .voices
+                .iter()
+                .map(|slot| (slot.id, slot.voice.as_ref().clone()))
+                .collect(),
+            counters: Arc::clone(&self.counters),
         };
         let (pool, handle) = self.with_handle();
         NodeParts {

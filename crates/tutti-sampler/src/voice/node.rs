@@ -20,7 +20,7 @@ use super::command::{Steering, SteeringCell, VoiceNodeHandle};
 use super::disk_voice::DiskVoice;
 use super::disk_voice::VoiceHealth;
 use super::slot::{PlaybackSlot, stretch_wanted};
-use super::types::{Playback, SlotId, Voice, VoiceSource};
+use super::types::{Playback, Reach, SlotId, Voice, VoiceSource};
 use tutti_graph::{
     Cx, ForkCause, ForkMode, ForkSource, Forked, IntoNode, Io, Node, NodeParts, ParamSet, Prepare,
     Shape, Status,
@@ -90,6 +90,10 @@ pub struct VoiceNode {
     /// The block read's lanes (`PlaybackSlot::render_into`), built here and
     /// sized from `Prepare::max_block` in `prepare`, on the control thread.
     scratch: BlockScratch,
+    /// Whether a handle still reaches the node; a fork's is frozen. It
+    /// decides how exactly the node states its ring-out
+    /// ([`ring_out`](Self::ring_out)).
+    reach: Reach,
 }
 
 impl VoiceNode {
@@ -134,6 +138,7 @@ impl VoiceNode {
             clock: Clock::new(),
             tempo: None,
             scratch: BlockScratch::new(UNPREPARED_FRAMES, channels.count() as usize),
+            reach: Reach::Live,
         }
     }
 
@@ -275,6 +280,13 @@ impl VoiceNode {
         }
     }
 
+    /// The ring-out the node declares ([`Shape::tail`]): its voice's
+    /// ([`Voice::ring_out`]), promised as a ceiling while a handle can still
+    /// steer the node and exactly in a fork, which none reaches.
+    fn ring_out(&self) -> Tail {
+        self.slot.voice.ring_out(self.reach)
+    }
+
     /// What the node declares to the cost model: `Moderate` for a plain
     /// read, `Heavy` with a time-stretch filter.
     ///
@@ -325,11 +337,11 @@ tutti_graph::declare_params!([] VoiceNode, n {
 });
 
 impl Node for VoiceNode {
-    /// No inputs, [`channels`](Self::channels) outputs; a generator, never
-    /// skipped.
+    /// No inputs, [`channels`](Self::channels) outputs; a source, never
+    /// skipped, with the ring-out of `ring_out`.
     fn shape(&self) -> Shape {
         Shape::source_unassigned(self.channels)
-            .with_tail(Tail::Unbounded)
+            .with_tail(self.ring_out())
             .with_cost(self.cost())
             .with_param_addrs(self.declared_ports().as_slice())
     }
@@ -470,6 +482,7 @@ impl ForkSource for VoiceNodeFork {
         let health = voice.fault().map(VoiceHealth);
         let mut node = VoiceNode::with_channels(voice, self.channels);
         node.tempo = self.tempo.clone();
+        node.reach = Reach::Frozen;
         let forked = Forked::new(Box::new(node));
         Ok(match health {
             Some(h) => forked.with_health(Arc::new(h)),
@@ -525,6 +538,66 @@ mod tests {
         assert_eq!(handle.steering.retired_len(), 1, "pinned until a scan");
         assert_eq!(tutti_rt::Reclaim::reclaim(&handle), 0);
         assert_eq!(handle.steering.retired_len(), 0, "freed by the reclaim");
+    }
+
+    /// **A node's ring-out follows what can still steer it.** A placed voice
+    /// is the programme and has none, whoever steers it; a free-running voice
+    /// that a handle can loop, slow or stretch promises no ceiling; and its
+    /// fork, which nothing steers, declares its wave's length at the rate it
+    /// reads, at the stretch it plays.
+    #[test]
+    fn a_nodes_ring_out_is_the_ceiling_its_steering_allows() {
+        let wave = Arc::new(tutti_codec::Wave::from_samples(
+            SampleRate::SR_48K,
+            &[0.0; 4_800],
+        ));
+        let prepare = Prepare::new(
+            SampleRate::SR_48K,
+            tutti_types::MaxBlock::of(tutti_types::Samples(64)),
+        );
+        let free = |play: Playback| {
+            let voice = Voice {
+                source: VoiceSource::Memory(
+                    MemorySource::new(Arc::clone(&wave)).expect("a placeable wave"),
+                ),
+                play,
+            };
+            let NodeParts {
+                node: mut live,
+                fork,
+                ..
+            } = VoiceNode::new(voice).into_parts();
+            live.prepare(&prepare);
+            let mut fork = fork
+                .expect("forks")
+                .fork(ForkMode::Offline)
+                .expect("forks")
+                .node;
+            fork.prepare(&prepare);
+            (live.shape().tail, fork.shape().tail)
+        };
+        let (live, fork) = free(Playback::default());
+        assert_eq!(live, Tail::Unbounded);
+        assert_eq!(fork, Tail::Finite(tutti_types::Samples(4_800)));
+
+        let stretched = Playback {
+            stretch: tutti_types::StretchFactor::new(2.0),
+            ..Playback::default()
+        };
+        assert_eq!(
+            free(stretched).1,
+            Tail::Finite(tutti_types::Samples(9_600)),
+            "a stretch of two plays twice as long"
+        );
+
+        let placed = Voice {
+            source: VoiceSource::Memory(
+                MemorySource::placed(Arc::clone(&wave), VoiceWindow::from(Beat::new(0.0)))
+                    .expect("a placeable wave"),
+            ),
+            play: Playback::default(),
+        };
+        assert_eq!(VoiceNode::new(placed).shape().tail, Tail::None);
     }
 
     /// **A streaming node's handle owns its stream.** With every other holder

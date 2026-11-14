@@ -100,13 +100,6 @@ impl AlignConfig {
     pub fn band(&self) -> Option<(Hz, Hz)> {
         self.band.map(|b| (b.low, b.high))
     }
-
-    /// The search bound, in whole samples either side of zero.
-    #[inline]
-    #[must_use]
-    pub fn max_lag(&self) -> Samples {
-        self.max_lag
-    }
 }
 
 /// Where a take sits against its reference.

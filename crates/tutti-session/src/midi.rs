@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tutti_graph::UmpAt;
 
+use std::sync::Arc;
 use tutti_graph::{EventTapId, EventTapReader, NodeKey, Offset, TapEvent};
 use tutti_midi_protocol::MpeMode;
 use tutti_midi_runtime::{
@@ -26,15 +27,18 @@ use tutti_midi_runtime::{
     OutputLatency, OutputPlan, OutputTerms, Placement, RouteRule, SendAt, TimedMidiEvent,
     compile_routes,
 };
-use tutti_types::{Beat, BeatDuration, Frame, Samples};
+use tutti_tempo::TempoMap;
+use tutti_types::{Beat, BeatDuration, Frame, MeterMap, Samples};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
-use crate::FollowTempo;
 use crate::RouteDeclarer;
 use crate::graph::{Feeder, Graph};
 use crate::instrument::open_keys;
-use crate::midi_follow::{FOLLOW_TAP_CAPACITY, Follow, FollowCx};
+use crate::midi_follow::{
+    CLOCK_TAP_CAPACITY, ClockAction, ClockFollow, FOLLOW_TAP_CAPACITY, Follow, FollowCx,
+};
 use crate::{EventOutPort, Key, MidiError, MidiEvent, MidiNodes};
+use crate::{FollowClock, FollowTempo};
 
 /// What a [`Midi`] call returns: the area's one error.
 type Result<T> = std::result::Result<T, MidiError>;
@@ -716,7 +720,9 @@ pub(crate) struct MidiState {
     drops: MidiOutDrops,
     /// The tempo the session follows, if it does ([`Midi::follow_tempo`]).
     follow: Option<Follow>,
-    /// Events [`Midi::unfollow_tempo`] queued for the next `Poll` phase, which
+    /// The MIDI clock the session follows, if it does ([`Midi::follow_clock`]).
+    clock: Option<ClockFollow>,
+    /// Events [`Midi::unfollow_tempo`] and [`Midi::unfollow_clock`] queued for the next `Poll` phase, which
     /// reports them.
     follow_events: Vec<MidiEvent>,
     /// What the engine gives the hardware out's timing: its block clock and the
@@ -827,8 +833,9 @@ impl MidiState {
 
     /// `Phase::Poll`: steps the UMP Stream negotiation and the MIDI-CI of each
     /// held input and reports those that settled ([`MidiEvent::StreamSettled`])
-    /// the peers found, changed or lost ([`MidiEvent::CiPeer`]) and their Profiles
-    /// ([`MidiEvent::CiProfiles`]), reports the
+    /// the peers found, changed or lost ([`MidiEvent::CiPeer`]), their Profiles
+    /// ([`MidiEvent::CiProfiles`]) and their Process Inquiry
+    /// ([`MidiEvent::CiProcess`]), reports the
     /// devices that came and went, retires a held
     /// input or output whose device vanished, wires the event inlets of the
     /// devices that connected to their slots of the ingest node (and takes out
@@ -892,6 +899,9 @@ impl MidiState {
                     }
                     tutti_midi_hardware::Polled::Profile(device, change) => {
                         MidiEvent::CiProfiles { device, change }
+                    }
+                    tutti_midi_hardware::Polled::Process(device, change) => {
+                        MidiEvent::CiProcess { device, change }
                     }
                     // A kind of report this session does not know is not one.
                     _ => continue,
@@ -959,7 +969,31 @@ impl MidiState {
 
     /// Whether the session follows a live tempo now.
     pub(crate) fn is_following(&self) -> bool {
-        self.follow.is_some()
+        self.follow.is_some() || self.clock.as_ref().is_some_and(ClockFollow::owns_tempo)
+    }
+
+    /// `Phase::Poll`, for the MIDI clock the session follows: reads its tap,
+    /// publishes the tempo it fit and reports its lock into `out`. What it asks
+    /// of the transport, in order, for the caller to send; and whether the graph
+    /// was edited, which the caller commits.
+    pub(crate) fn clock_phase(
+        &mut self,
+        cx: &FollowCx<'_>,
+        graph: &mut Graph,
+        out: &mut Vec<crate::SessionEvent>,
+    ) -> (Vec<ClockAction>, bool) {
+        let Some(clock) = self.clock.as_mut() else {
+            return (Vec::new(), false);
+        };
+        let actions = clock.heard(cx, out);
+        let mut edited = false;
+        if clock.tap_rate() != graph.prepared().sample_rate() {
+            edited = true;
+            if let Some(tap) = graph.taps().reopen_event(clock.tap_id()) {
+                clock.set_tap(tap);
+            }
+        }
+        (actions, edited)
     }
 
     /// `Phase::Poll`, for the tempo the session follows: reports what
@@ -1712,11 +1746,8 @@ impl Midi<'_> {
     /// reported as [`MidiEvent::TempoFollowed`] and [`MidiEvent::MeterFollowed`].
     /// **Off by default**: until this is called, a Flex tempo changes nothing.
     ///
-    /// **Flex Set Tempo on one Group is the only source today**: MIDI Clock
-    /// (the `0xF8` ticks) and MIDI Time Code are not followed, though the
-    /// runtime has decoders for both, and a device that sends only those
-    /// changes nothing.
-    ///
+    /// The source is Flex Set Tempo on one Group; MIDI Beat Clock and MIDI Time
+    /// Code are followed by [`follow_clock`](Self::follow_clock).
     /// **It overlays the project's maps; it does not replace them.** The tempo
     /// map and meter the project has now are kept; from the beat of each change,
     /// the published map is the project's up to there and the live steps after,
@@ -1740,10 +1771,19 @@ impl Midi<'_> {
     ///
     /// # Errors
     ///
-    /// [`MidiError::NoMidiInput`] when the session has no MIDI input node, and
-    /// [`MidiError::GroupNotHeard`] for a Group the input does not hear. Nothing
-    /// changes.
+    /// [`MidiError::NoMidiInput`] when the session has no MIDI input node,
+    /// [`MidiError::GroupNotHeard`] for a Group the input does not hear, and
+    /// [`MidiError::TempoSourceTaken`] while a Beat Clock
+    /// [`follow_clock`](Self::follow_clock) publishes the tempo. Nothing changes.
     pub fn follow_tempo(&mut self, follow: FollowTempo) -> Result<()> {
+        if self
+            .state
+            .clock
+            .as_ref()
+            .is_some_and(ClockFollow::owns_tempo)
+        {
+            return Err(MidiError::TempoSourceTaken);
+        }
         let nodes = self.nodes.ok_or(MidiError::NoMidiInput)?;
         let port = nodes
             .input_ports
@@ -1790,6 +1830,112 @@ impl Midi<'_> {
         }
         self.state.follow_events.push(MidiEvent::TempoUnfollowed);
         Ok(())
+    }
+
+    // --- Following an outside clock ---
+
+    /// Follows the MIDI clock `follow.kind` that the session's MIDI input's
+    /// `follow.group` sends, and drives the transport with it. The session reads
+    /// it from an event tap on that Group's channelless port in each
+    /// [`Poll`](crate::Phase::Poll) phase. **Off by default**: until this is
+    /// called, a Timing Clock or a Quarter Frame changes nothing.
+    ///
+    /// **[`ClockKind::BeatClock`](tutti_midi_runtime::ClockKind::BeatClock)**:
+    /// the tempo fit from the Timing Clocks' spacing is published into the
+    /// tempo map as [`follow_tempo`](Self::follow_tempo)'s is (and reported as
+    /// [`MidiEvent::TempoFollowed`]), Start plays from beat 0, Continue plays
+    /// from where the source counted to, Stop stops, and a Song Position
+    /// Pointer locates to its sixteenth notes (M1 pp.27 to 31).
+    ///
+    /// **[`ClockKind::Mtc`](tutti_midi_runtime::ClockKind::Mtc)**: the position
+    /// Quarter Frames spell drives the playhead, `00:00:00:00` being beat 0 on
+    /// the tempo map in force. The transport plays once the follower locks,
+    /// locates when the source jumps, and a Full Message locates.
+    ///
+    /// **Lock** is reported as [`MidiEvent::ClockLocked`] and
+    /// [`MidiEvent::ClockUnlocked`]; the rules and constants are those of
+    /// `tutti_midi_runtime::ClockFollower`. A source silent for its dropout
+    /// unlocks and stops the transport it was rolling.
+    ///
+    /// A command lands at the next block (`At::NextBlock`) with the source's
+    /// position advanced by the time since the message arrived, so a source that
+    /// kept rolling is not trailed by more than a block's placement. **A Beat
+    /// Clock follower owns the tempo map** as `follow_tempo` does: the map found
+    /// now is the one [`unfollow_clock`](Self::unfollow_clock) restores, and
+    /// `Session::set_tempo` refuses while it follows. **It does not correct
+    /// drift**: a tempo estimate moves the map by steps of at least
+    /// `ClockFollower::TEMPO_STEP`, and the beat the source counts and the beat
+    /// the transport counts are matched at each locate and not in between.
+    ///
+    /// **One clock at a time**: following again replaces the first.
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NoMidiInput`] when the session has no MIDI input node,
+    /// [`MidiError::GroupNotHeard`] for a Group the input does not hear, and
+    /// [`MidiError::TempoSourceTaken`] for a Beat Clock follow while
+    /// [`follow_tempo`](Self::follow_tempo) is active. Nothing changes.
+    pub fn follow_clock(&mut self, follow: FollowClock) -> Result<()> {
+        let nodes = self.nodes.ok_or(MidiError::NoMidiInput)?;
+        let port = nodes
+            .input_ports
+            .channelless(follow.group)
+            .ok_or(MidiError::GroupNotHeard(follow.group))?;
+        if follow.kind == tutti_midi_runtime::ClockKind::BeatClock && self.state.follow.is_some() {
+            return Err(MidiError::TempoSourceTaken);
+        }
+        let tap = self
+            .graph
+            .taps()
+            .open_event(
+                EventOutPort::new(nodes.input, port),
+                tutti_graph::TapAlign::Raw,
+                CLOCK_TAP_CAPACITY,
+            )
+            // The Group's port was just found on the input: a refusal is a port it lacks.
+            .map_err(|_| MidiError::GroupNotHeard(follow.group))?;
+        let core = tutti_midi_runtime::ClockFollower::new(follow.kind);
+        // A second follow replaces the first; the maps the first overlaid are
+        // the project's again before the second takes them.
+        if let Some(first) = self.state.clock.take() {
+            self.restore_maps(first.restore());
+        }
+        self.state.clock = Some(ClockFollow::new(
+            core,
+            tap,
+            self.settings.tempo_map(),
+            self.meter.current(),
+        ));
+        Ok(())
+    }
+
+    /// Stops following ([`follow_clock`](Self::follow_clock)): the transport
+    /// keeps the motion it had, and the project's tempo map and meter are
+    /// published again for the ones a Beat Clock follower changed. Reported as
+    /// [`MidiEvent::ClockUnfollowed`] by the next update.
+    ///
+    /// # Errors
+    ///
+    /// [`MidiError::NotFollowingClock`] when no clock is followed.
+    pub fn unfollow_clock(&mut self) -> Result<()> {
+        let clock = self
+            .state
+            .clock
+            .take()
+            .ok_or(MidiError::NotFollowingClock)?;
+        self.restore_maps(clock.restore());
+        self.state.follow_events.push(MidiEvent::ClockUnfollowed);
+        Ok(())
+    }
+
+    /// Publishes the maps a follower changed, as the project had them.
+    fn restore_maps(&self, (tempo, meter): (Option<Arc<TempoMap>>, Option<Arc<MeterMap>>)) {
+        if let Some(tempo) = tempo {
+            self.settings.set_tempo_map(tempo);
+        }
+        if let Some(meter) = meter {
+            self.meter.set_meter(meter);
+        }
     }
 
     // --- Hardware out ---

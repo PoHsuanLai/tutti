@@ -38,7 +38,7 @@ capture = ["dep:tutti-codec", "tutti-codec/encode-wav"]
 jack = ["cpal/jack"]
 
 [dependencies]
-cpal = "0.15"
+cpal = "0.18"
 thiserror.workspace = true
 
 tutti-transport = { version = "0.0.1", path = "../tutti-transport" }

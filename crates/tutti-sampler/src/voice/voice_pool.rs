@@ -232,10 +232,12 @@ fn a_standalone_voices_fork_shares_no_stretch_state() {
     assert!(heard, "silence proves nothing");
 }
 
-/// A pool's fork shares nothing with the live pool. It is an empty
-/// pool at the live one's width: it holds none of the live voices, drains
-/// none of the live handle's commands, and preparing it at another rate
-/// does not move the rate the live handle builds its stretch filters at.
+/// A pool's fork holds copies of the voices the pool was built with and
+/// shares nothing with the live pool: a voice the live handle adds later is
+/// not in it (one voice's ramp, not two), preparing it at another rate does
+/// not move the rate the live handle builds its stretch filters at, and a
+/// pool whose handle has queued a command is not forked at all (its voices
+/// are on the audio thread).
 #[test]
 fn a_pools_fork_shares_nothing_with_the_live_pool() {
     let transport = MockTransport::rolling(Beat::new(0.0), Bpm::of(120.0));
@@ -257,34 +259,47 @@ fn a_pools_fork_shares_nothing_with_the_live_pool() {
     } = pool.into_parts();
     let source = fork.expect("a pool forks");
     live.prepare(&Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(64))));
-    let mut fork = source
+    let mut elsewhere = source
         .fork(tutti_graph::ForkMode::Live)
         .expect("a pool forks")
         .node;
-    fork.prepare(&Prepare::new(SampleRate::SR_96K, MaxBlock::of(Samples(64))));
+    elsewhere.prepare(&Prepare::new(SampleRate::SR_96K, MaxBlock::of(Samples(64))));
     assert_eq!(
         handle.rate.load(),
         SampleRate::of(SR),
         "the fork moved the live pool's rate"
     );
+    let mut fork = source
+        .fork(tutti_graph::ForkMode::Live)
+        .expect("a pool forks")
+        .node;
+    fork.prepare(&Prepare::new(SampleRate::of(SR), MaxBlock::of(Samples(64))));
     add_ram_clip(
         &handle,
         SlotId(2),
         MemorySource::placed(make_wave(4096), VoiceWindow::from(Beat::new(0.0)))
             .expect("a placeable wave"),
     );
+    let live_block = run(&mut *live, &transport, SR, 64);
+    let fork_block = run(&mut *fork, &transport, SR, 64);
+    // The wave is a ramp, frame `k` is `(k + 1) / 4096`, which a placed voice
+    // at the render's rate reads back exactly, on each channel a mono wave
+    // is placed on: the fork has the one voice it was built with.
+    for k in 8..56 {
+        let ramp = (k as f32 + 1.0) / 4096.0;
+        assert!(
+            (fork_block[0][k] - ramp).abs() < 1e-6,
+            "frame {k}: the fork reads {}, one voice's ramp is {ramp}",
+            fork_block[0][k]
+        );
+        assert!(
+            (live_block[0][k] - 2.0 * ramp).abs() < 1e-6,
+            "frame {k}: the live pool plays both its voices"
+        );
+    }
     assert!(
-        run(&mut *live, &transport, SR, 64)[0]
-            .iter()
-            .any(|&s| s != 0.0),
-        "the live pool plays"
-    );
-    assert!(
-        run(&mut *fork, &transport, 96_000.0, 64)
-            .iter()
-            .flatten()
-            .all(|&s| s == 0.0),
-        "the fork holds a live voice, or drained a live command"
+        source.fork(tutti_graph::ForkMode::Live).is_err(),
+        "a pool whose handle queued a command has no copy of its voices"
     );
 }
 
@@ -2211,15 +2226,16 @@ fn both_nodes_declare_their_width() {
             voice,
             ChannelLayout::try_from(w).expect("a test width is small"),
         );
-        for (what, shape) in [("pool", unit.shape()), ("voice node", vn.shape())] {
+        // A pool takes voices while it plays, so it promises no ceiling; a
+        // node over a placed voice is the programme, which has no ring-out.
+        for (what, shape, tail) in [
+            ("pool", unit.shape(), tutti_types::Tail::Unbounded),
+            ("voice node", vn.shape(), tutti_types::Tail::None),
+        ] {
             assert_eq!(shape.audio_out().count() as usize, w, "{what} at width {w}");
             assert_eq!(shape.audio_in().count(), 0, "{what}: no inputs");
             assert_eq!(shape.latency.samples(), Samples(0), "{what}: no latency");
-            assert_eq!(
-                shape.tail,
-                tutti_types::Tail::Unbounded,
-                "{what}: a generator"
-            );
+            assert_eq!(shape.tail, tail, "{what}: its ring-out");
         }
     }
 }

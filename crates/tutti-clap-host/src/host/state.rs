@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use tutti_clap_ffi::{AudioClaim, ThreadRoles};
-use tutti_plugin_types::{MainThread, ProcessWake, RequestWord};
+use tutti_plugin_types::{MainThread, ProcessWake, RequestWord, TrackInfo, TransportRequest};
 
 pub(crate) struct TimerEntry {
     pub id: u32,
@@ -313,6 +313,67 @@ impl PosixFdState {
     }
 }
 
+/// How many transport requests wait between two takes. A plugin asks from the
+/// main thread, one request per user action, so a take every pass leaves the
+/// queue near empty; past this the newest are refused, which keeps the
+/// queue's memory fixed against a plugin that asks in a loop.
+pub(crate) const TRANSPORT_QUEUE: usize = 64;
+
+/// What the plugin asked the transport to do (`CLAP_EXT_TRANSPORT_CONTROL`),
+/// in the order it asked. The extension is `[main-thread]`, and the FFI crate
+/// refuses a call from anywhere else, so the queue has one writer and one
+/// reader, both the main thread: the lock is never contended and the audio
+/// thread never reaches it.
+#[derive(Debug)]
+pub struct TransportState {
+    queue: Mutex<Vec<TransportRequest>>,
+}
+
+impl TransportState {
+    fn new() -> Self {
+        Self {
+            queue: Mutex::new(Vec::with_capacity(TRANSPORT_QUEUE)),
+        }
+    }
+
+    /// Queues `request`; `false` when it was refused, because
+    /// [`TRANSPORT_QUEUE`] are waiting or the queue's lock is poisoned.
+    #[must_use]
+    pub(crate) fn push(&self, request: TransportRequest) -> bool {
+        let Ok(mut queue) = self.queue.lock() else {
+            return false;
+        };
+        if queue.len() < TRANSPORT_QUEUE {
+            queue.push(request);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Moves what is queued to `out`, oldest first.
+    pub(crate) fn drain_into(&self, out: &mut Vec<TransportRequest>) {
+        if let Ok(mut queue) = self.queue.lock() {
+            out.append(&mut queue);
+        }
+    }
+}
+
+/// What the host says of the plugin's track (`CLAP_EXT_TRACK_INFO`), read by
+/// the plugin's `get`, which is `[main-thread]`.
+#[derive(Debug)]
+pub struct TrackState {
+    pub(crate) info: Mutex<Option<TrackInfo>>,
+}
+
+impl TrackState {
+    fn new() -> Self {
+        Self {
+            info: Mutex::new(None),
+        }
+    }
+}
+
 /// Shared state for host↔plugin communication via atomic flags.
 #[derive(Debug)]
 pub struct HostState {
@@ -345,6 +406,10 @@ pub struct HostState {
     pub timer: TimerState,
     /// Descriptors the plugin registered for the host to watch.
     pub posix_fds: PosixFdState,
+    /// Transport requests the plugin made, waiting for the host's pass.
+    pub transport: TransportState,
+    /// What the host says of the plugin's track.
+    pub track: TrackState,
 }
 
 impl HostState {
@@ -365,6 +430,8 @@ impl HostState {
             log: LogState::new(),
             timer: TimerState::new(),
             posix_fds: PosixFdState::new(),
+            transport: TransportState::new(),
+            track: TrackState::new(),
         }
     }
 

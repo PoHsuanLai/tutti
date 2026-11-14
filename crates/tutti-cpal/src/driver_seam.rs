@@ -25,7 +25,7 @@ use crate::owner::Owned;
 
 /// The rate a device reports, or [`Error::InvalidDevice`] when it reports 0 Hz.
 pub(crate) fn device_rate(rate: cpal::SampleRate) -> Result<SampleRate> {
-    SampleRate::from_hz(rate.0)
+    SampleRate::from_hz(rate)
         .ok_or_else(|| Error::InvalidDevice("the device reports a sample rate of 0 Hz".into()))
 }
 
@@ -99,7 +99,7 @@ impl OutputSpec {
     pub(crate) fn stream_config(&self) -> cpal::StreamConfig {
         cpal::StreamConfig {
             channels: self.channels.count(),
-            sample_rate: cpal::SampleRate(self.sample_rate.get().round() as u32),
+            sample_rate: self.sample_rate.get().round() as cpal::SampleRate,
             buffer_size: match self.quantum {
                 Some(q) => cpal::BufferSize::Fixed(q.get_u32()),
                 None => cpal::BufferSize::Default,
@@ -238,7 +238,7 @@ impl StreamDriver for CpalDriver {
                 // Checked above, before the thread is spawned.
                 _ => unreachable!("sample format checked before spawn"),
             };
-            stream.play()?;
+            stream.play().map_err(Error::PlayStream)?;
             Ok(stream)
         })
         .map(CpalStream)
@@ -257,25 +257,27 @@ impl CpalDriver {
     {
         let channels = block.channels();
         let delivering = Arc::clone(&faults);
-        Ok(self.device.build_output_stream(
-            config,
-            move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
-                // The CPAL contract: a callback no larger than MAX_FRAMES.
-                // The assertion lives HERE, at the boundary CPAL crosses, and
-                // not inside `render` — it is a claim about CPAL, not about
-                // the block, and keeping it out is what lets a debug-build
-                // test observe the clamp instead of panicking before it.
-                debug_assert!(
-                    data.len() / channels <= MAX_FRAMES,
-                    "CPAL callback frames {} exceeds MAX_FRAMES {MAX_FRAMES}",
-                    data.len() / channels
-                );
-                block.render_delayed(data, crate::latency::output_delay(&info.timestamp()));
-                delivering.delivered();
-            },
-            move |err| faults.record(&err),
-            None,
-        )?)
+        self.device
+            .build_output_stream(
+                *config,
+                move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+                    // The CPAL contract: a callback no larger than MAX_FRAMES.
+                    // The assertion lives HERE, at the boundary CPAL crosses, and
+                    // not inside `render` — it is a claim about CPAL, not about
+                    // the block, and keeping it out is what lets a debug-build
+                    // test observe the clamp instead of panicking before it.
+                    debug_assert!(
+                        data.len() / channels <= MAX_FRAMES,
+                        "CPAL callback frames {} exceeds MAX_FRAMES {MAX_FRAMES}",
+                        data.len() / channels
+                    );
+                    block.render_delayed(data, crate::latency::output_delay(&info.timestamp()));
+                    delivering.delivered();
+                },
+                move |err| faults.record(&err),
+                None,
+            )
+            .map_err(Error::BuildStream)
     }
 }
 
@@ -414,7 +416,7 @@ impl ManualStream {
     /// Delivers a backend error exactly as CPAL's error callback would, so a
     /// test can exercise the fault path without unplugging a device. Does
     /// nothing before the stream is first opened.
-    pub fn fail(&self, err: cpal::StreamError) {
+    pub fn fail(&self, err: cpal::Error) {
         if let Some(faults) = self
             .faults
             .lock()

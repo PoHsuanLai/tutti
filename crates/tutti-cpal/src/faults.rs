@@ -23,13 +23,11 @@ use tutti_rt::FaultLatch;
 /// How long backend errors may arrive with no audio delivered before the
 /// stream counts as gone.
 ///
-/// Only `CoreAudio` and `WASAPI` report [`cpal::StreamError::DeviceNotAvailable`].
-/// cpal's ALSA worker wraps every error as `BackendSpecific`, and on an
-/// unplugged device it polls `POLLERR` again at once, so the same error repeats
-/// at spin rate and the worker never reaches an `ENODEV` read. `POLLERR` is
-/// also what an xrun raises, so neither the message nor an errno separates the
-/// two. What does is time: an xrun is followed by data within a few periods,
-/// a lost device is not. 500 ms is many periods at any usual buffer size and
+/// A backend that cannot name a lost device reports it as an error that
+/// repeats at spin rate (ALSA's `POLLERR` loop), and `POLLERR` is also what an
+/// xrun raises, so neither the kind nor the message separates the two. What
+/// does is time: an xrun is followed by data within a few periods, a lost
+/// device is not. 500 ms is many periods at any usual buffer size and
 /// still short enough to end a take promptly.
 pub(crate) const STALL_GRACE: Duration = Duration::from_millis(500);
 
@@ -165,23 +163,29 @@ impl StreamFaults {
     /// moves. Written message, then `disconnected`, then `count`, so a reader
     /// that sees the count also sees the message.
     ///
-    /// [`DeviceNotAvailable`](cpal::StreamError::DeviceNotAvailable) is a
-    /// disconnect at once. Any other error starts a run, counted and
+    /// [`DeviceNotAvailable`](cpal::ErrorKind::DeviceNotAvailable) is a
+    /// disconnect at once. [`DeviceChanged`](cpal::ErrorKind::DeviceChanged) and
+    /// [`RealtimeDenied`](cpal::ErrorKind::RealtimeDenied) say the stream keeps
+    /// playing, so they are not faults and are not recorded. Any other error starts a run, counted and
     /// described once; the run becomes a disconnect when errors still arrive
     /// [`STALL_GRACE`] later with no [`delivered`](Self::delivered) between.
     /// Errors repeated inside a run, and every backend error after the
     /// disconnect, only cost two atomic loads: no string, no count, so a
     /// backend that spins on `POLLERR` neither allocates nor floods a host
     /// that reports each new count.
-    pub(crate) fn record(&self, err: &cpal::StreamError) {
+    pub(crate) fn record(&self, err: &cpal::Error) {
         self.record_at(err, Instant::now());
     }
 
     /// [`record`](Self::record) at a given time, for tests.
-    pub(crate) fn record_at(&self, err: &cpal::StreamError, now: Instant) {
-        if matches!(err, cpal::StreamError::DeviceNotAvailable) {
-            self.publish(StreamFaultKind::Disconnected, err.to_string().into());
-            return;
+    pub(crate) fn record_at(&self, err: &cpal::Error, now: Instant) {
+        match err.kind() {
+            cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::RealtimeDenied => return,
+            cpal::ErrorKind::DeviceNotAvailable => {
+                self.publish(StreamFaultKind::Disconnected, err.to_string().into());
+                return;
+            }
+            _ => {}
         }
         if self.is_disconnected() {
             return;

@@ -73,7 +73,7 @@ impl StftGeometry {
     /// which leaves gaps of unanalysed audio between frames.
     #[inline]
     #[must_use]
-    pub fn frames_overlap(self) -> bool {
+    fn frames_overlap(self) -> bool {
         self.hop < self.window
     }
 

@@ -199,16 +199,9 @@ impl<T: NoUninit + AnyBitPattern + std::fmt::Debug> std::fmt::Debug for SeqWrite
 /// A [`SeqReader::read`] gave up: every copy it was allowed overlapped a
 /// write. A write has begun (perhaps only the first, still in flight); a
 /// later read can succeed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("every copy of the sequence cell overlapped a write")]
 pub struct Contended;
-
-impl std::fmt::Display for Contended {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("every copy of the sequence cell overlapped a write")
-    }
-}
-
-impl std::error::Error for Contended {}
 
 /// A read side of a sequence cell: copies the value of one completed
 /// [`SeqWriter::write`], never bytes of two. `Clone` for more readers; any

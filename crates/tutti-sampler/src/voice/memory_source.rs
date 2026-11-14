@@ -18,7 +18,7 @@ use tutti_transport::TempoReader;
 use tutti_types::UnitParam;
 use tutti_types::{
     Amplitude, Beat, BeatDuration, ChannelLayout, Param, Param64, PlaybackRate, ReadRate,
-    SamplePosition, SampleRate, Samples, SrcRatio, Tail,
+    SamplePosition, SampleRate, Samples, SrcRatio, StretchFactor, Tail,
 };
 
 use super::clock::{BlockClock, Clock};
@@ -606,6 +606,31 @@ impl MemorySource {
     /// The loop in force, as set; `None` when one-shot.
     pub fn loop_(&self) -> Option<Loop> {
         self.loop_
+    }
+
+    /// The ring-out this source declares as a node ([`Shape::tail`]): the
+    /// frames it keeps sounding once a render's span has ended, which a bounce
+    /// adds to the span.
+    ///
+    /// A placed source is the programme: its sound is a function of the
+    /// transport, as a constant's is, so it has no ring-out
+    /// ([`Tail::None`]). A free-running one sounds from wherever its cursor
+    /// is to the end of the wave, so its ring-out is at most the wave's whole
+    /// length at the rate it reads (`stretch` lengthens it by the factor a
+    /// wrapping time-stretcher plays at), and a looped one never ends
+    /// ([`Tail::Unbounded`]).
+    pub(crate) fn ring_out(&self, stretch: StretchFactor) -> Tail {
+        if self.is_placed() {
+            return Tail::None;
+        }
+        if self.loop_.is_some() {
+            return Tail::Unbounded;
+        }
+        let wave = SamplePosition::new(0.0).advanced_by(self.wave.len());
+        let played = wave.get() / self.read_rate().get() * f64::from(stretch.get());
+        // A figure out of range saturates; the graph counts a finite tail past
+        // `MAX_NODE_TAIL` as unbounded.
+        Tail::Finite(SamplePosition::new(played).to_samples_ceil())
     }
 
     /// Reads one un-gained frame into `out` (width = `out.len()`).
@@ -1345,11 +1370,11 @@ impl MemorySource {
 }
 
 impl Node for MemorySource {
-    /// No inputs, [`channels`](Self::channels) outputs; a generator, never
-    /// skipped.
+    /// No inputs, [`channels`](Self::channels) outputs; a source, never
+    /// skipped. Its tail is `ring_out`: none when placed.
     fn shape(&self) -> Shape {
         Shape::source_unassigned(self.channels)
-            .with_tail(Tail::Unbounded)
+            .with_tail(self.ring_out(StretchFactor::UNITY))
             // A cubic Hermite read per frame and channel, behind the
             // placement gate: measured 16–17 ns per frame and channel,
             // placed or free-running, against `SvfFilterNode`'s 7.2 and

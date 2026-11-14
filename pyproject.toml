@@ -1,20 +1,21 @@
 # Python dependencies for the audio-correctness harnesses.
 #
-# Five of them, all following the same pattern: a Rust example renders audio to a
-# directory, and a Python script judges it (`cargo xtask verify-audio` runs all
+# Five of them, all following the same pattern: a Rust binary in
+# `testing/tutti-verify` renders audio to a directory, and a Python script in
+# `testing/tutti-verify/py` judges it (`cargo xtask verify-audio` runs all
 # five). See
-#   crates/tutti-sampler/examples/README.md
-#   crates/tutti-export/examples/README.md
-#   crates/tutti-measure/examples/README.md
-#   crates/tutti-polysynth/examples/README.md
-#   crates/tutti-dsp/examples/README.md
+#   testing/tutti-verify/docs/sampler.md
+#   testing/tutti-verify/docs/export.md
+#   testing/tutti-verify/docs/analysis.md
+#   testing/tutti-verify/docs/synth.md
+#   testing/tutti-verify/docs/dsp.md
 #
 # This is not a Python package -- nothing here is imported by anything. It exists
 # so the judges' dependencies are declared and locked in one place instead of
 # living as a prose `pip install` line in a README, which is what they were.
 #
 #   uv sync
-#   uv run python crates/tutti-export/examples/verify_export.py /tmp/exports
+#   uv run python testing/tutti-verify/py/verify_export.py /tmp/exports
 #
 # Why Python at all, when the engine is Rust: these scripts are a *second
 # opinion*. Four defects in the sampler were invisible to its whole Rust suite

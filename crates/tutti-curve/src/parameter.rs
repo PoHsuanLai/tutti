@@ -2,22 +2,13 @@
 //!
 //! Each refuses what its law cannot evaluate instead of falling back.
 
-use std::fmt;
-
 /// The raw a checked parameter refused.
 macro_rules! refusal {
     ($(#[$meta:meta])* $name:ident, $what:literal) => {
         $(#[$meta])*
-        #[derive(Clone, Copy, Debug, PartialEq)]
+        #[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+        #[error("{} is not {}", .0, $what)]
         pub struct $name(pub f32);
-
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "{} is not {}", self.0, $what)
-            }
-        }
-
-        impl std::error::Error for $name {}
     };
 }
 

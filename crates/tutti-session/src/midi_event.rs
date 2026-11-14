@@ -84,6 +84,21 @@ pub enum MidiEvent {
         /// What happened.
         change: tutti_midi_hardware::ProfilesChange,
     },
+    /// A MIDI-CI peer answered Process Inquiry, a MIDI Message Report it was asked
+    /// for began, ended, was refused or timed out, or the peer's Process Inquiry was
+    /// dropped with it (M2-101 section 9): the session is the Initiator with every
+    /// peer that declares Process Inquiry, and reports each change once, from
+    /// `Phase::Poll`. The messages of a report are not events of this kind: they
+    /// reach the graph as the input's MIDI, between the began and the ended. The
+    /// peers that can be asked are
+    /// [`Midi::report_peers`](crate::Midi::report_peers).
+    #[cfg(feature = "midi-hardware")]
+    CiProcess {
+        /// The device.
+        device: tutti_midi_hardware::DeviceId,
+        /// What happened.
+        change: tutti_midi_hardware::ProcessChange,
+    },
     /// The hardware devices' event inlets dropped events because they were
     /// full: the total over every input so far, reported when it rises, at
     /// most once per [`MIDI_INPUT_DROP_REPORT`](crate::MIDI_INPUT_DROP_REPORT)
@@ -145,6 +160,31 @@ pub enum MidiEvent {
     /// the project's own tempo and meter are published again, from the next
     /// block, at the beat the transport is then at.
     TempoUnfollowed,
+    /// The session locked to the MIDI clock it follows
+    /// ([`Midi::follow_clock`](crate::Midi::follow_clock)): Beat Clock after a
+    /// quarter note of steady ticks, MTC after three consistent cycles of
+    /// Quarter Frames.
+    ClockLocked {
+        /// The clock followed.
+        kind: tutti_midi_runtime::ClockKind,
+    },
+    /// The session lost the MIDI clock it follows: a gap in Beat Clock's ticks,
+    /// or silence past the dropout (half a second of Beat Clock, a quarter of a
+    /// second of MTC), which also stops a transport the source had started.
+    ClockUnlocked {
+        /// The clock followed.
+        kind: tutti_midi_runtime::ClockKind,
+    },
+    /// The session stopped following its MIDI clock
+    /// ([`Midi::unfollow_clock`](crate::Midi::unfollow_clock)); the transport
+    /// keeps the motion it had, and the project's tempo and meter are published
+    /// again if the follower had changed them.
+    ClockUnfollowed,
+    /// The transport refused commands a followed MIDI clock asked of it, this
+    /// many in one update: its list of timed commands was full. Nothing was
+    /// applied for them (the source says its position again with its next
+    /// message), and each is logged.
+    ClockCommandsRefused(u64),
     /// The OS watch for MIDI devices ended on its own (the reason is the
     /// message): the device list is frozen at what it last saw and no further
     /// hot-plug is reported. Reported once.

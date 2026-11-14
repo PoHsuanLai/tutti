@@ -4,7 +4,6 @@
 use std::fmt::Write as _;
 
 use super::tree::PeJson;
-use super::value::PeValue;
 
 /// Appends `text` to `out` as a JSON string, quotes included.
 pub(super) fn string(out: &mut String, text: &str) {
@@ -77,20 +76,10 @@ impl Object {
         self.out.push_str(if value { "true" } else { "false" });
     }
 
-    pub(super) fn value(&mut self, key: &str, value: &PeValue) {
-        match value {
-            PeValue::Bool(b) => self.boolean(key, *b),
-            PeValue::Integer(n) => {
-                self.key(key);
-                let _ = write!(self.out, "{n}");
-            }
-            PeValue::Decimal(d) => {
-                self.key(key);
-                // `Debug` keeps a point or an exponent, so a decimal reads back as one.
-                let _ = write!(self.out, "{:?}", d.get());
-            }
-            PeValue::String(s) => self.text(key, s),
-        }
+    /// A property whose value is a scalar.
+    pub(super) fn value(&mut self, key: &str, value: &PeJson) {
+        self.key(key);
+        json(&mut self.out, value);
     }
 
     pub(super) fn finish(mut self) -> Vec<u8> {

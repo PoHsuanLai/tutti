@@ -34,8 +34,11 @@ fn fails(resource: PeResource, text: &str) -> PeDataError {
 /// The data written and read again is the data, and its JSON is `text`'s.
 fn round_trips(resource: PeResource, text: &str) -> PeData {
     let data = ok(resource.clone(), text);
-    assert_eq!(data.to_json(), json(text), "{text}");
-    assert_eq!(PeData::decode(&resource, &data.to_json()), Ok(data.clone()));
+    assert_eq!(data.to_json(), Some(json(text)), "{text}");
+    assert_eq!(
+        PeData::decode(&resource, &data.to_json().unwrap()),
+        Ok(data.clone())
+    );
     data
 }
 
@@ -624,7 +627,7 @@ fn a_resource_without_a_type_is_opaque_json() {
     let PeData::Opaque(opaque) = &data else {
         panic!("not opaque");
     };
-    assert!(opaque.json().as_object().is_some());
+    assert!(opaque.json().unwrap().as_object().is_some());
     let state =
         PeResource::from_name(&super::super::limits::ResourceName::new("StateList").unwrap());
     assert!(matches!(state, PeResource::Unmodelled(_)));

@@ -94,7 +94,9 @@ fn a_pointer_to_no_place_is_refused_and_changes_nothing() {
         "/missing/deeper",
         "/name/inside",
     ] {
-        let update = PartialUpdate::new().with(pointer(bad), PeValue::Integer(1));
+        let update = PartialUpdate::new()
+            .with(pointer(bad), PeJson::Integer(1))
+            .unwrap();
         assert_eq!(
             update.apply(&held),
             Err(PartialError::NoSuchPlace(pointer(bad))),
@@ -103,8 +105,10 @@ fn a_pointer_to_no_place_is_refused_and_changes_nothing() {
     }
     // The first change is good and the second is not: the data is as it was.
     let update = PartialUpdate::new()
-        .with(pointer("/lfoSpeed"), PeValue::Integer(1))
-        .with(pointer("/nowhere/x"), PeValue::Integer(2));
+        .with(pointer("/lfoSpeed"), PeJson::Integer(1))
+        .unwrap()
+        .with(pointer("/nowhere/x"), PeJson::Integer(2))
+        .unwrap();
     assert!(update.apply(&held).is_err());
     assert_eq!(held, program());
 }
@@ -112,8 +116,9 @@ fn a_pointer_to_no_place_is_refused_and_changes_nothing() {
 // An optional property the data does not hold yet is added by a change to it.
 #[test]
 fn a_change_adds_a_property_the_object_lacks() {
-    let update =
-        PartialUpdate::new().with(pointer("/programTitle"), PeValue::String("Organ".into()));
+    let update = PartialUpdate::new()
+        .with(pointer("/programTitle"), PeJson::String("Organ".into()))
+        .unwrap();
     let got = update.apply(&json(r#"{"title":"Lead"}"#)).unwrap();
     assert_eq!(got, json(r#"{"title":"Lead","programTitle":"Organ"}"#));
 }
@@ -122,7 +127,9 @@ fn a_change_adds_a_property_the_object_lacks() {
 // empty pointer.
 #[test]
 fn the_empty_pointer_replaces_the_whole_value() {
-    let update = PartialUpdate::new().with(pointer(""), PeValue::Bool(true));
+    let update = PartialUpdate::new()
+        .with(pointer(""), PeJson::Bool(true))
+        .unwrap();
     assert_eq!(
         update.apply(&PeJson::Bool(false)).unwrap(),
         PeJson::Bool(true)
@@ -133,8 +140,10 @@ fn the_empty_pointer_replaces_the_whole_value() {
 #[test]
 fn a_pointer_has_one_value_in_a_change() {
     let update = PartialUpdate::new()
-        .with(pointer("/a"), PeValue::Integer(1))
-        .with(pointer("/a"), PeValue::Integer(2));
+        .with(pointer("/a"), PeJson::Integer(1))
+        .unwrap()
+        .with(pointer("/a"), PeJson::Integer(2))
+        .unwrap();
     assert_eq!(update.iter().count(), 1);
     assert_eq!(update.to_json(), json(r#"{"/a":2}"#));
 }
@@ -143,8 +152,10 @@ fn a_pointer_has_one_value_in_a_change() {
 #[test]
 fn a_change_is_written_as_an_object_of_pointers() {
     let update = PartialUpdate::new()
-        .with(pointer("/pitchEnvelope/rates/0"), PeValue::Integer(80))
-        .with(pointer("/pitchEnvelope/levels/0"), PeValue::Integer(60));
+        .with(pointer("/pitchEnvelope/rates/0"), PeJson::Integer(80))
+        .unwrap()
+        .with(pointer("/pitchEnvelope/levels/0"), PeJson::Integer(60))
+        .unwrap();
     assert_eq!(
         update.to_json().encode(),
         br#"{"/pitchEnvelope/rates/0":80,"/pitchEnvelope/levels/0":60}"#

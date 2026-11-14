@@ -74,11 +74,13 @@ fn alphanumeric(text: &str) -> bool {
 }
 
 text_type! {
-    /// The name of a Resource: 1 to 36 ASCII alphanumeric characters (M2-103
-    /// Table 13), or the `X-` prefix of a manufacturer-specific Resource and 1 to
-    /// 33 alphanumeric characters (§8.4). The prefix is the one hyphen
-    /// the name may hold: Table 13 lists alphanumerics only, and §8.4 requires a
-    /// custom Resource to start `X-`, so the prefix is the reading that holds both.
+    /// The name of a Resource: at most 36 ASCII alphanumeric characters (M2-103
+    /// Table 13), or the `X-` of a manufacturer-specific Resource (§8.4) and
+    /// alphanumeric characters after it. The 36 is the length of the whole `resource`
+    /// value, so a custom name has 1 to 34 characters after its `X-`. The prefix is
+    /// the one hyphen the name may hold: Table 13 lists alphanumerics only, and §8.4
+    /// requires a custom Resource to start `X-`, so the prefix is the reading that
+    /// holds both.
     ResourceName, "resource name",
     |t| {
         let body = t.strip_prefix("X-").unwrap_or(t);

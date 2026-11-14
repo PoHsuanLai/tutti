@@ -5,7 +5,6 @@
 use std::fmt;
 
 use super::tree::{PeJson, PeObject};
-use super::value::PeValue;
 
 /// A JSON Pointer (RFC 6901): the empty text, or `/` and a reference token, any
 /// number of times. In a token `~0` stands for `~` and `~1` for `/`, and a `~`
@@ -64,7 +63,7 @@ pub enum PartialError {
 /// The changes of a Partial Set or a `partial` update: each pointer once, its
 /// value a string, number or boolean and never an object or an array (§10).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct PartialUpdate(Vec<(JsonPointer, PeValue)>);
+pub struct PartialUpdate(Vec<(JsonPointer, PeJson)>);
 
 impl PartialUpdate {
     /// No change.
@@ -74,17 +73,24 @@ impl PartialUpdate {
     }
 
     /// Adds a change, replacing the value of one with the same pointer.
-    #[must_use]
-    pub fn with(mut self, pointer: JsonPointer, value: PeValue) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`PartialError::NotAChange`] unless the value is a string, a number or a
+    /// boolean.
+    pub fn with(mut self, pointer: JsonPointer, value: PeJson) -> Result<Self, PartialError> {
+        if !value.is_scalar() {
+            return Err(PartialError::NotAChange);
+        }
         match self.0.iter_mut().find(|(p, _)| *p == pointer) {
             Some((_, old)) => *old = value,
             None => self.0.push((pointer, value)),
         }
-        self
+        Ok(self)
     }
 
     /// The changes, in order.
-    pub fn iter(&self) -> impl Iterator<Item = (&JsonPointer, &PeValue)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&JsonPointer, &PeJson)> {
         self.0.iter().map(|(p, v)| (p, v))
     }
 
@@ -100,7 +106,7 @@ impl PartialUpdate {
     pub fn to_json(&self) -> PeJson {
         let mut object = PeObject::new();
         for (pointer, value) in &self.0 {
-            object.insert(pointer.as_str(), scalar(value));
+            object.insert(pointer.as_str(), value.clone());
         }
         PeJson::Object(object)
     }
@@ -118,14 +124,7 @@ impl PartialUpdate {
         let mut update = Self::new();
         for (name, value) in object.iter() {
             let pointer = JsonPointer::new(name).ok_or(PartialError::NotAChange)?;
-            let value = match value {
-                PeJson::Bool(b) => PeValue::Bool(*b),
-                PeJson::Integer(n) => PeValue::Integer(*n),
-                PeJson::Decimal(d) => PeValue::Decimal(*d),
-                PeJson::String(s) => PeValue::String(s.clone()),
-                _ => return Err(PartialError::NotAChange),
-            };
-            update = update.with(pointer, value);
+            update = update.with(pointer, value.clone())?;
         }
         Ok(update)
     }
@@ -145,18 +144,9 @@ impl PartialUpdate {
             let tokens: Vec<String> = pointer.tokens().collect();
             let place = place(&mut out, &tokens)
                 .ok_or_else(|| PartialError::NoSuchPlace(pointer.clone()))?;
-            *place = scalar(value);
+            *place = value.clone();
         }
         Ok(out)
-    }
-}
-
-fn scalar(value: &PeValue) -> PeJson {
-    match value {
-        PeValue::Bool(b) => PeJson::Bool(*b),
-        PeValue::Integer(n) => PeJson::Integer(*n),
-        PeValue::Decimal(d) => PeJson::Decimal(*d),
-        PeValue::String(s) => PeJson::String(s.clone()),
     }
 }
 

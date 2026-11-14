@@ -25,18 +25,21 @@ pub use controllers::{
     CcIndex, CtrlControl, CtrlRange, DefaultMapNotCc, ListedTwice, PeAllCtrlEntry, PeAllCtrlList,
     PeChCtrlEntry, PeChCtrlList, PeController, PeCtrl, PeCtrlMapEntry, PeCtrlMapList,
 };
-pub use data::{PeData, PeOpaque};
+pub use data::{OpaqueBody, PeData, PeOpaque};
 pub use entry::{EntryError, PeResourceList, ResourceEntry};
 pub use fields::{
-    ClusterKind, CtrlKind, CtrlValueKind, LinkRole, ModeId, NotVendorName, ParamPath,
-    PeBankProgram, PeChannel, PeDataError, PeDataFault, PeExtensions, PeMidiMode, PeText, Priority,
+    ClusterKind, CtrlKind, CtrlValueKind, ModeId, NotVendorName, ParamPath, PeBankProgram,
+    PeChannel, PeDataError, PeDataFault, PeExtensions, PeMidiMode, PeText, Priority, RoleName,
     SignificantBits, StepCount, TypeHint,
 };
 pub use info::{PeDeviceInfo, PeJsonSchema};
 pub use kind::{CanSet, CustomResource, PeResource, ResIdUse, ResourceDefaults};
-pub use link::{ColumnSource, PeColumn, PeLink};
+pub use link::{
+    ColumnSource, ConfirmIcon, ConfirmType, Confirmation, LinkRole, PeColumn, PeLink,
+    SelectorAction, SimpleAction,
+};
 pub use programs::{PeModeEntry, PeModeList, PeProgramEntry, PeProgramList};
-pub use request::{RequestRefused, ResourceGet, ResourceSet, ResourceTarget, SetBody};
+pub use request::{ActionError, RequestRefused, ResourceGet, ResourceSet, ResourceTarget, SetBody};
 pub use server::{
     ChangeKind, PublishError, ResourceResponder, ResponderAction, ResponderEvent, ResponderSettings,
 };
@@ -45,6 +48,8 @@ pub use simple::{
 };
 pub use store::{ResourceStore, StoreError};
 
+#[cfg(test)]
+mod behaviour;
 #[cfg(test)]
 mod exchange;
 #[cfg(test)]

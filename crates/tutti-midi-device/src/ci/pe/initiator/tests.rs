@@ -1183,6 +1183,7 @@ fn a_full_and_a_partial_update_are_answered_and_handed_out() {
                 subscribe_id: SubscribeId::new("sub1").unwrap(),
                 resource: name("ChannelList"),
                 change,
+                media_type: None,
             }]
         );
     }
@@ -1201,6 +1202,7 @@ fn a_notify_update_has_no_body() {
             subscribe_id: SubscribeId::new("sub1").unwrap(),
             resource: name("ChannelList"),
             change: PeChange::Notify,
+            media_type: None,
         }))
     );
 }

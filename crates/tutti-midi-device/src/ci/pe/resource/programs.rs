@@ -6,6 +6,7 @@ use super::fields::{
     Fields, ModeId, PeBankProgram, PeDataError, PeDataFault, PeExtensions, PeText, list,
     required_text, text,
 };
+use super::link::PeLink;
 
 /// A Program of a Program Collection (M2-107 Table 2).
 #[derive(Clone, Debug, PartialEq)]
@@ -18,6 +19,9 @@ pub struct PeProgramEntry {
     pub categories: Vec<String>,
     /// The tags that describe it.
     pub tags: Vec<String>,
+    /// Links to Resources about the Program, Actions among them (M2-103 §13.1.1,
+    /// Table 69).
+    pub links: Vec<PeLink>,
     /// The manufacturer-specific properties.
     pub extensions: PeExtensions,
 }
@@ -31,6 +35,7 @@ impl PeProgramEntry {
             bank_program,
             categories: Vec::new(),
             tags: Vec::new(),
+            links: Vec::new(),
             extensions: PeExtensions::default(),
         }
     }
@@ -44,6 +49,12 @@ impl PeProgramEntry {
         }
         if !self.tags.is_empty() {
             o.insert("tags", strings(&self.tags));
+        }
+        if !self.links.is_empty() {
+            o.insert(
+                "links",
+                PeJson::Array(self.links.iter().map(PeLink::to_json).collect()),
+            );
         }
         self.extensions.write(&mut o);
         PeJson::Object(o)
@@ -59,11 +70,15 @@ impl PeProgramEntry {
         )?;
         let categories = list(&mut f, "category", string_item)?;
         let tags = list(&mut f, "tags", string_item)?;
+        let links = list(&mut f, "links", |j| {
+            PeLink::from_json(j).map_err(|e| e.fault)
+        })?;
         Ok(Self {
             title,
             bank_program,
             categories,
             tags,
+            links,
             extensions: f.finish()?,
         })
     }

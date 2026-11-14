@@ -47,8 +47,9 @@ text_type! {
 }
 
 text_type! {
-    /// The role of a Link: 1 to 32 characters (M2-103 Table 64).
-    LinkRole, "link role",
+    /// The name of a Link role this crate has no type for: 1 to 32 characters
+    /// (M2-103 Table 64).
+    RoleName, "link role",
     |t| (1..=32).contains(&t.chars().count())
 }
 

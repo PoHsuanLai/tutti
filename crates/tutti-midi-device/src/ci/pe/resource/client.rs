@@ -12,7 +12,7 @@ use super::super::initiator::{
     PeAction, PeCall, PeCapabilitiesFailure, PeChange, PeError, PeGet, PeInitiator, PeKind,
     PeNotification, PeOutcome, PeResponse, PeSet, PeSettings,
 };
-use super::super::limits::SubscribeId;
+use super::super::limits::{MediaType, SubscribeId};
 use super::super::partial::PartialUpdate;
 use super::super::reassemble::PeFlowControl;
 use super::super::tree::{PeJson, PeJsonError};
@@ -459,9 +459,12 @@ impl ResourceInitiator {
             }
             None => PeFlowControl::Off,
         };
-        let (scope, json) = match set.body() {
-            SetBody::Full(data) => (PeSetScope::Whole, data.to_json()),
-            SetBody::Partial(update) => (PeSetScope::Partial, update.to_json()),
+        let (scope, media_type, body) = match set.body() {
+            SetBody::Full(data) => {
+                let (media_type, bytes) = data.to_wire();
+                (PeSetScope::Whole, media_type, bytes)
+            }
+            SetBody::Partial(update) => (PeSetScope::Partial, None, update.to_json().encode()),
         };
         let call = self.call_id();
         let op = Op::Set {
@@ -474,8 +477,8 @@ impl ResourceInitiator {
             scope,
             encoding: set.encoding(),
             flow_control: flow,
-            media_type: None,
-            body: json.encode(),
+            media_type,
+            body,
         };
         let actions = self.start(PeCall::Set(pe_set), op, now)?;
         Ok((call, actions))
@@ -810,13 +813,15 @@ impl ResourceInitiator {
                 subscribe_id,
                 change,
                 resource: _,
+                media_type,
             } => {
                 let Some(sub) = self.subs.iter_mut().find(|s| s.id == subscribe_id) else {
                     return;
                 };
                 let applied = match &change {
                     PeChange::Full(bytes) => {
-                        read_full(sub.target.resource(), bytes).map(|d| (d, UpdateKind::Full))
+                        read_full(sub.target.resource(), media_type.as_ref(), bytes)
+                            .map(|d| (d, UpdateKind::Full))
                     }
                     PeChange::Partial(bytes) => sub
                         .data
@@ -856,17 +861,29 @@ fn parse(response: &PeResponse) -> Result<PeJson, ResourceFailure> {
     Ok(PeJson::parse(&response.body)?)
 }
 
+/// The data of a reply: JSON, or the bytes of its media type.
 fn decode(resource: &PeResource, response: &PeResponse) -> Result<PeData, ResourceFailure> {
-    Ok(PeData::decode(resource, &parse(response)?)?)
+    match response.header.media_type.as_ref() {
+        Some(media_type) => Ok(PeData::decode_bytes(
+            resource,
+            Some(media_type),
+            &response.body,
+        )?),
+        None => Ok(PeData::decode(resource, &parse(response)?)?),
+    }
 }
 
-fn read_full(resource: &PeResource, bytes: &[u8]) -> Option<PeData> {
-    PeData::decode(resource, &PeJson::parse(bytes).ok()?).ok()
+fn read_full(
+    resource: &PeResource,
+    media_type: Option<&MediaType>,
+    bytes: &[u8],
+) -> Option<PeData> {
+    PeData::decode_bytes(resource, media_type, bytes).ok()
 }
 
 /// The data with the changes of a `partial` update made, when they can be.
 fn apply_partial(held: &PeData, bytes: &[u8]) -> Option<PeData> {
     let update = PartialUpdate::from_json(&PeJson::parse(bytes).ok()?).ok()?;
-    let changed = update.apply(&held.to_json()).ok()?;
+    let changed = update.apply(&held.to_json()?).ok()?;
     PeData::decode(&held.resource(), &changed).ok()
 }

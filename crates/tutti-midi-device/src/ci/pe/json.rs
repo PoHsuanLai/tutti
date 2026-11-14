@@ -1,12 +1,20 @@
-//! The reader of Header Data: a JSON object of number, boolean and string
-//! properties, built from `winnow` combinators (M2-103 §6.1.1, §7.1.1). No
-//! `winnow` type leaves this module: [`object`] answers the properties in order
-//! or the offset where the text stopped being the grammar.
+//! The reader of JSON text, built from `winnow` combinators, for the Header Data
+//! of a message (M2-103 §7.1.1) and for Property Data (§6.1). One grammar reads
+//! both, in the [`Grammar`] of each: Header Data is an object of number, boolean
+//! and string properties with no whitespace, Property Data is any JSON value with
+//! whitespace between tokens. No `winnow` type leaves this module: [`object`] and
+//! [`document`] answer the value or the offset where the text stopped being the
+//! grammar.
 //!
 //! ```text
-//! object   := '{' [ member (',' member)* ] '}'      -- no whitespace anywhere
+//! object   := '{' [ member (',' member)* ] '}'
 //! member   := string ':' value
-//! value    := string | number | 'true' | 'false'    -- no null, object or array
+//! value    := string | number | 'true' | 'false'    -- Header Data stops here
+//!           | 'null' | array | object               -- Property Data goes on
+//! array    := '[' [ value (',' value)* ] ']'
+//!           -- Header Data has no whitespace anywhere; Property Data has it between
+//!           -- tokens, and each name once in an object, to a nesting of
+//!           -- `PE_JSON_MAX_DEPTH`
 //! string   := '"' (run | '\' escape)* '"'
 //! run      := bytes 0x20..=0x7F except '"' and '\'
 //! escape   := '"' | '\' | '/' | b | f | n | r | t | 'u' hex{4}
@@ -17,17 +25,16 @@
 //! surrogate is malformed.
 
 use winnow::Parser;
-use winnow::combinator::{alt, delimited, opt, repeat, separated, separated_pair};
+use winnow::combinator::{alt, delimited, opt, repeat, separated};
 use winnow::error::{ContextError, ErrMode};
 use winnow::token::{literal, one_of, take, take_while};
 
-use super::tree::{PE_JSON_MAX_DEPTH, PeJson, PeObject};
-use super::value::{PeDecimal, PeValue};
+use super::tree::{PE_JSON_MAX_DEPTH, PeDecimal, PeJson, PeObject};
 
 type Res<T> = winnow::ModalResult<T, ContextError>;
 
 /// One property as written: its name and its value.
-pub(super) type Member = (String, PeValue);
+pub(super) type Member = (String, PeJson);
 
 /// A piece of a string, in UTF-16 units.
 fn piece(input: &mut &[u8]) -> Res<Vec<u16>> {
@@ -80,7 +87,7 @@ fn digit1<'a>(input: &mut &'a [u8]) -> Res<&'a [u8]> {
     take_while(1.., b'0'..=b'9').parse_next(input)
 }
 
-fn number(input: &mut &[u8]) -> Res<PeValue> {
+fn number(input: &mut &[u8]) -> Res<PeJson> {
     (
         opt(literal(b'-')),
         alt((
@@ -97,107 +104,111 @@ fn number(input: &mut &[u8]) -> Res<PeValue> {
                 text.parse()
                     .ok()
                     .and_then(PeDecimal::new)
-                    .map(PeValue::Decimal)
+                    .map(PeJson::Decimal)
             } else {
-                text.parse().ok().map(PeValue::Integer)
+                text.parse().ok().map(PeJson::Integer)
             }
         })
         .parse_next(input)
 }
 
-fn value(input: &mut &[u8]) -> Res<PeValue> {
-    alt((
-        string.map(PeValue::String),
-        number,
-        literal("true").value(PeValue::Bool(true)),
-        literal("false").value(PeValue::Bool(false)),
-    ))
-    .parse_next(input)
+/// What a text may hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Grammar {
+    /// Header Data (M2-103 §7.1.1): an object of scalar properties, with no
+    /// whitespace.
+    Header,
+    /// Property Data (§6.1): any JSON value, with whitespace between tokens.
+    Data,
 }
 
-fn member(input: &mut &[u8]) -> Res<Member> {
-    separated_pair(string, literal(b':'), value).parse_next(input)
-}
-
-/// The properties of the JSON object `bytes` holds, in order, or the offset of
-/// the first byte that is not the grammar.
-pub(super) fn object(bytes: &[u8]) -> Result<Vec<Member>, usize> {
-    delimited(
-        literal(b'{'),
-        separated(0.., member, literal(b',')),
-        literal(b'}'),
-    )
-    .parse(bytes)
-    .map_err(|e| e.offset())
-}
-
-fn white(input: &mut &[u8]) -> Res<()> {
-    take_while(0.., |b: u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
-        .void()
-        .parse_next(input)
-}
-
-fn scalar(value: PeValue) -> PeJson {
-    match value {
-        PeValue::Bool(b) => PeJson::Bool(b),
-        PeValue::Integer(n) => PeJson::Integer(n),
-        PeValue::Decimal(d) => PeJson::Decimal(d),
-        PeValue::String(s) => PeJson::String(s),
+fn white(input: &mut &[u8], grammar: Grammar) -> Res<()> {
+    match grammar {
+        Grammar::Header => Ok(()),
+        Grammar::Data => take_while(0.., |b: u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+            .void()
+            .parse_next(input),
     }
 }
 
-/// A value of Property Data at nesting `depth`: whitespace may precede it.
-fn node(input: &mut &[u8], depth: usize) -> Res<PeJson> {
+/// A value at nesting `depth`, with the whitespace around it.
+fn node(input: &mut &[u8], depth: usize, grammar: Grammar) -> Res<PeJson> {
     if depth > PE_JSON_MAX_DEPTH {
         return Err(ErrMode::Cut(ContextError::new()));
     }
-    white(input)?;
-    let value = alt((
-        string.map(PeJson::String),
-        number.map(scalar),
-        literal("true").value(PeJson::Bool(true)),
-        literal("false").value(PeJson::Bool(false)),
-        literal("null").value(PeJson::Null),
-        |i: &mut &[u8]| array(i, depth),
-        |i: &mut &[u8]| object_node(i, depth),
-    ))
-    .parse_next(input)?;
-    white(input)?;
+    white(input, grammar)?;
+    let value = match grammar {
+        Grammar::Header => alt((
+            string.map(PeJson::String),
+            number,
+            literal("true").value(PeJson::Bool(true)),
+            literal("false").value(PeJson::Bool(false)),
+        ))
+        .parse_next(input)?,
+        Grammar::Data => alt((
+            string.map(PeJson::String),
+            number,
+            literal("true").value(PeJson::Bool(true)),
+            literal("false").value(PeJson::Bool(false)),
+            literal("null").value(PeJson::Null),
+            |i: &mut &[u8]| array(i, depth),
+            |i: &mut &[u8]| {
+                members(i, depth, grammar).and_then(|m| {
+                    PeObject::from_members(m)
+                        .map(PeJson::Object)
+                        .ok_or_else(|| ErrMode::Backtrack(ContextError::new()))
+                })
+            },
+        ))
+        .parse_next(input)?,
+    };
+    white(input, grammar)?;
     Ok(value)
 }
 
 fn array(input: &mut &[u8], depth: usize) -> Res<PeJson> {
     delimited(
         literal(b'['),
-        separated(0.., |i: &mut &[u8]| node(i, depth + 1), literal(b',')),
+        separated(
+            0..,
+            |i: &mut &[u8]| node(i, depth + 1, Grammar::Data),
+            literal(b','),
+        ),
         literal(b']'),
     )
     .map(PeJson::Array)
     .parse_next(input)
 }
 
-fn object_node(input: &mut &[u8], depth: usize) -> Res<PeJson> {
+/// The properties of an object, in order and as written: a name may repeat.
+fn members(input: &mut &[u8], depth: usize, grammar: Grammar) -> Res<Vec<Member>> {
     let pair = |i: &mut &[u8]| {
-        white(i)?;
+        white(i, grammar)?;
         let name = string(i)?;
-        white(i)?;
+        white(i, grammar)?;
         literal(b':').parse_next(i)?;
-        Ok((name, node(i, depth + 1)?))
+        Ok((name, node(i, depth + 1, grammar)?))
     };
     delimited(
         literal(b'{'),
         separated(0.., pair, literal(b',')),
         literal(b'}'),
     )
-    .verify_map(|members: Vec<(String, PeJson)>| PeObject::from_members(members))
-    .map(PeJson::Object)
     .parse_next(input)
 }
 
-/// The value the JSON text `bytes` holds, or the offset of the first byte that
-/// is not the grammar.
+/// The properties of the Header Data object `bytes` holds, in order, or the offset
+/// of the first byte that is not the grammar.
+pub(super) fn object(bytes: &[u8]) -> Result<Vec<Member>, usize> {
+    (|i: &mut &[u8]| members(i, 0, Grammar::Header))
+        .parse(bytes)
+        .map_err(|e| e.offset())
+}
+
+/// The value the Property Data text `bytes` holds, or the offset of the first byte
+/// that is not the grammar.
 pub(super) fn document(bytes: &[u8]) -> Result<PeJson, usize> {
-    (|i: &mut &[u8]| node(i, 0))
+    (|i: &mut &[u8]| node(i, 0, Grammar::Data))
         .parse(bytes)
         .map_err(|e| e.offset())
 }

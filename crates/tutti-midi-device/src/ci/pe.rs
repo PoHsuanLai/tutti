@@ -128,22 +128,23 @@ pub use reassemble::{
     PeReassemblyLimits, PeReceived, PeRefused, PeStep, StreamLimit,
 };
 pub use resource::{
-    CallError, CallId, CanSet, CcIndex, ChangeKind, ClusterKind, ColumnSource, CtrlControl,
-    CtrlKind, CtrlRange, CtrlValueKind, CustomResource, DefaultMapNotCc, EntryError, LinkRole,
-    ListedTwice, MAX_LIST_ENTRIES, ModeId, NotVendorName, PaginationFault, ParamPath,
-    PeAllCtrlEntry, PeAllCtrlList, PeBankProgram, PeBasicChannelRx, PeBasicChannelTx,
-    PeChCtrlEntry, PeChCtrlList, PeChannel, PeChannelEntry, PeChannelList, PeChannelMode,
-    PeCluster, PeColumn, PeController, PeCtrl, PeCtrlMapEntry, PeCtrlMapList, PeCurrentMode,
-    PeData, PeDataError, PeDataFault, PeDeviceInfo, PeExtensions, PeExternalSync, PeJsonSchema,
-    PeLink, PeLocalOn, PeMidiMode, PeModeEntry, PeModeList, PeOpaque, PeProgramEntry,
-    PeProgramList, PeResource, PeResourceList, PeText, Priority, PublishError, RequestRefused,
-    ResIdUse, ResourceAction, ResourceDefaults, ResourceEntry, ResourceEvent, ResourceFailure,
-    ResourceGet, ResourceInitiator, ResourceResponder, ResourceSet, ResourceStore, ResourceTarget,
-    ResponderAction, ResponderEvent, ResponderSettings, SetBody, SignificantBits, StepCount,
+    ActionError, CallError, CallId, CanSet, CcIndex, ChangeKind, ClusterKind, ColumnSource,
+    ConfirmIcon, ConfirmType, Confirmation, CtrlControl, CtrlKind, CtrlRange, CtrlValueKind,
+    CustomResource, DefaultMapNotCc, EntryError, LinkRole, ListedTwice, MAX_LIST_ENTRIES, ModeId,
+    NotVendorName, OpaqueBody, PaginationFault, ParamPath, PeAllCtrlEntry, PeAllCtrlList,
+    PeBankProgram, PeBasicChannelRx, PeBasicChannelTx, PeChCtrlEntry, PeChCtrlList, PeChannel,
+    PeChannelEntry, PeChannelList, PeChannelMode, PeCluster, PeColumn, PeController, PeCtrl,
+    PeCtrlMapEntry, PeCtrlMapList, PeCurrentMode, PeData, PeDataError, PeDataFault, PeDeviceInfo,
+    PeExtensions, PeExternalSync, PeJsonSchema, PeLink, PeLocalOn, PeMidiMode, PeModeEntry,
+    PeModeList, PeOpaque, PeProgramEntry, PeProgramList, PeResource, PeResourceList, PeText,
+    Priority, PublishError, RequestRefused, ResIdUse, ResourceAction, ResourceDefaults,
+    ResourceEntry, ResourceEvent, ResourceFailure, ResourceGet, ResourceInitiator,
+    ResourceResponder, ResourceSet, ResourceStore, ResourceTarget, ResponderAction, ResponderEvent,
+    ResponderSettings, RoleName, SelectorAction, SetBody, SignificantBits, SimpleAction, StepCount,
     StoreError, TypeHint, UpdateKind,
 };
-pub use tree::{PE_JSON_MAX_DEPTH, PeJson, PeJsonError, PeObject};
-pub use value::{PeDecimal, PeExtra, PeReservedProperty, PeValue};
+pub use tree::{PE_JSON_MAX_DEPTH, PeDecimal, PeJson, PeJsonError, PeObject};
+pub use value::{PeExtra, PeExtraError};
 
 #[cfg(test)]
 mod tests;

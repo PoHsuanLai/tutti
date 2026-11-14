@@ -350,6 +350,8 @@ pub enum PeNotification {
         resource: ResourceName,
         /// What changed.
         change: PeChange,
+        /// The media type of Property Data that is not JSON (§7.5).
+        media_type: Option<MediaType>,
     },
     /// The Responder ended the Subscription, which is no longer in the table.
     Ended {
@@ -989,6 +991,7 @@ impl PeInitiator {
                 command,
                 subscribe_id,
                 mutual_encoding,
+                media_type,
                 ..
             }) => match known(self, subscribe_id) {
                 Some(at) => {
@@ -1009,6 +1012,7 @@ impl PeInitiator {
                         subscribe_id: subscribe_id.clone(),
                         resource,
                         change,
+                        media_type: media_type.clone(),
                     }));
                     None
                 }

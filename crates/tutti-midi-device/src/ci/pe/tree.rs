@@ -2,12 +2,29 @@
 //! and writer of its text (M2-103 §6.1).
 
 use super::json;
-use super::value::PeDecimal;
 use super::write;
 
 /// The deepest nesting of arrays and objects the reader accepts. Property Data
 /// arrives from a peer, so the depth the reader recurses to is bounded.
 pub const PE_JSON_MAX_DEPTH: usize = 32;
+
+/// A finite non-integer number, as JSON writes one: no NaN, no infinity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PeDecimal(f64);
+
+impl PeDecimal {
+    /// The number, or `None` for NaN and infinity, which JSON cannot write.
+    #[must_use]
+    pub fn new(raw: f64) -> Option<Self> {
+        raw.is_finite().then_some(Self(raw))
+    }
+
+    /// The number.
+    #[must_use]
+    pub fn get(self) -> f64 {
+        self.0
+    }
+}
 
 /// A JSON object: its properties in the order written, each name once. Two
 /// objects are equal when they have the same properties, in whatever order.
@@ -96,7 +113,9 @@ impl IntoIterator for PeObject {
     }
 }
 
-/// A JSON value: the Property Data of a Resource, or a part of it.
+/// A JSON value: the Property Data of a Resource or a part of it, and the value
+/// of a Header Data property, which is a scalar: [`is_scalar`](PeJson::is_scalar)
+/// (M2-103 §7.1.1).
 #[derive(Clone, Debug, PartialEq)]
 pub enum PeJson {
     /// `null`.
@@ -146,6 +165,16 @@ impl PeJson {
         let mut out = String::new();
         write::json(&mut out, self);
         out.into_bytes()
+    }
+
+    /// Whether this is a number, a boolean or a string: what a header property
+    /// and a change of a Partial Set may be (M2-103 §7.1.1, §10).
+    #[must_use]
+    pub fn is_scalar(&self) -> bool {
+        matches!(
+            self,
+            Self::Bool(_) | Self::Integer(_) | Self::Decimal(_) | Self::String(_)
+        )
     }
 
     /// The string, if this is one.

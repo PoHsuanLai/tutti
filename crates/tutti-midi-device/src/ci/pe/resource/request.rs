@@ -4,12 +4,15 @@
 
 use super::super::header::PeEncoding;
 use super::super::header::PePage;
-use super::super::limits::ResourceId;
+use super::super::limits::{MediaType, ResourceId};
 use super::super::partial::PartialUpdate;
 use super::super::reassemble::PeFlowControl;
+use super::super::tree::PeObject;
 use super::data::PeData;
 use super::entry::ResourceEntry;
+use super::fields::PeDataError;
 use super::kind::{CanSet, PeResource, ResIdUse};
+use super::link::{LinkRole, PeLink};
 
 /// An inquiry that the rules of Property Exchange refuse.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -64,6 +67,14 @@ pub enum RequestRefused {
     /// The entry does not declare Flow Control for Get.
     #[error("{0} does not use Flow Control on Get")]
     FlowControlNotDeclared(String),
+    /// The entry does not list the media type of the data.
+    #[error("{resource} does not take {media_type}")]
+    MediaTypeNotDeclared {
+        /// The Resource.
+        resource: String,
+        /// The media type.
+        media_type: String,
+    },
     /// The entry says whether `resId` is used, and the inquiry differs.
     #[error("the entry of {resource} says requireResId is {required}")]
     ResIdDisagrees {
@@ -364,6 +375,84 @@ impl ResourceSet {
                 encoding: self.encoding.as_str(),
             });
         }
+        if let SetBody::Full(data) = &self.body {
+            let json = MediaType::new("application/json");
+            let media_type = data.media_type().or(json.as_ref());
+            if let Some(media_type) = media_type
+                && !entry.media_types().contains(media_type)
+            {
+                return Err(RequestRefused::MediaTypeNotDeclared {
+                    resource: name,
+                    media_type: media_type.as_str().to_owned(),
+                });
+            }
+        }
         Ok(())
     }
+
+    /// The Set a `simpleAction` Link asks for: its Resource and entry, and its
+    /// `propData` as the Property Data (M2-103 §13.1.1).
+    ///
+    /// # Errors
+    ///
+    /// [`ActionError`] for a Link that is no `simpleAction` and for `propData`
+    /// that is not the Resource's.
+    pub fn from_simple_action(link: &PeLink) -> Result<Self, ActionError> {
+        let Some(LinkRole::Simple(action)) = &link.role else {
+            return Err(ActionError::NotThatAction("simpleAction"));
+        };
+        let data = PeData::decode(&link.resource, &action.prop_data)?;
+        Ok(Self::full(
+            link_target(&link.resource, link.res_id.as_ref())?,
+            data,
+        )?)
+    }
+
+    /// The Set a `selectorAction` Link asks for once the user chose `chosen`, an
+    /// entry of the List Resource of the Link: the action Resource, with the
+    /// `selectedProperty` of the entry as the Property Data (M2-103 §13.1.2).
+    ///
+    /// # Errors
+    ///
+    /// [`ActionError`] for a Link that is no `selectorAction`, an entry that lacks
+    /// the property, and a value that is not the action Resource's.
+    pub fn from_selection(link: &PeLink, chosen: &PeObject) -> Result<Self, ActionError> {
+        let Some(LinkRole::Selector(action)) = &link.role else {
+            return Err(ActionError::NotThatAction("selectorAction"));
+        };
+        let value = action.selection(chosen).ok_or_else(|| {
+            ActionError::NoSelectedProperty(action.selected_property.as_str().to_owned())
+        })?;
+        let data = PeData::decode(&action.action_resource, value)?;
+        let target = link_target(&action.action_resource, action.action_res_id.as_ref())?;
+        Ok(Self::full(target, data)?)
+    }
+}
+
+fn link_target(
+    resource: &PeResource,
+    res_id: Option<&ResourceId>,
+) -> Result<ResourceTarget, RequestRefused> {
+    match res_id {
+        Some(id) => ResourceTarget::entry(resource.clone(), id.clone()),
+        None => ResourceTarget::new(resource.clone()),
+    }
+}
+
+/// A Link whose Action cannot be made into a Set.
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+#[non_exhaustive]
+pub enum ActionError {
+    /// The Link has not the role.
+    #[error("the Link is not a {0} Link")]
+    NotThatAction(&'static str),
+    /// The chosen entry has no property `selectedProperty` names.
+    #[error("the chosen entry has no {0}")]
+    NoSelectedProperty(String),
+    /// The data is not the Resource's.
+    #[error(transparent)]
+    Data(#[from] PeDataError),
+    /// The Set breaks a rule of the Resource.
+    #[error(transparent)]
+    Refused(#[from] RequestRefused),
 }

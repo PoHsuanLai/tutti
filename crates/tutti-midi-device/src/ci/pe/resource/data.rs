@@ -1,6 +1,7 @@
 //! [`PeData`]: the Property Data of a Resource, typed.
 
-use super::super::tree::PeJson;
+use super::super::limits::MediaType;
+use super::super::tree::{PeJson, PeJsonError};
 use super::channels::PeChannelList;
 use super::controllers::{PeAllCtrlList, PeChCtrlList, PeCtrlMapList};
 use super::entry::PeResourceList;
@@ -12,12 +13,33 @@ use super::simple::{
     PeBasicChannelRx, PeBasicChannelTx, PeChannelMode, PeCurrentMode, PeExternalSync, PeLocalOn,
 };
 
+/// What the Property Data of a Resource without a type holds.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OpaqueBody {
+    /// JSON.
+    Json(PeJson),
+    /// Data that is not JSON, with the media type its header declares (M2-103
+    /// §6.1.5, §7.5).
+    Binary {
+        /// The media type, which is not `application/json`.
+        media_type: MediaType,
+        /// The data, before its encoding.
+        bytes: Vec<u8>,
+    },
+}
+
+/// Whether `media_type` is JSON, the media type of Property Data that has none
+/// declared (M2-103 §6.1).
+fn is_json(media_type: &MediaType) -> bool {
+    media_type.as_str().eq_ignore_ascii_case("application/json")
+}
+
 /// The Property Data of a Resource this crate has no type for: a
 /// manufacturer-specific Resource's, or a standard one's that is not modelled.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PeOpaque {
     resource: PeResource,
-    json: PeJson,
+    body: OpaqueBody,
 }
 
 impl PeOpaque {
@@ -25,7 +47,21 @@ impl PeOpaque {
     /// a type, whose [`PeData`] variant holds the data.
     #[must_use]
     pub fn new(resource: PeResource, json: PeJson) -> Option<Self> {
-        resource.is_overridable().then_some(Self { resource, json })
+        resource.is_overridable().then_some(Self {
+            resource,
+            body: OpaqueBody::Json(json),
+        })
+    }
+
+    /// The Property Data `bytes` of `resource` that is of `media_type`, or `None`
+    /// when the Resource has a type or the media type is JSON, which
+    /// [`new`](Self::new) holds.
+    #[must_use]
+    pub fn binary(resource: PeResource, media_type: MediaType, bytes: Vec<u8>) -> Option<Self> {
+        (resource.is_overridable() && !is_json(&media_type)).then_some(Self {
+            resource,
+            body: OpaqueBody::Binary { media_type, bytes },
+        })
     }
 
     /// The Resource.
@@ -36,8 +72,17 @@ impl PeOpaque {
 
     /// The Property Data.
     #[must_use]
-    pub fn json(&self) -> &PeJson {
-        &self.json
+    pub fn body(&self) -> &OpaqueBody {
+        &self.body
+    }
+
+    /// The Property Data, when it is JSON.
+    #[must_use]
+    pub fn json(&self) -> Option<&PeJson> {
+        match &self.body {
+            OpaqueBody::Json(json) => Some(json),
+            OpaqueBody::Binary { .. } => None,
+        }
     }
 }
 
@@ -112,10 +157,11 @@ impl PeData {
         }
     }
 
-    /// The Property Data as JSON.
+    /// The Property Data as JSON, or `None` for the data of a Resource that is not
+    /// JSON.
     #[must_use]
-    pub fn to_json(&self) -> PeJson {
-        match self {
+    pub fn to_json(&self) -> Option<PeJson> {
+        Some(match self {
             Self::ResourceList(v) => v.to_json(),
             Self::DeviceInfo(v) => v.to_json(),
             Self::ChannelList(v) => v.to_json(),
@@ -131,7 +177,35 @@ impl PeData {
             Self::AllCtrlList(v) => v.to_json(),
             Self::ChCtrlList(v) => v.to_json(),
             Self::CtrlMapList(v) => v.to_json(),
-            Self::Opaque(v) => v.json.clone(),
+            Self::Opaque(v) => v.json()?.clone(),
+        })
+    }
+
+    /// The media type of the data when it is not JSON.
+    #[must_use]
+    pub fn media_type(&self) -> Option<&MediaType> {
+        match self {
+            Self::Opaque(PeOpaque {
+                body: OpaqueBody::Binary { media_type, .. },
+                ..
+            }) => Some(media_type),
+            _ => None,
+        }
+    }
+
+    /// The Property Data as it is sent before its encoding: the media type, which is
+    /// none for JSON, and the bytes.
+    #[must_use]
+    pub fn to_wire(&self) -> (Option<MediaType>, Vec<u8>) {
+        match self {
+            Self::Opaque(PeOpaque {
+                body: OpaqueBody::Binary { media_type, bytes },
+                ..
+            }) => (Some(media_type.clone()), bytes.clone()),
+            other => (
+                None,
+                other.to_json().map(|j| j.encode()).unwrap_or_default(),
+            ),
         }
     }
 
@@ -181,6 +255,36 @@ impl PeData {
         })
     }
 
+    /// Reads the Property Data `bytes` of `resource` that is of `media_type`: JSON
+    /// when the media type is none or `application/json`, and otherwise the
+    /// bytes of a Resource that has no type.
+    ///
+    /// # Errors
+    ///
+    /// [`PeDataError`] for JSON that is not the Resource's, and for data that is
+    /// not JSON of a Resource that is typed.
+    pub fn decode_bytes(
+        resource: &PeResource,
+        media_type: Option<&MediaType>,
+        bytes: &[u8],
+    ) -> Result<Self, PeDataError> {
+        match media_type.filter(|m| !is_json(m)) {
+            None => {
+                let json = PeJson::parse(bytes).map_err(|e| {
+                    PeDataError::new(resource.as_str(), PeDataFault::NotValid(json_fault(&e)))
+                })?;
+                Self::decode(resource, &json)
+            }
+            Some(media_type) => {
+                PeOpaque::binary(resource.clone(), media_type.clone(), bytes.to_vec())
+                    .map(Self::Opaque)
+                    .ok_or_else(|| {
+                        PeDataError::new(resource.as_str(), PeDataFault::NotValid("media type"))
+                    })
+            }
+        }
+    }
+
     /// The pages of a List Resource joined: the entries of each page in order.
     ///
     /// # Errors
@@ -199,6 +303,10 @@ impl PeData {
         }
         Self::decode(resource, &PeJson::Array(all))
     }
+}
+
+fn json_fault(_: &PeJsonError) -> &'static str {
+    "JSON text"
 }
 
 macro_rules! convert {

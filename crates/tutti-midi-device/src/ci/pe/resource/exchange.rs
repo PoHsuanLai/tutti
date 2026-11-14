@@ -15,48 +15,47 @@ use super::super::header::{
     PeEncoding, PeEndedBy, PeHeader, PePage, PeReply, PeStatus, PeSubscription, PeUpdateCommand,
 };
 use super::super::initiator::{PeAction, PeCall, PeGet, PeInitiator, PeOutcome, PeSet, PeSettings};
-use super::super::limits::{ResourceId, ResourceName, SubscribeId};
+use super::super::limits::{MediaType, ResourceId, ResourceName, SubscribeId};
 use super::super::partial::{JsonPointer, PartialUpdate};
 use super::super::reassemble::{BufferLimit, PeFlowControl, PeReassemblyLimits, StreamLimit};
 use super::super::tree::PeJson;
-use super::super::value::PeValue;
 use super::*;
 use crate::ci::testing::{OURS, PEER};
 use crate::{BodyLimit, CiHeader, CiMessage, Decoded, MaxSysexSize, Muid};
 
-fn json(text: &str) -> PeJson {
+pub(super) fn json(text: &str) -> PeJson {
     PeJson::parse(text.as_bytes()).unwrap()
 }
 
-fn id(text: &str) -> ResourceId {
+pub(super) fn id(text: &str) -> ResourceId {
     ResourceId::new(text).unwrap()
 }
 
-fn text(text: &str) -> PeText {
+pub(super) fn text(text: &str) -> PeText {
     PeText::new(text).unwrap()
 }
 
-fn custom(name: &str) -> PeResource {
+pub(super) fn custom(name: &str) -> PeResource {
     PeResource::Custom(CustomResource::new(name).unwrap())
 }
 
-fn target(resource: PeResource) -> ResourceTarget {
+pub(super) fn target(resource: PeResource) -> ResourceTarget {
     ResourceTarget::new(resource).unwrap()
 }
 
-fn entry_target(resource: PeResource, res_id: &str) -> ResourceTarget {
+pub(super) fn entry_target(resource: PeResource, res_id: &str) -> ResourceTarget {
     ResourceTarget::entry(resource, id(res_id)).unwrap()
 }
 
-fn get(resource: PeResource) -> ResourceGet {
+pub(super) fn get(resource: PeResource) -> ResourceGet {
     ResourceGet::new(target(resource))
 }
 
-fn pointer(text: &str) -> JsonPointer {
+pub(super) fn pointer(text: &str) -> JsonPointer {
     JsonPointer::new(text).unwrap()
 }
 
-fn program(n: u8) -> PeProgramEntry {
+pub(super) fn program(n: u8) -> PeProgramEntry {
     PeProgramEntry::new(
         text(&format!("Program {n}")),
         PeBankProgram {
@@ -69,17 +68,17 @@ fn program(n: u8) -> PeProgramEntry {
     )
 }
 
-fn channel(n: u16, title: &str) -> PeChannelEntry {
+pub(super) fn channel(n: u16, title: &str) -> PeChannelEntry {
     PeChannelEntry::new(text(title), PeChannel::new(n).unwrap())
 }
 
-fn device_info() -> PeDeviceInfo {
+pub(super) fn device_info() -> PeDeviceInfo {
     PeDeviceInfo::from_json_for_tests()
 }
 
 impl PeDeviceInfo {
     /// M2-105 Table 6's data.
-    fn from_json_for_tests() -> Self {
+    pub(super) fn from_json_for_tests() -> Self {
         let table_6 = json(
             r#"{"version":"1.0","manufacturerId":[125,0,0],"manufacturer":"Educational Use",
             "familyId":[0,0],"family":"Test Range","modelId":[48,0],"model":"MIDI-CI Test Workbench",
@@ -92,7 +91,7 @@ impl PeDeviceInfo {
     }
 }
 
-fn program_edit() -> PeData {
+pub(super) fn program_edit() -> PeData {
     // M2-103 Table 32.
     PeData::decode(
         &custom("X-ProgramEdit"),
@@ -105,7 +104,7 @@ fn program_edit() -> PeData {
 }
 
 /// A device with the Resources the tests use.
-fn store() -> ResourceStore {
+pub(super) fn store() -> ResourceStore {
     let mut store = ResourceStore::new();
     store.declare(ResourceEntry::new(PeResource::DeviceInfo).unwrap());
     store.put(None, PeData::DeviceInfo(device_info())).unwrap();
@@ -113,6 +112,8 @@ fn store() -> ResourceStore {
         ResourceEntry::new(PeResource::ChannelList)
             .unwrap()
             .with_can_subscribe(true)
+            .with_fc_on_get(true)
+            .unwrap()
             .with_encodings(vec![
                 PeEncoding::Ascii,
                 PeEncoding::Mcoded7,
@@ -155,12 +156,45 @@ fn store() -> ResourceStore {
             .with_can_subscribe(true),
     );
     store.put(Some(id("abcd")), program_edit()).unwrap();
+    for (name, flow) in [("X-Blob", false), ("X-BigBlob", true)] {
+        let blob = ResourceEntry::custom(custom(name), json(r#"{"title":"Blob"}"#))
+            .unwrap()
+            .with_can_set(CanSet::Full)
+            .unwrap()
+            .with_fc_on_set(flow)
+            .unwrap()
+            .with_can_subscribe(true)
+            .with_media_types(vec![octets()])
+            .unwrap()
+            .with_encodings(vec![PeEncoding::Mcoded7])
+            .unwrap();
+        store.declare(blob);
+        store.put(None, blob_data(name, &blob_bytes(300))).unwrap();
+    }
     store
 }
 
-fn initiator_settings(max: u32) -> PeSettings {
+pub(super) fn octets() -> MediaType {
+    MediaType::new("application/octet-stream").unwrap()
+}
+
+/// `len` bytes, the top bit of some set, which only an encoding carries.
+pub(super) fn blob_bytes(len: usize) -> Vec<u8> {
+    (0..len).map(|n| (n * 7 % 256) as u8).collect()
+}
+
+pub(super) fn blob_data(name: &str, bytes: &[u8]) -> PeData {
+    PeData::Opaque(PeOpaque::binary(custom(name), octets(), bytes.to_vec()).unwrap())
+}
+
+pub(super) fn initiator_settings(max: u32) -> PeSettings {
+    initiator_settings_taking(max, 4)
+}
+
+/// Settings of an Initiator that takes `requests` Subscription messages at once.
+pub(super) fn initiator_settings_taking(max: u32, requests: u8) -> PeSettings {
     PeSettings {
-        capabilities: PeCapabilities::new(SimultaneousRequests::of(4)),
+        capabilities: PeCapabilities::new(SimultaneousRequests::of(requests)),
         peer_max_sysex: MaxSysexSize::of(max),
         reassembly: PeReassemblyLimits {
             streams: StreamLimit::new(8).unwrap(),
@@ -170,7 +204,7 @@ fn initiator_settings(max: u32) -> PeSettings {
     }
 }
 
-fn responder_settings() -> ResponderSettings {
+pub(super) fn responder_settings() -> ResponderSettings {
     ResponderSettings {
         capabilities: PeCapabilities::new(SimultaneousRequests::of(4)),
         reassembly: PeReassemblyLimits {
@@ -182,21 +216,30 @@ fn responder_settings() -> ResponderSettings {
 }
 
 /// An Initiator and a Responder joined by a wire that delivers every message.
-struct Link {
-    init: ResourceInitiator,
-    resp: ResourceResponder,
-    now: Instant,
-    events: Vec<ResourceEvent>,
-    served: Vec<ResponderEvent>,
+pub(super) struct Link {
+    pub(super) init: ResourceInitiator,
+    pub(super) resp: ResourceResponder,
+    pub(super) now: Instant,
+    pub(super) events: Vec<ResourceEvent>,
+    pub(super) served: Vec<ResponderEvent>,
     /// Every message, with `true` when it went to the Responder.
-    wire: Vec<(bool, CiMessage)>,
+    pub(super) wire: Vec<(bool, CiMessage)>,
 }
 
 impl Link {
-    fn new(store: ResourceStore, max: u32) -> Self {
+    pub(super) fn new(store: ResourceStore, max: u32) -> Self {
+        Self::taking(store, max, 4)
+    }
+
+    /// A link whose Initiator takes `requests` Subscription messages at once.
+    pub(super) fn taking(store: ResourceStore, max: u32, requests: u8) -> Self {
         let now = Instant::now();
-        let (init, actions) =
-            ResourceInitiator::new(Muid::of(OURS), Muid::of(PEER), initiator_settings(max), now);
+        let (init, actions) = ResourceInitiator::new(
+            Muid::of(OURS),
+            Muid::of(PEER),
+            initiator_settings_taking(max, requests),
+            now,
+        );
         let mut resp = ResourceResponder::new(Muid::of(PEER), responder_settings(), store);
         resp.accept(Muid::of(OURS), MaxSysexSize::of(max));
         let mut link = Self {
@@ -212,7 +255,7 @@ impl Link {
     }
 
     /// Delivers what each side sent, and what that provoked, until the wire is quiet.
-    fn run(&mut self, from_init: Vec<ResourceAction>, from_resp: Vec<ResponderAction>) {
+    pub(super) fn run(&mut self, from_init: Vec<ResourceAction>, from_resp: Vec<ResponderAction>) {
         let mut to_resp: VecDeque<CiMessage> = VecDeque::new();
         let mut to_init: VecDeque<CiMessage> = VecDeque::new();
         self.absorb_init(from_init, &mut to_resp);
@@ -232,7 +275,11 @@ impl Link {
         }
     }
 
-    fn absorb_init(&mut self, actions: Vec<ResourceAction>, to_resp: &mut VecDeque<CiMessage>) {
+    pub(super) fn absorb_init(
+        &mut self,
+        actions: Vec<ResourceAction>,
+        to_resp: &mut VecDeque<CiMessage>,
+    ) {
         for action in actions {
             match action {
                 ResourceAction::Send(message) => to_resp.push_back(message),
@@ -241,7 +288,11 @@ impl Link {
         }
     }
 
-    fn absorb_resp(&mut self, actions: Vec<ResponderAction>, to_init: &mut VecDeque<CiMessage>) {
+    pub(super) fn absorb_resp(
+        &mut self,
+        actions: Vec<ResponderAction>,
+        to_init: &mut VecDeque<CiMessage>,
+    ) {
         for action in actions {
             match action {
                 ResponderAction::Send(message) => to_init.push_back(message),
@@ -250,18 +301,21 @@ impl Link {
         }
     }
 
-    fn call(&mut self, made: Result<(CallId, Vec<ResourceAction>), CallError>) -> CallId {
+    pub(super) fn call(
+        &mut self,
+        made: Result<(CallId, Vec<ResourceAction>), CallError>,
+    ) -> CallId {
         let (call, actions) = made.unwrap();
         self.run(actions, Vec::new());
         call
     }
 
-    fn publish(&mut self, actions: Vec<ResponderAction>) {
+    pub(super) fn publish(&mut self, actions: Vec<ResponderAction>) {
         self.run(Vec::new(), actions);
     }
 
     /// The result of the Get that call `call` made.
-    fn got(&self, call: CallId) -> Result<PeData, ResourceFailure> {
+    pub(super) fn got(&self, call: CallId) -> Result<PeData, ResourceFailure> {
         self.events
             .iter()
             .find_map(|e| match e {
@@ -273,7 +327,7 @@ impl Link {
             .unwrap_or_else(|| panic!("no Got for {call:?}: {:?}", self.events))
     }
 
-    fn set_result(&self, call: CallId) -> Result<PeStatus, ResourceFailure> {
+    pub(super) fn set_result(&self, call: CallId) -> Result<PeStatus, ResourceFailure> {
         self.events
             .iter()
             .find_map(|e| match e {
@@ -286,7 +340,7 @@ impl Link {
     }
 
     /// The headers of the Get inquiries the Initiator sent, in order.
-    fn get_requests(&self) -> Vec<super::super::header::PeRequest> {
+    pub(super) fn get_requests(&self) -> Vec<super::super::header::PeRequest> {
         self.wire
             .iter()
             .filter_map(|(to_resp, message)| match message {
@@ -307,7 +361,7 @@ impl Link {
             .collect()
     }
 
-    fn updates(&self) -> Vec<(SubscribeId, PeData, UpdateKind)> {
+    pub(super) fn updates(&self) -> Vec<(SubscribeId, PeData, UpdateKind)> {
         self.events
             .iter()
             .filter_map(|e| match e {
@@ -406,14 +460,14 @@ fn a_resource_not_in_the_list_is_refused_by_the_initiator() {
 /// A Responder and a Get-and-Set Initiator of the transaction layer, without the
 /// checks of the ResourceList: what the Responder does with a request it should
 /// refuse.
-struct Raw {
-    init: PeInitiator,
-    resp: ResourceResponder,
-    now: Instant,
+pub(super) struct Raw {
+    pub(super) init: PeInitiator,
+    pub(super) resp: ResourceResponder,
+    pub(super) now: Instant,
 }
 
 impl Raw {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let now = Instant::now();
         let (init, actions) =
             PeInitiator::new(Muid::of(OURS), Muid::of(PEER), initiator_settings(256), now);
@@ -424,7 +478,7 @@ impl Raw {
         raw
     }
 
-    fn pump(&mut self, actions: Vec<PeAction>) -> Vec<PeAction> {
+    pub(super) fn pump(&mut self, actions: Vec<PeAction>) -> Vec<PeAction> {
         let mut seen = Vec::new();
         let mut queue: VecDeque<PeAction> = actions.into();
         while let Some(action) = queue.pop_front() {
@@ -442,7 +496,7 @@ impl Raw {
         seen
     }
 
-    fn outcome(&mut self, call: PeCall) -> PeOutcome {
+    pub(super) fn outcome(&mut self, call: PeCall) -> PeOutcome {
         let (_, actions) = self.init.start(call, self.now).unwrap();
         let seen = self.pump(actions);
         seen.into_iter()
@@ -453,7 +507,7 @@ impl Raw {
             .expect("the request ended")
     }
 
-    fn status(&mut self, call: PeCall) -> PeStatus {
+    pub(super) fn status(&mut self, call: PeCall) -> PeStatus {
         match self.outcome(call) {
             PeOutcome::Success(r) | PeOutcome::Retry(r) | PeOutcome::Failed(r) => r.status(),
             other => panic!("{other:?}"),
@@ -461,7 +515,7 @@ impl Raw {
     }
 }
 
-fn pe_get(name: &str) -> PeGet {
+pub(super) fn pe_get(name: &str) -> PeGet {
     PeGet::new(ResourceName::new(name).unwrap())
 }
 
@@ -675,16 +729,16 @@ fn a_list_that_does_not_paginate_is_got_whole() {
 }
 
 /// An Initiator whose peer is the test: it answers what the test says.
-struct Script {
-    init: ResourceInitiator,
-    now: Instant,
-    events: Vec<ResourceEvent>,
-    sent: Vec<CiMessage>,
+pub(super) struct Script {
+    pub(super) init: ResourceInitiator,
+    pub(super) now: Instant,
+    pub(super) events: Vec<ResourceEvent>,
+    pub(super) sent: Vec<CiMessage>,
 }
 
 impl Script {
     /// An Initiator that has the peer's capabilities and a ResourceList of `list`.
-    fn new(list: &PeResourceList) -> Self {
+    pub(super) fn new(list: &PeResourceList) -> Self {
         let now = Instant::now();
         let (init, actions) =
             ResourceInitiator::new(Muid::of(OURS), Muid::of(PEER), initiator_settings(512), now);
@@ -702,14 +756,14 @@ impl Script {
             request,
             PeStatus::Ok,
             None,
-            &PeData::ResourceList(list.clone()).to_json(),
+            &PeData::ResourceList(list.clone()).to_json().unwrap(),
         );
         script.events.clear();
         script.sent.clear();
         script
     }
 
-    fn take(&mut self, actions: Vec<ResourceAction>) {
+    pub(super) fn take(&mut self, actions: Vec<ResourceAction>) {
         for action in actions {
             match action {
                 ResourceAction::Send(m) => self.sent.push(m),
@@ -718,7 +772,7 @@ impl Script {
         }
     }
 
-    fn peer_sends(&mut self, message: PeCiMessage) {
+    pub(super) fn peer_sends(&mut self, message: PeCiMessage) {
         let decoded = Decoded::Message(CiMessage::PropertyExchange {
             header: CiHeader::new(Muid::of(PEER)),
             to: Muid::of(OURS),
@@ -728,7 +782,7 @@ impl Script {
         self.take(actions);
     }
 
-    fn last_request_id(&self) -> PeRequestId {
+    pub(super) fn last_request_id(&self) -> PeRequestId {
         self.sent
             .iter()
             .rev()
@@ -743,7 +797,7 @@ impl Script {
     }
 
     /// The Request ID of the Get inquiry sent last.
-    fn last_get_id(&self) -> PeRequestId {
+    pub(super) fn last_get_id(&self) -> PeRequestId {
         self.sent
             .iter()
             .rev()
@@ -758,13 +812,25 @@ impl Script {
     }
 
     /// The Reply to Get of `status`, and `body`, to request `id`.
-    fn reply(&mut self, id: PeRequestId, status: PeStatus, total: Option<u32>, body: &PeJson) {
+    pub(super) fn reply(
+        &mut self,
+        id: PeRequestId,
+        status: PeStatus,
+        total: Option<u32>,
+        body: &PeJson,
+    ) {
         let mut header = PeReply::new(status);
         header.total_count = total;
         self.reply_with(id, PeMessageKind::GET_REPLY, header, body.encode());
     }
 
-    fn reply_with(&mut self, id: PeRequestId, kind: PeMessageKind, header: PeReply, body: Vec<u8>) {
+    pub(super) fn reply_with(
+        &mut self,
+        id: PeRequestId,
+        kind: PeMessageKind,
+        header: PeReply,
+        body: Vec<u8>,
+    ) {
         let chunks =
             split_message(id, &PeHeader::Reply(header), &body, MaxSysexSize::of(512)).unwrap();
         for chunk in chunks {
@@ -773,7 +839,7 @@ impl Script {
     }
 
     /// A Subscription message of the peer, with `body`.
-    fn subscription(&mut self, id: u8, header: PeSubscription, body: &[u8]) {
+    pub(super) fn subscription(&mut self, id: u8, header: PeSubscription, body: &[u8]) {
         let chunks = split_message(
             PeRequestId::of(id),
             &PeHeader::Subscription(header),
@@ -790,12 +856,14 @@ impl Script {
     }
 }
 
-fn paginating_list() -> PeResourceList {
+pub(super) fn paginating_list() -> PeResourceList {
     PeResourceList::new().with(ResourceEntry::new(PeResource::ProgramList).unwrap())
 }
 
-fn program_page(from: u8, to: u8) -> PeJson {
-    PeData::ProgramList(PeProgramList::new((from..to).map(program).collect())).to_json()
+pub(super) fn program_page(from: u8, to: u8) -> PeJson {
+    PeData::ProgramList(PeProgramList::new((from..to).map(program).collect()))
+        .to_json()
+        .unwrap()
 }
 
 // M2-103 §8.6.2: a reply to a paginated Get shall have `totalCount`.
@@ -900,8 +968,10 @@ fn a_partial_set_changes_what_a_later_get_returns() {
     let mut link = Link::new(store(), 256);
     let program = entry_target(custom("X-ProgramEdit"), "abcd");
     let update = PartialUpdate::new()
-        .with(pointer("/pitchEnvelope/rates/0"), PeValue::Integer(80))
-        .with(pointer("/pitchEnvelope/levels/0"), PeValue::Integer(60));
+        .with(pointer("/pitchEnvelope/rates/0"), PeJson::Integer(80))
+        .unwrap()
+        .with(pointer("/pitchEnvelope/levels/0"), PeJson::Integer(60))
+        .unwrap();
     let made = link
         .init
         .set(&ResourceSet::partial(program.clone(), update), link.now);
@@ -997,7 +1067,9 @@ fn a_partial_update_changes_the_data_the_initiator_holds() {
         .init
         .subscribe(&ResourceGet::new(program.clone()), link.now);
     link.call(made);
-    let update = PartialUpdate::new().with(pointer("/lfoSpeed"), PeValue::Integer(10));
+    let update = PartialUpdate::new()
+        .with(pointer("/lfoSpeed"), PeJson::Integer(10))
+        .unwrap();
     let actions = link.resp.change(&program, update, link.now).unwrap();
     link.publish(actions);
     let updates = link.updates();
@@ -1026,8 +1098,9 @@ fn a_set_is_announced_to_the_subscribers() {
         .init
         .subscribe(&ResourceGet::new(program.clone()), link.now);
     link.call(made);
-    let update =
-        PartialUpdate::new().with(pointer("/pitchEnvelope/levels/3"), PeValue::Integer(99));
+    let update = PartialUpdate::new()
+        .with(pointer("/pitchEnvelope/levels/3"), PeJson::Integer(99))
+        .unwrap();
     let made = link
         .init
         .set(&ResourceSet::partial(program, update), link.now);
@@ -1039,7 +1112,12 @@ fn a_set_is_announced_to_the_subscribers() {
         panic!("not opaque");
     };
     assert_eq!(
-        opaque.json().as_object().unwrap().get("pitchEnvelope"),
+        opaque
+            .json()
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .get("pitchEnvelope"),
         Some(&json(r#"{"rates":[94,67,95,60],"levels":[50,50,50,99]}"#))
     );
 }
@@ -1165,7 +1243,7 @@ fn a_subscription_the_entry_does_not_allow_is_refused() {
     ));
 }
 
-fn subscribed_script() -> (Script, SubscribeId) {
+pub(super) fn subscribed_script() -> (Script, SubscribeId) {
     let list = PeResourceList::new().with(
         ResourceEntry::new(PeResource::LocalOn)
             .unwrap()
@@ -1187,7 +1265,7 @@ fn subscribed_script() -> (Script, SubscribeId) {
     (script, subscribe_id)
 }
 
-fn update(command: PeUpdateCommand, id: &SubscribeId) -> PeSubscription {
+pub(super) fn update(command: PeUpdateCommand, id: &SubscribeId) -> PeSubscription {
     PeSubscription::Update {
         command,
         subscribe_id: id.clone(),
@@ -1197,7 +1275,7 @@ fn update(command: PeUpdateCommand, id: &SubscribeId) -> PeSubscription {
     }
 }
 
-fn sent_gets(script: &Script) -> usize {
+pub(super) fn sent_gets(script: &Script) -> usize {
     script
         .sent
         .iter()
@@ -1295,37 +1373,6 @@ fn an_update_for_an_unknown_subscription_is_answered_with_400() {
         _ => None,
     });
     assert_eq!(reply, Some(PeStatus::BadRequest));
-}
-
-// M2-103 §5.3: a device with a count of requests at once is not sent more Subscription
-// messages than that before it replies.
-#[test]
-fn an_update_waits_for_the_peers_count_of_requests() {
-    let mut link = Link::new(store(), 256);
-    let made = link.init.subscribe(&get(PeResource::ChannelList), link.now);
-    link.call(made);
-    // The Initiator said it takes four at once: four updates go out without a reply
-    // and the fifth is not sent.
-    let mut events = Vec::new();
-    let mut sends = 0;
-    for n in 1..=5 {
-        let data = PeData::ChannelList(PeChannelList::new(vec![channel(n, "Changing")]));
-        let actions = link
-            .resp
-            .publish(&target(PeResource::ChannelList), data, link.now)
-            .unwrap();
-        for action in actions {
-            match action {
-                ResponderAction::Send(_) => sends += 1,
-                ResponderAction::Event(e) => events.push(e),
-            }
-        }
-    }
-    assert_eq!(sends, 4);
-    assert!(matches!(
-        events.as_slice(),
-        [ResponderEvent::UpdateNotSent { .. }]
-    ));
 }
 
 // M2-103 §11.2: a failure in reply to a Subscription message may end the

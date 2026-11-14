@@ -3055,7 +3055,6 @@ dependencies = [
  "loom",
  "thiserror 2.0.21",
  "thread-priority",
- "tutti-fixtures",
  "windows",
 ]
 

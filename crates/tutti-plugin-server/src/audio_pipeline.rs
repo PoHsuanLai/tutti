@@ -608,14 +608,14 @@ fn block_midi(midi: &[WireMidi], frames: usize, out: &mut [UmpAt; MIDI_STACK_CAP
         frames > 0 || midi.is_empty(),
         "a process block of 0 frames carries MIDI it cannot place"
     );
+    if frames == 0 {
+        return 0;
+    }
     let block = Samples(frames);
-    let last = frames.saturating_sub(1);
     let mut n = 0;
     for e in midi.iter().take(MIDI_STACK_CAPACITY) {
-        if let Some(at) = Offset::new((e.offset as usize).min(last), block) {
-            out[n] = (at, e.ump);
-            n += 1;
-        }
+        out[n] = (Offset::clamped(e.offset, block), e.ump);
+        n += 1;
     }
     n
 }

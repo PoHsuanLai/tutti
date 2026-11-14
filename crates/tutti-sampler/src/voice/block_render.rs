@@ -286,7 +286,7 @@ fn the_block_read_is_the_same_at_any_block_length() {
                 apply(&mut walk, e);
                 changes
                     .push(
-                        Offset::new(k * 64, Samples(256)).expect("inside the block"),
+                        Offset::new(Samples(k * 64), Samples(256)).expect("inside the block"),
                         walk.transport(),
                     )
                     .expect("a change per piece");

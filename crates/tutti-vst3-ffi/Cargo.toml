@@ -23,6 +23,7 @@ conformance = []
 # The editor's sizes, which name their unit (`dpi::Size`).
 dpi.workspace = true
 libloading.workspace = true
+thiserror.workspace = true
 parking_lot = "0.13"
 crossbeam-queue = "0.3"
 arrayvec = "0.7"

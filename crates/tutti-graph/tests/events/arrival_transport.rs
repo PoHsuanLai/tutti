@@ -207,17 +207,18 @@ impl Rig {
                 None => true,
                 Some(&(f, t, rate)) => {
                     let gap = piece.frame.get() - f;
+                    let span = Samples(usize::try_from(gap).unwrap());
                     // The newest piece rolled forward `gap` frames, through
                     // the public walk.
                     let rolled = Env {
                         frame: Frame::new(f),
                         sample_rate: rate,
-                        block_len: Samples(gap as usize + 1),
+                        block_len: Samples(span.0 + 1),
                         transport: t,
                         changes: TransportChanges::NONE,
                         play: tutti_graph::PlayClock::ZERO,
                     }
-                    .transport_at(Offset::new(gap as usize, Samples(gap as usize + 1)).unwrap());
+                    .transport_at(Offset::of(span, Samples(span.0 + 1)));
                     rate != env.sample_rate
                         || rolled != piece.transport
                         || (start == Offset::ZERO
@@ -278,7 +279,7 @@ fn end_of(e: &Env) -> TransportPosition {
         block_len: Samples(e.block_len.get() + 1),
         ..*e
     };
-    longer.transport_at(Offset::new(e.block_len.get(), longer.block_len).unwrap())
+    longer.transport_at(Offset::of(e.block_len, longer.block_len))
 }
 
 /// Mostly a continuing roll, a `scene` every `every` blocks.
@@ -303,7 +304,7 @@ fn rolling(beat: f64) -> TransportPosition {
 /// change inside the block, a 40-frame loop starting at the block, the loop
 /// continued from where it stood, a stop, and recording.
 fn scene(b: usize, n: usize, prev: Option<&Env>) -> (TransportPosition, TransportChanges) {
-    let at = |i: usize| Offset::new(i, Samples(n)).expect("inside");
+    let at = |i: usize| Offset::of(Samples(i), Samples(n));
     let mut changes = TransportChanges::NONE;
     let t = match b % 7 {
         0 => prev.map_or(rolling(1.0), end_of),
@@ -330,7 +331,7 @@ fn scene(b: usize, n: usize, prev: Option<&Env>) -> (TransportPosition, Transpor
         ),
         // The loop, picked up at the previous block's last frame.
         4 => prev.map_or(rolling(2.0), |p| {
-            p.transport_at(Offset::new(p.block_len.get() - 1, p.block_len).expect("last"))
+            p.transport_at(Offset::of(Samples(p.block_len.get() - 1), p.block_len))
         }),
         5 => TransportPosition::new(false, Bpm::of(100.0), Beat(3.0), None),
         _ => rolling(32.0 + b as f64).with_recording(true),

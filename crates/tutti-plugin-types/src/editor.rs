@@ -474,7 +474,7 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn a_content_scale_keeps_the_range_contract() {
-        tutti_fixtures::check_range_contract(&tutti_fixtures::RangeContract {
+        let c = tutti_fixtures::RangeContract {
             new: ContentScale::new,
             get: ContentScale::get,
             of: None,
@@ -488,7 +488,9 @@ mod tests {
                 f64::NEG_INFINITY,
                 f64::MIN_POSITIVE / 2.0,
             ],
-        });
+        };
+        tutti_fixtures::check_range_contract(&c);
+        tutti_fixtures::check_range_serde(&c);
     }
 
     /// **A size crosses between units at the scale, rounding to the nearest

@@ -180,11 +180,19 @@ pub enum MidiEvent {
     /// keeps the motion it had, and the project's tempo and meter are published
     /// again if the follower had changed them.
     ClockUnfollowed,
-    /// The transport refused commands a followed MIDI clock asked of it, this
+    /// The transport refused commands a followed MIDI clock or Machine Control asked of it, this
     /// many in one update: its list of timed commands was full. Nothing was
     /// applied for them (the source says its position again with its next
     /// message), and each is logged.
     ClockCommandsRefused(u64),
+    /// A Machine Control command addressed to the session that it does not act
+    /// on ([`Midi::follow_machine_control`](crate::Midi::follow_machine_control)):
+    /// record, shuttle, eject, a READ, a speed other than play speed and the
+    /// rest the transport has no counterpart for.
+    MachineControlIgnored(tutti_midi_protocol::MmcCommand),
+    /// The session stopped following MIDI Machine Control
+    /// ([`Midi::unfollow_machine_control`](crate::Midi::unfollow_machine_control)).
+    MachineControlUnfollowed,
     /// The OS watch for MIDI devices ended on its own (the reason is the
     /// message): the device list is frozen at what it last saw and no further
     /// hot-plug is reported. Reported once.

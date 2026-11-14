@@ -10,7 +10,7 @@ use support::rig::{Rig, timgm6mb};
 use tutti_fixtures::sf2::generator;
 use tutti_ump::{Bank, CCNumber, MidiChannel, U7, Voice2};
 
-use tutti_fixtures::{RangeContract, check_range_contract};
+use tutti_fixtures::{RangeContract, check_range_contract, check_range_serde};
 use tutti_graph::{Node, Prepare};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Error, Polyphony, Settings, SoundFontUnit};
@@ -119,13 +119,15 @@ fn a_polyphony_keeps_the_range_checked_shape() {
             c.0.get()
         }
     }
-    check_range_contract(&RangeContract {
+    let c = RangeContract {
         new: |raw| Polyphony::new(raw).map(Checked),
         get: |c| c.0.get(),
         of: Some(|raw| Checked(Polyphony::of(raw))),
         valid: &[1, 64, Polyphony::MAX],
         invalid: &[0, Polyphony::MAX + 1, usize::MAX],
-    });
+    };
+    check_range_contract(&c);
+    check_range_serde(&c);
 }
 
 #[test]
@@ -179,6 +181,7 @@ fn pitch_of_key_69(rig: &mut Rig) -> usize {
 /// Program Change would: a preset of bank 2 and one of the percussion bank
 /// sound as themselves, and a preset that is not MIDI's is refused and leaves
 /// the channel where it was.
+/// Spec: sf2.pdta.phdr.bank-program.unplayable, sf2.pdta.phdr.bank.percussion
 #[test]
 fn select_applies_a_presets_bank_and_program() {
     let font = octave_font();
@@ -400,6 +403,8 @@ fn a_pan_change_on_a_sounding_note_ramps() {
 }
 
 // Arm 0x40 (hold pedal): 64 and above holds, below does not.
+/// Sustain is down from 64 and holds a released note until it lifts.
+/// Spec: sf2.midi.cc64.sustain-active, sf2.midi.cc64.sustain-holds
 #[test]
 fn cc_64_holds_released_notes_until_the_pedal_lifts() {
     let ring = |pedal: u8| {
@@ -433,6 +438,8 @@ fn registered(index: u8, msb: u8, lsb: u8) -> Voice2 {
 
 // The arm for Registered Controller 0 (RPN 0, pitch bend sensitivity:
 // semitones, then cents).
+/// RPN 0 sets the bend range the pitch wheel modulator scales by.
+/// Spec: sf2.mod.default.10, sf2.mod.src.pitchWheelSensitivity
 #[test]
 fn registered_controller_0_sets_the_pitch_bend_range() {
     let default = crossings(|_| {}, BEND_MAX) as f64;
@@ -644,6 +651,8 @@ fn two_bank_soundfont() -> Arc<SoundFont> {
 }
 
 // Bank Select is held until the next Program Change (M1 p.13).
+/// A Bank Select does nothing until the next Program Change applies it.
+/// Spec: sf2.midi.cc0.bank-select
 #[test]
 fn bank_select_is_held_until_the_program_change() {
     let font = two_bank_soundfont();
@@ -675,6 +684,8 @@ fn bank_select_is_held_until_the_program_change() {
 
 // A Program Change's bank (the translator puts a MIDI 1.0 Bank Select there)
 // selects the bank, by its MSB.
+/// A Program Change's bank selects the bank the program comes from.
+/// Spec: sf2.midi.cc0.bank-select
 #[test]
 fn a_program_changes_bank_selects_the_bank() {
     let font = two_bank_soundfont();
@@ -700,6 +711,8 @@ fn a_program_changes_bank_selects_the_bank() {
 
 // The region's velocity range, through the public synthesizer: the loud zone
 // answers 0 to 63.
+/// A zone answers the velocities of its range and finds no region one past it.
+/// Spec: sf2.gen.velRange
 #[test]
 fn a_region_answers_only_the_velocities_of_its_range() {
     let font = two_bank_soundfont();
@@ -716,6 +729,8 @@ fn a_region_answers_only_the_velocities_of_its_range() {
 // cents, which no zero-crossing count resolves. The strongest claim here is
 // that the controller changes the render and a different value changes it
 // differently.
+/// Controller 1 and its fine byte drive the vibrato depth.
+/// Spec: sf2.mod.default.4
 #[test]
 fn cc_1_and_33_change_the_vibrato() {
     let render = |setup: fn(&mut Rig)| {
@@ -736,6 +751,8 @@ fn cc_1_and_33_change_the_vibrato() {
 
 // Arm 0x78 (all sound off) against 0x7B (all notes off): the first cuts, the
 // second releases into the envelope.
+/// All sound off cuts a note at once and all notes off lets it ring out.
+/// Spec: sf2.midi.cc120.all-sound-off, sf2.midi.cc123.all-notes-off
 #[test]
 fn cc_120_cuts_and_cc_123_releases() {
     let mut cut = violin(|_| {});
@@ -757,6 +774,8 @@ fn cc_120_cuts_and_cc_123_releases() {
 
 // Arm 0x79 (reset all controllers): the expression comes back to 127, and the
 // pitch bend to none.
+/// Reset all controllers returns the expression to full.
+/// Spec: sf2.midi.cc121.reset-controllers
 #[test]
 fn cc_121_resets_the_expression() {
     let mut synthesizer = dry();
@@ -784,6 +803,8 @@ fn an_unfollowed_controller_leaves_the_note_sounding() {
 // The font: preset 0 has bank 300 (unplayable) and a loud zone; preset 1 is
 // bank 0, program 3 and silent (144 dB down). A channel on bank 0, program 0
 // names nothing, so it falls back, and must land on the silent preset 1.
+/// A preset with a bank or program outside MIDI is never the one that plays.
+/// Spec: sf2.pdta.phdr.bank-program.unplayable
 #[test]
 fn an_unplayable_preset_is_never_chosen() {
     use support::font::{Inst, Preset, font};
@@ -817,6 +838,8 @@ fn an_unplayable_preset_is_never_chosen() {
 
 // A font none of whose presets is playable is refused, not built into a unit
 // that is silent or plays what the file says cannot be played.
+/// A font with no playable preset is refused.
+/// Spec: sf2.pdta.phdr.bank-program.unplayable
 #[test]
 fn a_font_with_nothing_playable_is_refused() {
     use support::font::{Inst, Preset, font};
@@ -846,6 +869,8 @@ fn a_font_with_nothing_playable_is_refused() {
 
 // SF2 2.04 section 7.2: of two presets with one bank and program, the first in
 // the PHDR chunk is the active one.
+/// Of two presets with one bank and program the first in the list is the active one.
+/// Spec: sf2.pdta.phdr.bank-program.duplicate
 #[test]
 fn the_first_of_two_presets_with_one_bank_and_program_is_active() {
     use support::font::{Inst, Preset, font};

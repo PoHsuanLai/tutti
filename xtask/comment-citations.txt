@@ -1,7 +1,6 @@
 2 Cargo.toml
 1 crates/arc-lend/src/lib.rs
 1 crates/tutti-au-host/tests/render/au_process_no_alloc.rs
-6 crates/tutti/Cargo.toml
 1 crates/tutti-clap-ffi/src/events.rs
 1 crates/tutti-clap-host/src/events.rs
 1 crates/tutti-clap-host/src/instance/controller.rs
@@ -18,9 +17,6 @@
 1 crates/tutti-engine/tests/render/tempo_steps.rs
 1 crates/tutti-engine/tests/rt_no_alloc_engine.rs
 1 crates/tutti-engine/tests/support/mod.rs
-1 crates/tutti/examples/headless_modulation.rs
-1 crates/tutti/examples/plugin_host.rs
-1 crates/tutti/examples/plugin_midi_export.rs
 1 crates/tutti-export/src/graph.rs
 1 crates/tutti-export/src/render/driver.rs
 1 crates/tutti-graph/src/builder.rs

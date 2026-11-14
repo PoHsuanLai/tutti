@@ -56,7 +56,6 @@ loom = "0.7"
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }
-tutti-fixtures = { path = "../../testing/tutti-fixtures" }
 
 # `tests/spin_starvation.rs` (an ignored probe) pins its threads to one core
 # and sets their scheduling policy: `sched_setaffinity`, `pthread_setschedparam`.

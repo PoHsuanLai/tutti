@@ -71,10 +71,13 @@ members = [
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
+# The pinned toolchain's minor (`rust-toolchain.toml`); the two move together.
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/tutti-audio/tutti"
 
+# A doc link breaks silently when its target goes private (rustdoc renders it
+# as plain text), so both are errors.
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
 private_intra_doc_links = "deny"
@@ -100,6 +103,7 @@ dpi = "0.1.2"
 keyboard-types = { version = "0.8.3", default-features = false }
 rgb = { version = "0.8.53", default-features = false }
 
+# No `html_reports` feature: criterion 0.8 builds its HTML report regardless.
 criterion = "0.8"
 
 winnow = { version = "1", default-features = false, features = ["alloc", "binary"] }
@@ -112,6 +116,8 @@ mdns-sd = "0.21.7"
 # NFC composition for text written into UMP messages (M2-104 section 1.8).
 unicode-normalization = { version = "0.1", default-features = false }
 coremidi = "0.9"
+# `coremidi` does not wrap `MIDISourceCreateWithProtocol` or the UMP endpoint
+# classes; these bindings reach them, at the versions `coremidi` already pulls.
 coremidi-sys = "3.2"
 core-foundation = "0.10"
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
@@ -121,6 +127,7 @@ objc2-core-midi = { version = "0.3", default-features = false, features = ["std"
 # Release codegen with line tables, for a sampling profiler:
 #   cargo build -p tutti-nodes --profile profiling --bench engine_render
 #   samply record target/profiling/deps/engine_render-<hash> --bench
+# Cargo reads `[profile]` only in the root manifest, so profiles live here.
 [profile.profiling]
 inherits = "release"
 debug = "line-tables-only"

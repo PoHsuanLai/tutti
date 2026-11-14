@@ -1252,7 +1252,7 @@ fn a_plugin_that_stops_answering_is_declared_hung_with_recovery_off() {
         matches!(
             cause,
             PluginFailure::Terminated {
-                reason: TerminationReason::Hung { .. }
+                reason: tutti_plugin_types::TerminationReason::Hung { .. }
             }
         ),
         "{cause:?}"

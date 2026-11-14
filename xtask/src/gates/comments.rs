@@ -18,14 +18,12 @@
 //! - a comment line that opens with `Mutation:`;
 //! - `CLAUDE.md`.
 //!
-//! [`BASELINE`] holds the count each file had when the gate began. A file
-//! fails when it holds more than its baseline (a file not listed has 0). A
-//! file below its baseline passes, and the report says how far the baseline
-//! can be lowered.
+//! [`BASELINE`] holds the count each file had when the gate began, settled by
+//! the shared [ratchet](super::ratchet).
 
 use super::lex::comments;
+use super::ratchet::{self, Found, Wording};
 use super::{Report, Tree};
-use std::collections::BTreeMap;
 
 /// `<count> <path>` lines: each file's citations when the gate began.
 pub(crate) const BASELINE: &str = "xtask/comment-citations.txt";
@@ -168,34 +166,17 @@ fn comment_text(path: &str, raw: String) -> Option<String> {
     }
 }
 
-fn parse_baseline(text: &str) -> Result<BTreeMap<String, usize>, String> {
-    let mut map = BTreeMap::new();
-    for (n, line) in text.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (count, path) = line
-            .split_once(' ')
-            .and_then(|(c, p)| Some((c.parse::<usize>().ok()?, p.trim())))
-            .ok_or_else(|| format!("{BASELINE}:{}: not `<count> <path>`: {line}", n + 1))?;
-        map.insert(path.to_owned(), count);
-    }
-    Ok(map)
-}
+const WORDING: Wording = Wording {
+    gate: "check-comments",
+    baseline: BASELINE,
+    noun: "citations",
+    headline: "a comment gained a citation; state the fact instead",
+};
 
 pub(super) fn check(tree: &dyn Tree) -> Report {
-    let mut r = Report::default();
-    let baseline = match tree.read(BASELINE).map(|t| parse_baseline(&t)) {
-        Some(Ok(b)) => b,
-        Some(Err(e)) => {
-            r.fail(format!("check-comments: FAIL: {e}"));
-            return r;
-        }
-        None => {
-            r.fail(format!("check-comments: FAIL: {BASELINE} is missing"));
-            return r;
-        }
+    let baseline = match ratchet::load(tree, &WORDING) {
+        Ok(b) => b,
+        Err(r) => return r,
     };
     let mut paths: Vec<String> = ROOTS
         .iter()
@@ -205,8 +186,7 @@ pub(super) fn check(tree: &dyn Tree) -> Report {
     paths.extend(ROOT_TOML.iter().map(|p| (*p).to_owned()));
     paths.sort();
     paths.dedup();
-    let mut over = Vec::new();
-    let mut slack = 0;
+    let mut found = Vec::new();
     for path in paths {
         let Some(text) = tree.read(&path).and_then(|raw| comment_text(&path, raw)) else {
             continue;
@@ -217,31 +197,9 @@ pub(super) fn check(tree: &dyn Tree) -> Report {
                 sites.push(format!("    {path}:{}: cites {what}", n + 1));
             }
         }
-        let allowed = baseline.get(&path).copied().unwrap_or(0);
-        if sites.len() > allowed {
-            over.push(format!(
-                "  {path}: {} citations, baseline {allowed}",
-                sites.len()
-            ));
-            over.extend(sites);
-        } else {
-            slack += allowed - sites.len();
-        }
+        found.push(Found { path, sites });
     }
-    if over.is_empty() {
-        r.say("check-comments: OK");
-    } else {
-        r.fail("check-comments: FAIL (a comment gained a citation; state the fact instead):");
-        for line in over {
-            r.fail(line);
-        }
-    }
-    if slack > 0 {
-        r.say(format!(
-            "check-comments: {BASELINE} can drop by {slack}; lower it to the current counts"
-        ));
-    }
-    r
+    ratchet::settle(&WORDING, &baseline, found)
 }
 
 #[cfg(test)]
@@ -311,6 +269,7 @@ mod tests {
             r.out,
             [
                 "check-comments: OK",
+                "check-comments: 1 citations in 1 baseline files (3 total in xtask/comment-citations.txt)",
                 "check-comments: xtask/comment-citations.txt can drop by 2; lower it to the current counts",
             ]
         );

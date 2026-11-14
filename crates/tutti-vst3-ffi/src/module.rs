@@ -29,21 +29,14 @@ type GetPluginFactoryFn = unsafe extern "system" fn() -> *mut IPluginFactory;
 pub const HOST_NAME: &str = "vst3-host";
 
 /// Why a module could not be opened.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{stage}: {reason}")]
 pub struct LoadError {
     /// Which loading step failed.
     pub stage: LoadStage,
     /// Human-readable cause, for logs rather than matching.
     pub reason: String,
 }
-
-impl std::fmt::Display for LoadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.stage, self.reason)
-    }
-}
-
-impl std::error::Error for LoadError {}
 
 /// Why a plugin could not be created from a class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

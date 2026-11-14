@@ -77,8 +77,9 @@ impl core::fmt::Display for LfoClock {
 /// ([`UnitParam::Rate`], in [`Hz`]), the one route to them. Both are read
 /// per frame, so a driven port's every frame is heard. A beat-synced node's
 /// span is its [`LfoClock`], fixed at build. A fork starts from the values
-/// last set through the set, at phase zero. It is a generator ([`Tail::Unbounded`]), so
-/// the executor never skips it.
+/// last set through the set, at phase zero. It is a source with no ring-out
+/// ([`Tail::None`]): what it emits is a function of the clock, so a render's end
+/// ends it, and the executor never skips a node with no inputs.
 ///
 /// **Arrival.** It has no inputs, so its compiled arrival is zero by
 /// construction and the beat it reads is its block's own; a consumer behind a
@@ -240,7 +241,7 @@ impl<M: Modulator + Send + 'static> Node for ModulatorNode<M> {
     fn shape(&self) -> Shape {
         Shape::source_unassigned(ChannelLayout::MONO)
             .with_cost(tutti_graph::Cost::Moderate)
-            .with_tail(Tail::Unbounded)
+            .with_tail(Tail::None)
             .with_param_addrs(self.declared_ports().as_slice())
     }
 
@@ -461,11 +462,10 @@ mod tests {
         assert_param_fork(synced);
     }
 
-    /// No inputs, one output, never skipped: a generator's tail is
-    /// unbounded, or the executor would stop calling it once its (absent)
-    /// inputs were silent.
+    /// No inputs, one output, no ring-out: what a clock-driven source emits
+    /// ends with the render, so a bounce adds nothing past its span for it.
     #[test]
-    fn a_generator_with_no_inputs_is_never_skipped() {
+    fn a_source_has_no_ring_out() {
         for lfo in [
             LfoNode::new(LfoShape::Sine),
             LfoNode::new(LfoShape::Sine).with_beat_sync(BeatsPerCycle::of(1.0)),
@@ -473,7 +473,7 @@ mod tests {
             let shape = lfo.shape();
             assert_eq!(shape.audio_in().count(), 0);
             assert_eq!(shape.audio_out().count(), 1);
-            assert_eq!(shape.tail, Tail::Unbounded);
+            assert_eq!(shape.tail, Tail::None);
         }
     }
 

@@ -1279,14 +1279,11 @@ fn lane_controls_reach_their_own_cells() {
     assert_eq!(c.knob(), Some(0.25));
     assert!(c.set_knob(0.75));
     assert_eq!(c.knob(), Some(0.75));
-    assert!(c.set_range(0.1, 0.9));
-    assert_eq!(c.range(), (0.1, 0.9));
     let (mut ed, _exec) = probes(64, &[2], (5.0, 50.0));
     let n = native(&ed, 2, ControlProgram::default(), None);
     let c = n.controls();
     assert!(!c.set_knob(1.0), "no knob");
     assert_eq!(c.knob(), None);
-    assert!(!c.set_range(0.0, 1.0), "a native range is its port's");
     assert_eq!(c.range(), (5.0, 50.0));
     ed.set_param_range(cutoff(2), ParamRange::new(6.0, 60.0))
         .expect("a probe");

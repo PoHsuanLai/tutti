@@ -140,7 +140,7 @@ impl Freeverb {
     }
 
     /// Empties every filter line: the next block starts from silence.
-    pub fn mute(&mut self) {
+    fn mute(&mut self) {
         for cf in self.cfs_l.iter_mut() {
             cf.mute();
         }

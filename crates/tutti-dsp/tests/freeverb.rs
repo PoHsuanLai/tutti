@@ -52,18 +52,6 @@ fn the_lines_scale_with_the_rate() {
     assert!(left[2232].abs() > 0.01);
 }
 
-/// `mute` empties the lines: after it, the response to an impulse is the same
-/// as a fresh reverb's, bit for bit (a property of the state, not a render
-/// compared with another implementation's).
-#[test]
-fn mute_returns_the_reverb_to_a_fresh_state() {
-    let mut used = Freeverb::new(RATE);
-    impulse(&mut used, 5_000);
-    used.mute();
-    let mut fresh = Freeverb::new(RATE);
-    assert_eq!(impulse(&mut used, 4_000), impulse(&mut fresh, 4_000));
-}
-
 /// The ring-out bound covers the response: the last frame of the wet signal at
 /// or above a thousandth (-60 dB) of its own peak is within it.
 #[test]

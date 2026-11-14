@@ -56,7 +56,7 @@
 //!     streams: StreamLimit::new(4).unwrap(),
 //!     bytes: BufferLimit::new(1 << 16).unwrap(),
 //! });
-//! let (peer, now) = (Muid::new(7).unwrap(), Instant::now());
+//! let (peer, now) = (Muid::of(7), Instant::now());
 //! let mut done = None;
 //! for chunk in chunks {
 //!     let step = inbox.push(peer, PeMessageKind::SET_INQUIRY, chunk, PeFlowControl::Off, now);
@@ -88,9 +88,7 @@ pub use chunk::{
     ChunkNo, ChunkPosition, ChunkTotal, PE_MAX_CHUNK_DATA_LEN, PeChunk, PeChunkError, PeRequestId,
     split_message,
 };
-pub use flow::{
-    PE_TIMEOUT, PeAnswer, PeMessageKind, PeSignal, PeTerminator, PeTransaction, TimeoutWait,
-};
+pub use flow::{PE_TIMEOUT, PeAnswer, PeMessageKind, PeSignal, PeTerminator, PeTransaction};
 pub use header::{
     PE_MAX_HEADER_LEN, PeEncoding, PeEndedBy, PeHeader, PeHeaderError, PeHeaderTooLong, PePage,
     PeReply, PeRequest, PeStatus, PeSubscription, PeUpdateCommand,

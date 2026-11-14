@@ -1,11 +1,12 @@
+use super::super::testing::{OTHER, OURS, PEER, sent};
+use super::super::{
+    DataControl, ProcessFeatures, ReportScope, SUB_ID2_MESSAGE_REPORT_INQUIRY,
+    SUB_ID2_PROCESS_CAPABILITIES_INQUIRY,
+};
 use super::super::{DetailsData, InquiryTarget, ProfileChannels, ProfileId, SpecificData};
 use super::super::{Unread, UnreadReason};
 use super::*;
 use tutti_ump::ManufacturerId;
-
-fn muid(raw: u32) -> Muid {
-    Muid::new(raw).expect("a MUID")
-}
 
 fn identity() -> DeviceIdentity {
     DeviceIdentity {
@@ -16,10 +17,6 @@ fn identity() -> DeviceIdentity {
         revision: [U7::of(5), U7::of(6), U7::of(7), U7::of(8)],
     }
 }
-
-const OURS: u32 = 0x0100_0001;
-const PEER: u32 = 0x0200_0002;
-const OTHER: u32 = 0x0300_0003;
 
 /// A device whose entropy is `draws`, then a counter that never repeats.
 fn device(
@@ -44,10 +41,6 @@ fn device(
     (device, actions, now)
 }
 
-fn header(source: u32) -> CiHeader {
-    CiHeader::new(muid(source))
-}
-
 fn data(path: u8, block: Option<u8>) -> DiscoveryData {
     let mut data = DiscoveryData::new(identity(), CiCategories::empty(), MaxSysexSize::of(128));
     data.output_path_id = U7::of(path);
@@ -57,50 +50,40 @@ fn data(path: u8, block: Option<u8>) -> DiscoveryData {
 
 fn reply(from: u32, to: u32, block: Option<u8>) -> Decoded {
     Decoded::Message(CiMessage::DiscoveryReply {
-        header: header(from),
-        to: muid(to),
+        header: CiHeader::new(Muid::of(from)),
+        to: Muid::of(to),
         data: data(0, block),
     })
 }
 
 fn discovery(from: u32, path: u8) -> Decoded {
     Decoded::Message(CiMessage::Discovery {
-        header: header(from),
+        header: CiHeader::new(Muid::of(from)),
         data: data(path, None),
     })
 }
 
 fn invalidate(from: u32, target: u32) -> Decoded {
     Decoded::Message(CiMessage::InvalidateMuid {
-        header: header(from),
-        target: muid(target),
+        header: CiHeader::new(Muid::of(from)),
+        target: Muid::of(target),
     })
-}
-
-fn sends(actions: &[CiAction]) -> Vec<&CiMessage> {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            CiAction::Send(m) => Some(m),
-            _ => None,
-        })
-        .collect()
 }
 
 #[test]
 fn a_new_device_sends_a_discovery_from_its_muid_to_everyone_on_output_path_0() {
     // §4.1, §5.5, §5.5.4.
     let (device, actions, now) = device([OURS]);
-    assert_eq!(device.muid(), muid(OURS));
-    let [CiMessage::Discovery { header, data }] = sends(&actions)[..] else {
+    assert_eq!(device.muid(), Muid::of(OURS));
+    let [CiMessage::Discovery { header, data }] = sent(&actions)[..] else {
         panic!("one Discovery, got {actions:?}");
     };
-    assert_eq!(header.source, muid(OURS));
+    assert_eq!(header.source, Muid::of(OURS));
     assert_eq!(header.device_id, CiDeviceId::FunctionBlock);
     assert_eq!(data.output_path_id, U7::of(0));
     assert_eq!(data.max_sysex_size, MaxSysexSize::of(512));
     assert_eq!(
-        sends(&actions)[0].destination(),
+        sent(&actions)[0].destination(),
         Destination::Broadcast,
         "§3.3.3"
     );
@@ -129,8 +112,8 @@ fn the_discovery_window_is_three_seconds_and_closes_once() {
 fn a_reply_to_our_discovery_finds_the_peer() {
     let (mut device, _, now) = device([OURS]);
     let actions = device.on_message(&reply(PEER, OURS, None), now);
-    assert_eq!(actions, vec![CiAction::Found(muid(PEER))]);
-    let peer = device.peer(muid(PEER)).expect("found");
+    assert_eq!(actions, vec![CiAction::Found(Muid::of(PEER))]);
+    let peer = device.peer(Muid::of(PEER)).expect("found");
     assert_eq!(peer.function_block(), None);
     assert_eq!(peer.discovery().identity, identity());
     assert_eq!(peer.product_instance_id(), None);
@@ -149,16 +132,16 @@ fn two_replies_with_one_muid_in_a_round_are_a_collision_invalidated_and_dropped(
     let (mut device, _, now) = device([OURS]);
     device.on_message(&reply(PEER, OURS, None), now);
     let actions = device.on_message(&reply(PEER, OURS, None), now);
-    let [CiMessage::InvalidateMuid { header, target }] = sends(&actions)[..] else {
+    let [CiMessage::InvalidateMuid { header, target }] = sent(&actions)[..] else {
         panic!("an Invalidate MUID, got {actions:?}");
     };
-    assert_eq!((header.source, *target), (muid(OURS), muid(PEER)));
-    assert!(actions.contains(&CiAction::Lost(muid(PEER))));
-    assert!(device.peer(muid(PEER)).is_none());
+    assert_eq!((header.source, *target), (Muid::of(OURS), Muid::of(PEER)));
+    assert!(actions.contains(&CiAction::Lost(Muid::of(PEER))));
+    assert!(device.peer(Muid::of(PEER)).is_none());
     // A third one is still a collision, not a fresh find.
     let again = device.on_message(&reply(PEER, OURS, None), now);
-    assert_eq!(sends(&again).len(), 1);
-    assert!(device.peer(muid(PEER)).is_none());
+    assert_eq!(sent(&again).len(), 1);
+    assert!(device.peer(Muid::of(PEER)).is_none());
 }
 
 #[test]
@@ -166,15 +149,15 @@ fn a_discovery_is_answered_to_its_sender_echoing_the_output_path_with_no_functio
     // §4.1, §5.6, §5.6.1, §5.6.2.
     let (mut device, _, now) = device([OURS]);
     let actions = device.on_message(&discovery(PEER, 9), now);
-    let [CiMessage::DiscoveryReply { header, to, data }] = sends(&actions)[..] else {
+    let [CiMessage::DiscoveryReply { header, to, data }] = sent(&actions)[..] else {
         panic!("a reply, got {actions:?}");
     };
-    assert_eq!(header.source, muid(OURS));
-    assert_eq!(*to, muid(PEER));
+    assert_eq!(header.source, Muid::of(OURS));
+    assert_eq!(*to, Muid::of(PEER));
     assert_eq!(data.output_path_id, U7::of(9));
     assert_eq!(data.function_block, None);
     assert_eq!(header.device_id, CiDeviceId::FunctionBlock);
-    assert_eq!(device.muid(), muid(OURS));
+    assert_eq!(device.muid(), Muid::of(OURS));
 }
 
 #[test]
@@ -183,15 +166,15 @@ fn a_discovery_with_our_muid_is_answered_by_option_b() {
     let (mut device, _, now) = device([OURS, 0x0500_0005]);
     let later = now + Duration::from_secs(1);
     let actions = device.on_message(&discovery(OURS, 0), later);
-    assert_eq!(device.muid(), muid(0x0500_0005));
+    assert_eq!(device.muid(), Muid::of(0x0500_0005));
     assert_eq!(
         actions[0],
         CiAction::MuidChanged {
-            old: muid(OURS),
-            new: muid(0x0500_0005)
+            old: Muid::of(OURS),
+            new: Muid::of(0x0500_0005)
         }
     );
-    let sent = sends(&actions);
+    let sent = sent(&actions);
     let [
         CiMessage::InvalidateMuid { header, target },
         CiMessage::Discovery { header: dh, .. },
@@ -199,9 +182,9 @@ fn a_discovery_with_our_muid_is_answered_by_option_b() {
     else {
         panic!("an Invalidate then a Discovery, got {actions:?}");
     };
-    assert_eq!(*target, muid(OURS));
-    assert_eq!(header.source, muid(0x0500_0005));
-    assert_eq!(dh.source, muid(0x0500_0005));
+    assert_eq!(*target, Muid::of(OURS));
+    assert_eq!(header.source, Muid::of(0x0500_0005));
+    assert_eq!(dh.source, Muid::of(0x0500_0005));
     assert!(
         !sent
             .iter()
@@ -217,8 +200,8 @@ fn a_discovery_with_our_muid_is_answered_by_option_b() {
 fn a_reply_from_our_muid_to_us_is_a_collision_on_us() {
     let (mut device, _, now) = device([OURS]);
     let actions = device.on_message(&reply(OURS, OURS, None), now);
-    assert!(matches!(actions[0], CiAction::MuidChanged { old, .. } if old == muid(OURS)));
-    assert_ne!(device.muid(), muid(OURS));
+    assert!(matches!(actions[0], CiAction::MuidChanged { old, .. } if old == Muid::of(OURS)));
+    assert_ne!(device.muid(), Muid::of(OURS));
     assert_eq!(device.peers().count(), 0);
 }
 
@@ -229,10 +212,10 @@ fn an_invalidate_of_our_muid_ends_everything_changes_it_and_discovers_again_with
     device.on_message(&reply(PEER, OURS, None), now);
     let actions = device.on_message(&invalidate(OTHER, OURS), now);
     assert!(
-        matches!(actions[0], CiAction::MuidChanged { old, new } if old == muid(OURS) && new != old)
+        matches!(actions[0], CiAction::MuidChanged { old, new } if old == Muid::of(OURS) && new != old)
     );
-    assert!(actions.contains(&CiAction::Lost(muid(PEER))));
-    let sent = sends(&actions);
+    assert!(actions.contains(&CiAction::Lost(Muid::of(PEER))));
+    let sent = sent(&actions);
     assert_eq!(sent.len(), 1, "only the new Discovery: {actions:?}");
     assert!(
         matches!(sent[0], CiMessage::Discovery { header, .. } if header.source == device.muid())
@@ -245,20 +228,20 @@ fn an_invalidate_of_a_peer_discards_it_and_sends_nothing() {
     let (mut device, _, now) = device([OURS]);
     device.on_message(&reply(PEER, OURS, None), now);
     let actions = device.on_message(&invalidate(OTHER, PEER), now);
-    assert_eq!(actions, vec![CiAction::Lost(muid(PEER))]);
-    assert!(device.peer(muid(PEER)).is_none());
+    assert_eq!(actions, vec![CiAction::Lost(Muid::of(PEER))]);
+    assert!(device.peer(Muid::of(PEER)).is_none());
     // A MUID nobody here knows changes nothing.
     assert!(
         device
             .on_message(&invalidate(OTHER, 0x0600_0006), now)
             .is_empty()
     );
-    assert_eq!(device.muid(), muid(OURS));
+    assert_eq!(device.muid(), Muid::of(OURS));
 }
 
 fn bytes_of(sub_id2: u8, source: u32, destination: [u8; 4]) -> Vec<u8> {
     let mut bytes = vec![0x7E, 0x7F, 0x0D, sub_id2, 0x02];
-    bytes.extend(muid(source).to_bytes());
+    bytes.extend(Muid::of(source).to_bytes());
     bytes.extend(destination);
     bytes.extend([0, 0, 0, 0, 0]);
     bytes
@@ -268,13 +251,13 @@ fn bytes_of(sub_id2: u8, source: u32, destination: [u8; 4]) -> Vec<u8> {
 fn a_message_to_us_we_do_not_support_is_nakked_with_0x01_naming_it() {
     // §5.3, Appendix E: an Inquiry: Property Exchange Capabilities (0x30) is not supported.
     let (mut device, _, now) = device([OURS]);
-    let decoded = CiMessage::decode(&bytes_of(0x30, PEER, muid(OURS).to_bytes()));
+    let decoded = CiMessage::decode(&bytes_of(0x30, PEER, Muid::of(OURS).to_bytes()));
     let actions = device.on_message(&decoded, now);
-    let [CiMessage::Nak { header, to, nak }] = sends(&actions)[..] else {
+    let [CiMessage::Nak { header, to, nak }] = sent(&actions)[..] else {
         panic!("a NAK, got {actions:?}");
     };
-    assert_eq!(header.source, muid(OURS));
-    assert_eq!(*to, muid(PEER));
+    assert_eq!(header.source, Muid::of(OURS));
+    assert_eq!(*to, Muid::of(PEER));
     assert_eq!(nak.nak_sub_id2, U7::of(0x30));
     assert_eq!(nak.status_code, Nak::STATUS_MESSAGE_NOT_SUPPORTED);
 }
@@ -283,10 +266,10 @@ fn a_message_to_us_we_do_not_support_is_nakked_with_0x01_naming_it() {
 fn a_malformed_message_to_us_is_nakked_with_0x41() {
     let (mut device, _, now) = device([OURS]);
     // A Discovery reply cut short.
-    let mut bytes = bytes_of(0x71, PEER, muid(OURS).to_bytes());
+    let mut bytes = bytes_of(0x71, PEER, Muid::of(OURS).to_bytes());
     bytes.truncate(13 + 3);
     let actions = device.on_message(&CiMessage::decode(&bytes), now);
-    let [CiMessage::Nak { nak, .. }] = sends(&actions)[..] else {
+    let [CiMessage::Nak { nak, .. }] = sent(&actions)[..] else {
         panic!("a NAK, got {actions:?}");
     };
     assert_eq!(nak.status_code, Nak::STATUS_MALFORMED);
@@ -295,7 +278,7 @@ fn a_malformed_message_to_us_is_nakked_with_0x41() {
 #[test]
 fn a_message_for_another_muid_or_for_everyone_is_never_nakked() {
     let (mut device, _, now) = device([OURS]);
-    let to_other = CiMessage::decode(&bytes_of(0x30, PEER, muid(OTHER).to_bytes()));
+    let to_other = CiMessage::decode(&bytes_of(0x30, PEER, Muid::of(OTHER).to_bytes()));
     assert!(device.on_message(&to_other, now).is_empty());
     let to_all = CiMessage::decode(&bytes_of(0x30, PEER, [0x7F; 4]));
     assert!(device.on_message(&to_all, now).is_empty());
@@ -308,15 +291,15 @@ fn an_ack_or_a_nak_is_never_nakked() {
     for sub in [0x7D, 0x7F] {
         // Too short to read as a body, so each decodes however it does: unread
         // or read, neither is answered.
-        let decoded = CiMessage::decode(&bytes_of(sub, PEER, muid(OURS).to_bytes()));
+        let decoded = CiMessage::decode(&bytes_of(sub, PEER, Muid::of(OURS).to_bytes()));
         assert!(device.on_message(&decoded, now).is_empty(), "{sub:#x}");
     }
     let unread = Decoded::Unread(Unread {
         device_id: 0x7F,
         sub_id2: 0x7D,
         version: 2,
-        source: Some(muid(PEER)),
-        destination: Some(Destination::Muid(muid(OURS))),
+        source: Some(Muid::of(PEER)),
+        destination: Some(Destination::Muid(Muid::of(OURS))),
         reason: UnreadReason::Malformed,
     });
     assert!(device.on_message(&unread, now).is_empty());
@@ -327,23 +310,27 @@ fn a_peer_with_a_function_block_is_asked_once_for_its_product_instance_id() {
     // §5.7: Inquiry: Endpoint, status 0x00, to a Function Block.
     let (mut device, _, now) = device([OURS]);
     let actions = device.on_message(&reply(PEER, OURS, Some(3)), now);
-    assert_eq!(actions[0], CiAction::Found(muid(PEER)));
-    let [CiMessage::EndpointInquiry { header, to, status }] = sends(&actions)[..] else {
+    assert_eq!(actions[0], CiAction::Found(Muid::of(PEER)));
+    let [CiMessage::EndpointInquiry { header, to, status }] = sent(&actions)[..] else {
         panic!("an inquiry, got {actions:?}");
     };
     assert_eq!(
         (header.source, *to, *status),
-        (muid(OURS), muid(PEER), EndpointStatus::ProductInstanceId)
+        (
+            Muid::of(OURS),
+            Muid::of(PEER),
+            EndpointStatus::ProductInstanceId
+        )
     );
     // A peer with no Function Block has no Endpoint to ask about.
     let none = device.on_message(&reply(OTHER, OURS, None), now);
-    assert!(sends(&none).is_empty());
+    assert!(sent(&none).is_empty());
 }
 
 fn id_reply(from: u32, to: u32, text: &str) -> Decoded {
     Decoded::Message(CiMessage::EndpointReply {
-        header: header(from),
-        to: muid(to),
+        header: CiHeader::new(Muid::of(from)),
+        to: Muid::of(to),
         info: EndpointInfo::ProductInstanceId(
             CiInstanceId::new(ProductInstanceId::new(text).unwrap()).unwrap(),
         ),
@@ -355,10 +342,10 @@ fn the_endpoint_reply_sets_the_peers_product_instance_id() {
     let (mut device, _, now) = device([OURS]);
     device.on_message(&reply(PEER, OURS, Some(0)), now);
     let actions = device.on_message(&id_reply(PEER, OURS, "SN-0042"), now);
-    assert_eq!(actions, vec![CiAction::Updated(muid(PEER))]);
+    assert_eq!(actions, vec![CiAction::Updated(Muid::of(PEER))]);
     assert_eq!(
         device
-            .peer(muid(PEER))
+            .peer(Muid::of(PEER))
             .unwrap()
             .product_instance_id()
             .map(ProductInstanceId::as_str),
@@ -382,7 +369,10 @@ fn an_endpoint_reply_nobody_asked_for_is_ignored() {
             .on_message(&id_reply(OTHER, OURS, "x"), now)
             .is_empty()
     );
-    assert_eq!(device.peer(muid(PEER)).unwrap().product_instance_id(), None);
+    assert_eq!(
+        device.peer(Muid::of(PEER)).unwrap().product_instance_id(),
+        None
+    );
 }
 
 #[test]
@@ -390,8 +380,8 @@ fn a_nak_of_the_endpoint_inquiry_leaves_the_id_unknown() {
     let (mut device, _, now) = device([OURS]);
     device.on_message(&reply(PEER, OURS, Some(0)), now);
     let nak = Decoded::Message(CiMessage::Nak {
-        header: header(PEER),
-        to: muid(OURS),
+        header: CiHeader::new(Muid::of(PEER)),
+        to: Muid::of(OURS),
         nak: Nak::new(U7::of(SUB_ID2_ENDPOINT_INQUIRY), Nak::STATUS_NAK),
     });
     assert!(device.on_message(&nak, now).is_empty(), "never answered");
@@ -401,7 +391,10 @@ fn a_nak_of_the_endpoint_inquiry_leaves_the_id_unknown() {
             .on_message(&id_reply(PEER, OURS, "late"), now)
             .is_empty()
     );
-    assert_eq!(device.peer(muid(PEER)).unwrap().product_instance_id(), None);
+    assert_eq!(
+        device.peer(Muid::of(PEER)).unwrap().product_instance_id(),
+        None
+    );
 }
 
 #[test]
@@ -410,16 +403,16 @@ fn an_endpoint_inquiry_to_us_is_nakked_for_we_have_no_id_to_give() {
     let (mut device, _, now) = device([OURS]);
     let inquiry = |to| {
         Decoded::Message(CiMessage::EndpointInquiry {
-            header: header(PEER),
-            to: muid(to),
+            header: CiHeader::new(Muid::of(PEER)),
+            to: Muid::of(to),
             status: EndpointStatus::ProductInstanceId,
         })
     };
     let actions = device.on_message(&inquiry(OURS), now);
-    let [CiMessage::Nak { to, nak, .. }] = sends(&actions)[..] else {
+    let [CiMessage::Nak { to, nak, .. }] = sent(&actions)[..] else {
         panic!("a NAK, got {actions:?}");
     };
-    assert_eq!(*to, muid(PEER));
+    assert_eq!(*to, Muid::of(PEER));
     assert_eq!(nak.nak_sub_id2, U7::of(0x72));
     assert_eq!(nak.status_code, Nak::STATUS_NAK);
     assert!(device.on_message(&inquiry(OTHER), now).is_empty());
@@ -439,7 +432,7 @@ fn a_new_muid_is_never_the_old_one_a_peer_or_reserved() {
     ]);
     device.on_message(&reply(PEER, OURS, None), now);
     device.on_message(&invalidate(OTHER, OURS), now);
-    assert_eq!(device.muid(), muid(0x0700_0007));
+    assert_eq!(device.muid(), Muid::of(0x0700_0007));
 }
 
 /// Appendix A.1.1: a Thru or merge loops this device's own Discovery back, under
@@ -448,13 +441,13 @@ fn a_new_muid_is_never_the_old_one_a_peer_or_reserved() {
 #[test]
 fn our_own_discovery_looped_back_is_an_echo_not_a_collision() {
     let (mut device, started, now) = device([OURS]);
-    let [CiMessage::Discovery { .. }] = sends(&started)[..] else {
+    let [CiMessage::Discovery { .. }] = sent(&started)[..] else {
         panic!("a Discovery at start, got {started:?}");
     };
-    let echo = Decoded::Message(sends(&started)[0].clone());
+    let echo = Decoded::Message(sent(&started)[0].clone());
     let actions = device.on_message(&echo, now + Duration::from_millis(5));
     assert!(actions.is_empty(), "an echo is ignored, got {actions:?}");
-    assert_eq!(device.muid(), muid(OURS));
+    assert_eq!(device.muid(), Muid::of(OURS));
 }
 
 /// The same echo of a Reply: this device's answer to a peer comes back addressed
@@ -463,13 +456,13 @@ fn our_own_discovery_looped_back_is_an_echo_not_a_collision() {
 fn our_own_reply_looped_back_is_an_echo_not_a_collision() {
     let (mut device, _, now) = device([OURS]);
     let answered = device.on_message(&discovery(PEER, 3), now);
-    let [CiMessage::DiscoveryReply { .. }] = sends(&answered)[..] else {
+    let [CiMessage::DiscoveryReply { .. }] = sent(&answered)[..] else {
         panic!("a Reply to the peer, got {answered:?}");
     };
-    let echo = Decoded::Message(sends(&answered)[0].clone());
+    let echo = Decoded::Message(sent(&answered)[0].clone());
     let actions = device.on_message(&echo, now + Duration::from_millis(5));
     assert!(actions.is_empty(), "an echo is ignored, got {actions:?}");
-    assert_eq!(device.muid(), muid(OURS));
+    assert_eq!(device.muid(), Muid::of(OURS));
 }
 
 fn piano() -> ProfileId {
@@ -482,9 +475,9 @@ fn on(
     to: u32,
     message: impl FnOnce(CiHeader, Muid) -> CiMessage,
 ) -> Decoded {
-    let mut header = header(source);
+    let mut header = CiHeader::new(Muid::of(source));
     header.device_id = device_id;
-    Decoded::Message(message(header, muid(to)))
+    Decoded::Message(message(header, Muid::of(to)))
 }
 
 #[test]
@@ -507,13 +500,13 @@ fn a_profile_inquiry_to_us_is_answered_on_its_address_with_both_lists_empty() {
                 to,
                 profiles,
             },
-        ] = sends(&actions)[..]
+        ] = sent(&actions)[..]
         else {
             panic!("one Reply, got {actions:?}");
         };
         assert_eq!(header.device_id, address);
-        assert_eq!(header.source, muid(OURS));
-        assert_eq!(*to, muid(PEER));
+        assert_eq!(header.source, Muid::of(OURS));
+        assert_eq!(*to, Muid::of(PEER));
         assert_eq!(*profiles, ProfileLists::none());
     }
 }
@@ -564,11 +557,11 @@ fn a_set_on_set_off_or_details_inquiry_to_us_is_nakked_0x04_with_the_profile_id(
     for (sub, message) in messages {
         let (mut device, _, now) = device([OURS]);
         let actions = device.on_message(&message, now);
-        let [CiMessage::Nak { header, to, nak }] = sends(&actions)[..] else {
+        let [CiMessage::Nak { header, to, nak }] = sent(&actions)[..] else {
             panic!("a NAK, got {actions:?}");
         };
         assert_eq!(header.device_id, channel, "{sub:#x}");
-        assert_eq!(*to, muid(PEER));
+        assert_eq!(*to, Muid::of(PEER));
         assert_eq!(nak.nak_sub_id2, U7::of(sub));
         assert_eq!(nak.status_code, Nak::STATUS_PROFILE_NOT_SUPPORTED);
         assert_eq!(nak.details.map(U7::get), [0x7E, 1, 2, 3, 4]);
@@ -603,12 +596,12 @@ fn what_an_initiator_reads_is_not_answered_by_the_management_core() {
             }
         }),
         Decoded::Message(CiMessage::ProfileEnabled {
-            header: header(PEER),
+            header: CiHeader::new(Muid::of(PEER)),
             profile: piano(),
             channels: ProfileChannels::BY_ADDRESS,
         }),
         Decoded::Message(CiMessage::ProfileAdded {
-            header: header(PEER),
+            header: CiHeader::new(Muid::of(PEER)),
             profile: piano(),
         }),
         on(CiDeviceId::Group, PEER, OURS, |header, to| {
@@ -621,8 +614,8 @@ fn what_an_initiator_reads_is_not_answered_by_the_management_core() {
             }
         }),
         Decoded::Message(CiMessage::ProfileSpecificData {
-            header: header(PEER),
-            to: Destination::Muid(muid(OURS)),
+            header: CiHeader::new(Muid::of(PEER)),
+            to: Destination::Muid(Muid::of(OURS)),
             profile: piano(),
             data: SpecificData::default(),
         }),
@@ -630,4 +623,145 @@ fn what_an_initiator_reads_is_not_answered_by_the_management_core() {
     for message in messages {
         assert!(device.on_message(&message, now).is_empty(), "{message:?}");
     }
+}
+
+/// A device that declares Process Inquiry.
+fn process_device() -> (CiDevice<impl FnMut() -> u32>, Instant) {
+    let now = Instant::now();
+    let (device, _) = CiDevice::new(
+        identity(),
+        CiCategories::PROCESS_INQUIRY,
+        MaxSysexSize::of(512),
+        || OURS,
+        now,
+    );
+    (device, now)
+}
+
+fn report_inquiry(scope: ReportScope, to: u32) -> Decoded {
+    on(scope.address(), PEER, to, |header, to| {
+        CiMessage::MessageReportInquiry {
+            header,
+            to,
+            control: DataControl::Full,
+            scope,
+        }
+    })
+}
+
+#[test]
+fn a_device_declaring_process_inquiry_reports_midi_message_report_supported() {
+    // §9.3, Table 42: D0, MIDI Message Report, which the empty report below is.
+    let (mut device, now) = process_device();
+    let inquiry = on(CiDeviceId::FunctionBlock, PEER, OURS, |header, to| {
+        CiMessage::ProcessCapabilitiesInquiry { header, to }
+    });
+    let actions = device.on_message(&inquiry, now);
+    let [
+        CiMessage::ProcessCapabilitiesReply {
+            header,
+            to,
+            features,
+        },
+    ] = sent(&actions)[..]
+    else {
+        panic!("one Reply, got {actions:?}");
+    };
+    assert_eq!(header.device_id, CiDeviceId::FunctionBlock);
+    assert_eq!(header.source, Muid::of(OURS));
+    assert_eq!(*to, Muid::of(PEER));
+    assert_eq!(*features, ProcessFeatures::MIDI_MESSAGE_REPORT);
+}
+
+#[test]
+fn a_report_of_the_function_block_or_group_is_an_empty_reply_and_the_end_on_that_address() {
+    // §9.6: a bit is 0 for a kind the Responder cannot provide, and the Device ID is
+    // the Inquiry's; §9.8: the End completes the reply.
+    for address in [CiDeviceId::FunctionBlock, CiDeviceId::Group] {
+        let (mut device, now) = process_device();
+        let scope = ReportScope::from_wire(address, 0, 0x3F, 0x1F).unwrap();
+        let actions = device.on_message(&report_inquiry(scope, OURS), now);
+        let [
+            CiMessage::MessageReportReply {
+                header: begin,
+                to,
+                scope: declared,
+            },
+            CiMessage::MessageReportEnd {
+                header: end,
+                to: to_end,
+            },
+        ] = sent(&actions)[..]
+        else {
+            panic!("a Reply and an End, got {actions:?}");
+        };
+        assert_eq!((begin.device_id, end.device_id), (address, address));
+        assert_eq!((*to, *to_end), (Muid::of(PEER), Muid::of(PEER)));
+        assert_eq!(*declared, ReportScope::none(address));
+        assert!(declared.is_empty());
+    }
+}
+
+#[test]
+fn a_report_of_a_channel_is_nakked_0x03_as_no_channel_is_in_use() {
+    // §9.5: a NAK when the Channel is not in use.
+    let (mut device, now) = process_device();
+    let channel = CiDeviceId::Channel(tutti_ump::MidiChannel::of(3));
+    let actions = device.on_message(&report_inquiry(ReportScope::none(channel), OURS), now);
+    let [CiMessage::Nak { header, to, nak }] = sent(&actions)[..] else {
+        panic!("one NAK, got {actions:?}");
+    };
+    assert_eq!(header.device_id, channel);
+    assert_eq!(*to, Muid::of(PEER));
+    assert_eq!(nak.nak_sub_id2, U7::of(SUB_ID2_MESSAGE_REPORT_INQUIRY));
+    assert_eq!(nak.status_code, Nak::STATUS_NOT_IN_USE);
+}
+
+#[test]
+fn a_process_inquiry_for_another_muid_is_not_answered() {
+    let (mut device, now) = process_device();
+    let scope = ReportScope::none(CiDeviceId::FunctionBlock);
+    assert!(
+        device
+            .on_message(&report_inquiry(scope, OTHER), now)
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_device_not_declaring_process_inquiry_nakks_both_inquiries_0x01() {
+    let (mut device, _, now) = device([OURS]);
+    let capabilities = on(CiDeviceId::FunctionBlock, PEER, OURS, |header, to| {
+        CiMessage::ProcessCapabilitiesInquiry { header, to }
+    });
+    let report = report_inquiry(ReportScope::none(CiDeviceId::Group), OURS);
+    for (inquiry, original) in [
+        (capabilities, SUB_ID2_PROCESS_CAPABILITIES_INQUIRY),
+        (report, SUB_ID2_MESSAGE_REPORT_INQUIRY),
+    ] {
+        let actions = device.on_message(&inquiry, now);
+        let [CiMessage::Nak { to, nak, .. }] = sent(&actions)[..] else {
+            panic!("one NAK, got {actions:?}");
+        };
+        assert_eq!(*to, Muid::of(PEER));
+        assert_eq!(nak.nak_sub_id2, U7::of(original));
+        assert_eq!(nak.status_code, Nak::STATUS_MESSAGE_NOT_SUPPORTED);
+    }
+}
+
+#[test]
+fn a_process_reply_or_end_is_the_initiators_and_is_not_answered() {
+    let (mut device, now) = process_device();
+    let reply = on(CiDeviceId::FunctionBlock, PEER, OURS, |header, to| {
+        CiMessage::ProcessCapabilitiesReply {
+            header,
+            to,
+            features: ProcessFeatures::MIDI_MESSAGE_REPORT,
+        }
+    });
+    let end = on(CiDeviceId::Group, PEER, OURS, |header, to| {
+        CiMessage::MessageReportEnd { header, to }
+    });
+    assert!(device.on_message(&reply, now).is_empty());
+    assert!(device.on_message(&end, now).is_empty());
 }

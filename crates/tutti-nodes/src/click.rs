@@ -559,12 +559,11 @@ impl ClickNode {
 }
 
 impl Node for ClickNode {
-    /// No inputs, the click in stereo. A generator whose sound depends on
-    /// the transport rather than an input, so [`Tail::Unbounded`]: never
-    /// skipped as silent.
+    /// No inputs, the click in stereo. Its sound depends on the transport
+    /// rather than an input, so a render's end ends it: [`Tail::None`].
     fn shape(&self) -> Shape {
         Shape::source(BusTopology::STEREO)
-            .with_tail(Tail::Unbounded)
+            .with_tail(Tail::None)
             // A beat derived and compared per frame: measured 3.8 ns per
             // frame and channel, against a gain's 0.2 and `SvfFilterNode`'s
             // 7.2.

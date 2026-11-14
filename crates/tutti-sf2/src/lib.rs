@@ -74,7 +74,7 @@ pub use loop_mode::LoopMode;
 pub use preset::Preset;
 pub use preset_generator::PresetGenerator;
 pub use preset_region::PresetRegion;
-pub use sample_header::{SampleHeader, Side};
+pub use sample_header::{NEAREST_PRACTICAL_RATE, SampleHeader, Side};
 pub use soundfont::SoundFont;
 pub use soundfont_info::SoundFontInfo;
 pub use soundfont_version::SoundFontVersion;

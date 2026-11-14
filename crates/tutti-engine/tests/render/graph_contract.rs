@@ -10,6 +10,7 @@
 //! `tests/executor/contract.rs` (and the node crates'); this is the end-to-end case
 //! where the transport, the command queue and PDC all meet.
 
+use tutti_buffers::InterleavedMut;
 use tutti_engine::Engine;
 use tutti_fixtures::midi;
 use tutti_graph::NodeKey;
@@ -18,7 +19,7 @@ use tutti_graph::{EventIn, EventKind, GraphBuilder, Prepare, Unforkable};
 use tutti_transport::{MotionEvent, Transport};
 use tutti_types::Latency;
 use tutti_types::MaxBlock;
-use tutti_types::{At, Beat, ChannelLayout, Frame, InterleavedMut, SampleRate, Samples};
+use tutti_types::{At, Beat, ChannelLayout, Frame, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 const SR: f64 = 48_000.0;
@@ -69,7 +70,7 @@ fn onsets(engine: &Engine, blocks: &[usize]) -> [Vec<u64>; 2] {
     let mut done = 0u64;
     for &n in blocks {
         let mut buf = vec![0.0f32; n * 2];
-        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         for (i, frame) in buf.chunks(2).enumerate() {
             for c in 0..2 {
                 if frame[c] != 0.0 {

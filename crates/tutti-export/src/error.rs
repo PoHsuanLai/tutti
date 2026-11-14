@@ -32,6 +32,10 @@ pub enum Error {
     #[error(transparent)]
     Encode(tutti_codec::Error),
 
+    /// A buffer that is not whole frames of its width.
+    #[error(transparent)]
+    Buffer(#[from] tutti_buffers::BufferError),
+
     /// The resampler could not be constructed for this rate pair, or rejected a
     /// chunk.
     #[error("Resampling error: {0}")]
@@ -241,7 +245,7 @@ pub enum ConfigError {
     /// The graph's channels have no place in the file's: the topology the file
     /// states cannot take them, or is not as wide as the file.
     #[error("the graph's channels cannot be placed into the file's: {0}")]
-    Placement(tutti_types::FoldError),
+    Placement(tutti_buffers::FoldError),
 }
 
 impl From<tutti_codec::Error> for Error {

@@ -14,10 +14,11 @@
 
 use std::path::PathBuf;
 
+use tutti_buffers::{Fold, InterleavedMut};
 use tutti_graph::TapReader;
 use tutti_measure::Loudness;
 use tutti_transport::RenderClock;
-use tutti_types::{ChannelLayout, Db, Fold, Interleaved, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, Db, SampleRate, Samples};
 
 use crate::control::{Control, Outcome, Stage, Weights};
 use crate::encode::{
@@ -122,12 +123,10 @@ pub(crate) fn render_outputs(
                     }
                     let frames = window.len();
                     let samples = Samples(frames).interleaved_len(lane.layout);
-                    let block = &mut lane.scratch[..samples];
-                    lane.fold.planar_to_interleaved(
-                        |c| &planes[c][window.clone()],
-                        InterleavedMut::new(block, lane.layout),
-                    );
-                    let block = Interleaved::new(block, lane.layout);
+                    let mut block = InterleavedMut::new(&mut lane.scratch[..samples], lane.layout)?;
+                    lane.fold
+                        .planar_to_interleaved(|c| &planes[c][window.clone()], block.reborrow());
+                    let block = block.as_ref();
                     match &mut lane.sink {
                         Sink::Stream { chain } => chain.block(block)?,
                         Sink::Spill { waiting, .. } => {
@@ -504,20 +503,21 @@ fn measure(
     let mut replay = waiting.spill.replay()?;
     let chunk = chunk_frames(rate);
     let mut block = vec![0.0f32; chunk * ch];
+    let mut block = InterleavedMut::new(&mut block, layout)?;
     loop {
         if control.is_cancelled() {
             return Ok(Outcome::Cancelled);
         }
-        let n = replay.fill(InterleavedMut::new(&mut block, layout))?;
+        let n = replay.fill(block.reborrow())?;
         if n == 0 {
             break;
         }
-        let frames = &block[..Samples(n).interleaved_len(layout)];
+        let frames = block.as_ref().window(Samples::ZERO..Samples(n));
         match resampler.as_mut() {
             Some((rs, planes, out)) => {
-                Interleaved::new(frames, layout).deinterleave_into(planes);
+                frames.deinterleave_into(planes);
                 rs.push(planes, out)?;
-                feed_planes(&mut measurer, out, &mut staging, layout);
+                feed_planes(&mut measurer, out, &mut staging, layout)?;
             }
             None => measurer.feed_interleaved(frames),
         }
@@ -528,7 +528,7 @@ fn measure(
     // at the top: a cancel on the last chunk's reading is seen there.
     if let Some((rs, _, out)) = resampler.as_mut() {
         rs.finish(out)?;
-        feed_planes(&mut measurer, out, &mut staging, layout);
+        feed_planes(&mut measurer, out, &mut staging, layout)?;
     }
     let reading = measurer.finish();
     normalize.check(&reading).map_err(unmeasurable)?;
@@ -541,15 +541,17 @@ fn feed_planes(
     out: &mut [Vec<f32>],
     staging: &mut Vec<f32>,
     layout: ChannelLayout,
-) {
+) -> Result<()> {
     let frames = Samples(out.first().map_or(0, Vec::len));
     staging.clear();
     staging.resize(frames.interleaved_len(layout), 0.0);
-    InterleavedMut::new(staging, layout).interleave_from(out, 0);
-    measurer.feed_interleaved(staging);
+    let mut staged = InterleavedMut::new(staging, layout)?;
+    staged.interleave_from(out, Samples::ZERO);
+    measurer.feed_interleaved(staged.as_ref());
     for p in out.iter_mut() {
         p.clear();
     }
+    Ok(())
 }
 
 /// A file output whose frames are all written: its chain, to be finalized.

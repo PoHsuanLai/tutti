@@ -5,13 +5,14 @@
 //! shifted or folded frame is visible. The fade itself is
 //! `tutti-session`'s `tests/wiring/engine.rs`.
 
+use tutti_buffers::InterleavedMut;
 use tutti_engine::{Engine, HeardOpen, HeardTapError};
 use tutti_graph::NodeKey;
 use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, TapReader, Unforkable};
 use tutti_graph::{OutPort, Source};
 use tutti_transport::Transport;
 use tutti_types::MaxBlock;
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{ChannelLayout, SampleRate, Samples};
 
 const RATE: f64 = 48_000.0;
 
@@ -59,7 +60,7 @@ fn engine(width: u16) -> Engine {
 
 fn render(engine: &Engine, frames: usize, width: u16, segment: bool) -> Vec<f32> {
     let mut out = vec![0.0f32; frames * usize::from(width)];
-    let mut block = InterleavedMut::new(&mut out, ChannelLayout::from_count(width));
+    let mut block = InterleavedMut::new(&mut out, ChannelLayout::from_count(width)).unwrap();
     if segment {
         engine.process_segment(&mut block);
     } else {

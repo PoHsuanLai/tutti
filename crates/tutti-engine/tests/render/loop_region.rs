@@ -16,14 +16,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tutti_types::MaxBlock;
 
+use tutti_buffers::InterleavedMut;
 use tutti_engine::Engine;
 use tutti_graph::NodeKey;
 use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Unforkable};
 use tutti_graph::{OutPort, Source};
 use tutti_transport::{LoopEdit, LoopRegion, Transport};
-use tutti_types::{
-    At, Beat, ChannelLayout, Frame, InterleavedMut, LoopRange, SampleRate, Samples, Tail,
-};
+use tutti_types::{At, Beat, ChannelLayout, Frame, LoopRange, SampleRate, Samples, Tail};
 
 const SR: f64 = 48_000.0;
 
@@ -75,7 +74,7 @@ fn engine_logging(transport: &Transport, log: Option<Arc<Mutex<Vec<Seen>>>>) -> 
 
 fn render(engine: &Engine, frames: usize) {
     let mut buf = vec![0.0f32; frames];
-    engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::MONO));
+    engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::MONO).unwrap());
 }
 
 fn range(start: f64, end: f64) -> LoopRange {

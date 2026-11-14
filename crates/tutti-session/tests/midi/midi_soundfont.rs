@@ -20,6 +20,7 @@ use tutti_session::Root;
 use tutti_types::MaxBlock;
 
 use crate::common::{note, play};
+use tutti_buffers::InterleavedMut;
 use tutti_fixtures::midi::note_on;
 use tutti_graph::{EventCapacity, NodeKey};
 use tutti_midi_runtime::MidiIngestNode;
@@ -27,7 +28,7 @@ use tutti_session::Stamp;
 use tutti_session::{EventInPort, MidiRouteRule, Session};
 use tutti_sf2::SoundFont;
 use tutti_soundfont::{Settings, SoundFontUnit};
-use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut, SampleRate, Samples};
+use tutti_types::{Beat, BeatDuration, ChannelLayout, SampleRate, Samples};
 use tutti_ump::{MidiChannel, MidiGroup};
 
 const RATE: SampleRate = SampleRate::SR_48K;
@@ -70,7 +71,7 @@ fn render(s: &Session, frames: usize) -> Vec<f32> {
     let mut out = Vec::with_capacity(frames * 2);
     let mut buf = vec![0.0f32; 128 * 2];
     for _ in 0..frames.div_ceil(128) {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         out.extend_from_slice(&buf);
     }
     out.truncate(frames * 2);

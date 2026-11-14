@@ -25,7 +25,8 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::Duration;
-use tutti_types::{ChannelLayout, InterleavedMut};
+use tutti_buffers::InterleavedMut;
+use tutti_types::ChannelLayout;
 
 use crate::faults::StreamFaults;
 use crate::latency::StreamLatency;
@@ -207,7 +208,11 @@ impl OutputBlock {
         // Zero before rendering — the previous callback's contents are not
         // meaningful input for the graph.
         mix.fill(0.0);
-        let mut mix = InterleavedMut::new(mix, self.layout);
+        // `frames * channels` samples of a `channels`-wide layout: whole frames
+        // of a width the device opened with, so the view is always built.
+        let Ok(mut mix) = InterleavedMut::new(mix, self.layout) else {
+            return;
+        };
         process_audio(&self.state, &mut mix);
         // Back to a flat slice for the device write.
         let mix = mix.as_ref().samples();
@@ -219,12 +224,12 @@ impl OutputBlock {
 /// Convert the rendered f32 mix into the device's sample format.
 ///
 /// `data` stays a bare `&mut [T]` and `channels` a bare `usize`: `T` is
-/// `cpal::SizedSample` (i16, u32, f64, …), so `InterleavedMut` — which is
-/// f32-only by construction — cannot describe the destination. Widening the
-/// newtype over `T` would buy nothing here, because the only arithmetic in this
-/// function is `i / channels`, and the width it needs is the *source's*, which
-/// the caller already reads off the `InterleavedMut` it built. The vocabulary
-/// stops at the format boundary, as it does at the C ABI and WIT boundaries.
+/// `cpal::SizedSample`, which includes the unsigned formats (u8, u16, u32) that
+/// no `tutti_buffers::Sample` is, so `InterleavedMut` cannot describe every
+/// destination. The only arithmetic in this function is `i / channels`, and the
+/// width it needs is the *source's*, which the caller already reads off the
+/// `InterleavedMut` it built. The vocabulary stops at the format boundary, as
+/// it does at the C ABI and WIT boundaries.
 ///
 /// Private on purpose: it is reached through [`OutputBlock::render`], which is
 /// how CPAL reaches it. A parallel public conversion helper would be a second

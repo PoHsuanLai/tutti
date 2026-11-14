@@ -206,7 +206,7 @@ pub enum ConnectError {
         /// The source node.
         from: tutti_graph::NodeKey,
         /// Why its topology does not fold onto the root's.
-        cause: tutti_types::FoldError,
+        cause: tutti_buffers::FoldError,
     },
     /// A main bus narrower than the root folds onto it only with weights (a
     /// centre into a root with none): a weighted fold is a bus edge.
@@ -424,9 +424,9 @@ pub enum Error {
     /// The graph root cannot be placed on the output: the device has no
     /// channels, or the root is wider than a device at least one of whose
     /// widths has no channel order (a 6-wide root on a 5-channel device would
-    /// lose a channel). Wraps `tutti_types::FoldError`.
+    /// lose a channel). Wraps `tutti_buffers::FoldError`.
     #[error("the graph root cannot be placed on the output: {0}")]
-    Output(#[from] tutti_types::FoldError),
+    Output(#[from] tutti_buffers::FoldError),
 
     /// An inlet refused its producer's ring ([`Graph::add_inlet`](crate::Graph::add_inlet)).
     #[error(transparent)]

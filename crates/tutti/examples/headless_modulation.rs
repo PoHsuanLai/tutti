@@ -63,7 +63,7 @@ fn play(s: &mut Session, windows: usize) {
     let (mut sum, mut n) = (0.0f64, 0usize);
     let mut line = String::new();
     while n < windows * window {
-        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO));
+        s.render(&mut InterleavedMut::new(&mut out, ChannelLayout::MONO).unwrap());
         report(s.update());
         for &x in &out {
             sum += f64::from(x) * f64::from(x);

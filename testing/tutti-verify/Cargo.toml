@@ -24,6 +24,7 @@ tutti-nodes = { path = "../../crates/tutti-nodes", default-features = false, fea
 tutti-polysynth = { path = "../../crates/tutti-polysynth" }
 tutti-sampler = { path = "../../crates/tutti-sampler", features = ["testing"] }
 tutti-transport = { path = "../../crates/tutti-transport" }
+tutti-buffers = { version = "0.0.1", path = "../../crates/tutti-buffers" }
 tutti-types = { path = "../../crates/tutti-types" }
 tutti-ump = { path = "../../crates/tutti-ump", default-features = false }
 tutti-fixtures = { path = "../tutti-fixtures" }

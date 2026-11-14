@@ -16,6 +16,7 @@
 //! one gates them *inside the engine*, where the executor drives them through
 //! its own buffers and the transport advances on the same `process` call.
 
+use tutti_buffers::InterleavedMut;
 use tutti_engine::Engine;
 use tutti_graph::NodeKey;
 use tutti_graph::{Edge, InPort, OutPort, Source};
@@ -24,7 +25,7 @@ use tutti_nodes::testing::Osc;
 use tutti_nodes::{BusStripNode, EqBandNode, LimiterControls, LimiterNode, SvfType};
 use tutti_transport::{MotionEvent, Transport};
 use tutti_types::MaxBlock;
-use tutti_types::{ChannelLayout, Db, Hz, InterleavedMut, Q, SampleRate, Samples};
+use tutti_types::{ChannelLayout, Db, Hz, Q, SampleRate, Samples};
 
 /// Build an [`Engine`] whose graph is `sine → bell EQ → strip → limiter`,
 /// with the transport rolling so its advancement runs through the same
@@ -95,7 +96,7 @@ fn engine_process_real_chain_is_allocation_free() {
     // Warm up outside the gate — prime any first-call state on the
     // limiter / svf filters and the transport clock.
     for _ in 0..16 {
-        engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+        engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap());
     }
     // The chain must actually sound, or the gate below walks no DSP. A +6 dB
     // bell off-centre and a -0.3 dB ceiling leave a 440 Hz sine well audible.
@@ -106,7 +107,7 @@ fn engine_process_real_chain_is_allocation_free() {
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
-            engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+            engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap());
         }
     });
 }
@@ -118,12 +119,12 @@ fn engine_process_real_chain_small_buffer_is_allocation_free() {
 
     let mut output = vec![0.0f32; 64 * 2];
     for _ in 0..16 {
-        engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+        engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap());
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..5_000 {
-            engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO));
+            engine.process(&mut InterleavedMut::new(&mut output, ChannelLayout::STEREO).unwrap());
         }
     });
 }

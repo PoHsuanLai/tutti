@@ -26,9 +26,9 @@ use std::f64::consts::TAU;
 use std::fmt::Write as _;
 use std::path::Path;
 
+use tutti_buffers::Interleaved;
 use tutti_measure::{LoudnessConfig, YinConfig, measure_loudness, yin, yin_track};
 use tutti_types::ChannelLayout;
-use tutti_types::Interleaved;
 use tutti_types::SampleRate;
 
 const SR: f64 = 48_000.0;
@@ -210,8 +210,11 @@ fn main() {
     for &amp in &[1.0, 0.5, 0.25, 0.1, 0.0891, 0.01] {
         let mono = sine(1000.0, 3.0, amp);
         let st = to_stereo(&mono);
-        let l = measure_loudness(&lcfg, Interleaved::new(&st, ChannelLayout::STEREO))
-            .expect("stereo layout meters");
+        let l = measure_loudness(
+            &lcfg,
+            Interleaved::new(&st, ChannelLayout::STEREO).expect("whole stereo frames"),
+        )
+        .expect("stereo layout meters");
         writeln!(
             loud_csv,
             "sine1k_{amp},{amp},{:.6},{:.6},{:.6}",
@@ -232,8 +235,11 @@ fn main() {
             .collect();
         let st = to_stereo(&mono);
         let c = LoudnessConfig::new(SampleRate::of(rate), ChannelLayout::STEREO);
-        let l = measure_loudness(&c, Interleaved::new(&st, ChannelLayout::STEREO))
-            .expect("stereo layout meters");
+        let l = measure_loudness(
+            &c,
+            Interleaved::new(&st, ChannelLayout::STEREO).expect("whole stereo frames"),
+        )
+        .expect("stereo layout meters");
         writeln!(
             rate_csv,
             "{rate},{:.6},{:.6}",

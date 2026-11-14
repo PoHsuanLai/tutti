@@ -47,6 +47,7 @@ use std::hint::black_box;
 use tutti_types::MaxBlock;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use tutti_buffers::InterleavedMut;
 use tutti_engine::Engine;
 use tutti_graph::NodeKey;
 use tutti_graph::{Edge, InPort, OutPort, Source};
@@ -56,7 +57,7 @@ use tutti_nodes::{BusStripNode, EqBandNode, SvfFilterNode, SvfType};
 use tutti_transport::MotionEvent;
 use tutti_transport::Transport;
 use tutti_types::{Bpm, Samples};
-use tutti_types::{ChannelLayout, InterleavedMut, SampleRate};
+use tutti_types::{ChannelLayout, SampleRate};
 use tutti_types::{Db, Hz, Q};
 
 const SR: f64 = 48_000.0;
@@ -111,7 +112,7 @@ fn depth_engine(depth: usize) -> Engine {
 }
 
 fn render(engine: &Engine, buf: &mut [f32], layout: ChannelLayout) {
-    engine.process(&mut InterleavedMut::new(buf, layout));
+    engine.process(&mut InterleavedMut::new(buf, layout).unwrap());
 }
 
 /// Block size, at a fixed graph. Isolates the fixed per-callback cost: if
@@ -198,10 +199,9 @@ fn bench_transport_overhead(c: &mut Criterion) {
     });
     group.bench_function("process_segment", |b| {
         b.iter(|| {
-            engine.process_segment(&mut InterleavedMut::new(
-                black_box(&mut buf),
-                ChannelLayout::STEREO,
-            ))
+            engine.process_segment(
+                &mut InterleavedMut::new(black_box(&mut buf), ChannelLayout::STEREO).unwrap(),
+            )
         });
     });
     group.finish();

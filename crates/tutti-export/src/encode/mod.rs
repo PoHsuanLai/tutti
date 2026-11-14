@@ -23,11 +23,10 @@ use crate::output::FileTarget;
 use crate::render::{PlaneSource, REPLAY_BLOCK, RenderPlan, Replay};
 use crate::{Error, Written};
 use std::path::Path;
+use tutti_buffers::{Interleaved, InterleavedMut};
 use tutti_codec::{Encoder, Finalized, Spec};
 use tutti_dsp::{DitherSink, StreamingResampler};
-use tutti_types::{
-    Amplitude, ChannelLayout, Interleaved, InterleavedMut, SampleRate, Samples, Sink, SinkFailed,
-};
+use tutti_types::{Amplitude, ChannelLayout, SampleRate, Samples, Sink, SinkFailed};
 
 /// The rate the file is written at: the resample target, else the rate it is
 /// rendered at.
@@ -159,12 +158,14 @@ impl Sink for EncoderSink {
         if self.counts_clipping {
             self.clipped += clipped_in(interleaved);
         }
-        self.encoder
-            .write(Interleaved::new(interleaved, self.layout))
-            .map_err(|e| {
-                self.error = Some(Error::from(e));
-                SinkFailed
-            })?;
+        let written = match Interleaved::new(interleaved, self.layout) {
+            Ok(block) => self.encoder.write(block).map_err(Error::from),
+            Err(e) => Err(Error::from(e)),
+        };
+        written.map_err(|e| {
+            self.error = Some(e);
+            SinkFailed
+        })?;
         self.frames += Samples::from_interleaved_len(interleaved.len(), self.layout);
         Ok(())
     }
@@ -334,7 +335,7 @@ fn emit_planes(
     let frames = Samples(out.first().map_or(0, Vec::len));
     staging.clear();
     staging.resize(frames.interleaved_len(layout), 0.0);
-    InterleavedMut::new(staging, layout).interleave_from(out, 0);
+    InterleavedMut::new(staging, layout)?.interleave_from(out, Samples::ZERO);
     if let Some(gain) = gain {
         for s in staging.iter_mut() {
             *s *= gain.get();
@@ -367,19 +368,17 @@ pub(crate) fn replay_through(
 ) -> Result<Outcome<Samples>> {
     let layout = chain.layout;
     let mut block = vec![0.0f32; block_frames.max(1) * usize::from(layout.count())];
+    let mut block = InterleavedMut::new(&mut block, layout)?;
     let mut at = done.get();
     loop {
         if control.is_cancelled() {
             return Ok(Outcome::Cancelled);
         }
-        let n = replay.fill(InterleavedMut::new(&mut block, layout))?;
+        let n = replay.fill(block.reborrow())?;
         if n == 0 {
             break;
         }
-        chain.block(Interleaved::new(
-            &block[..Samples(n).interleaved_len(layout)],
-            layout,
-        ))?;
+        chain.block(block.as_ref().window(Samples::ZERO..Samples(n)))?;
         at += n;
         control.advance(stage, Samples(at), total);
     }

@@ -1,23 +1,24 @@
 //! Whether a windowed-loudness step allocates once its state is built.
 //!
-//! `ebur128` does not document it, so this counts: it feeds whole, ragged and
+//! `ebur128` does not document it, so this counts: it feeds block-sized, odd and
 //! empty chunks and reads both windows, with the crate's own global allocator
 //! as in `chroma_alloc.rs`. It counts per thread, so the harness's
 //! other threads do not show up.
 
+use tutti_buffers::Interleaved;
 use tutti_fixtures::allocations;
 use tutti_measure::{
     WindowedLayout, WindowedLoudnessConfig, WindowedLoudnessState, WindowedRate,
     step_windowed_loudness,
 };
-use tutti_types::{ChannelLayout, Interleaved, SampleRate};
+use tutti_types::{ChannelLayout, SampleRate};
 
 fn stereo(s: &[f32]) -> Interleaved<'_> {
-    Interleaved::new(s, ChannelLayout::STEREO)
+    Interleaved::new(s, ChannelLayout::STEREO).unwrap()
 }
 
-/// Steps after construction allocate nothing, the first included: frame-aligned chunks, a ragged
-/// sequence that splices a part frame every call, an empty chunk, and a reset.
+/// Steps after construction allocate nothing, the first included: block-sized chunks, chunks of
+/// an odd frame count, an empty chunk, and a reset.
 ///
 /// This is a measurement, not a guarantee of `ebur128`: it holds for the
 /// version in `Cargo.lock`.
@@ -46,16 +47,14 @@ fn a_windowed_loudness_step_does_not_allocate() {
             step_windowed_loudness(&cfg, &mut state, stereo(chunk)).unwrap();
         }
     });
-    assert_eq!(aligned, 0, "frame-aligned chunks");
+    assert_eq!(aligned, 0, "block-sized chunks");
 
-    // 777 samples is an odd count: every call ends mid-frame and the next
-    // completes it.
-    let ragged = allocations(|| {
-        for chunk in tone.chunks(777) {
+    let odd = allocations(|| {
+        for chunk in tone.chunks(777 * 2) {
             step_windowed_loudness(&cfg, &mut state, stereo(chunk)).unwrap();
         }
     });
-    assert_eq!(ragged, 0, "ragged chunks");
+    assert_eq!(odd, 0, "chunks of 777 frames");
 
     let empty = allocations(|| {
         step_windowed_loudness(&cfg, &mut state, stereo(&[])).unwrap();

@@ -10,6 +10,7 @@
 //! `depth * macro * span`, clamped to the range; every figure is exact in
 //! `f32`).
 
+use tutti_buffers::InterleavedMut;
 use tutti_graph::{Cx, ForkByClone, Io, Node, NodeKey, Prepare, Shape, Status};
 use tutti_modulation::Macro;
 use tutti_nodes::ReconcileError;
@@ -18,7 +19,7 @@ use tutti_session::{
     InPort, MixRef, ModRefusal, ModTarget, OutPort, ParamRef, PassError, Problem, Root, RouteSpec,
     Session, TargetName,
 };
-use tutti_types::{ChannelLayout, Depth, InterleavedMut, Mix, UnitParam};
+use tutti_types::{ChannelLayout, Depth, Mix, UnitParam};
 
 const BLOCK: usize = 128;
 /// The constant source's level.
@@ -64,7 +65,7 @@ fn render(s: &mut Session, blocks: usize) -> Vec<f32> {
     let mut all = Vec::new();
     let mut buf = vec![0.0f32; BLOCK * 2];
     for _ in 0..blocks {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
         all.extend(buf.as_chunks::<2>().0.iter().map(|f| f[0]));
     }
     all

@@ -10,7 +10,7 @@
 
 use core::num::NonZeroUsize;
 
-use tutti_types::StereoPlanes;
+use tutti_buffers::StereoPlanes;
 
 /// One frame on the scope.
 ///
@@ -67,7 +67,7 @@ pub fn step_vectorscope(
     decimate: NonZeroUsize,
     out: &mut Vec<ScopePoint>,
 ) {
-    let frames = planes.frames();
+    let frames = planes.frames().get();
     let (left, right) = (planes.left(), planes.right());
     let mut at = state.skip;
     while at < frames {
@@ -80,7 +80,7 @@ pub fn step_vectorscope(
 /// Every `decimate`-th frame of one whole pair as a [`ScopePoint`], starting
 /// at the first: [`step_vectorscope`] over a fresh state. Allocates the result.
 pub fn vectorscope_points(planes: StereoPlanes<'_>, decimate: NonZeroUsize) -> Vec<ScopePoint> {
-    let mut out = Vec::with_capacity(planes.frames().div_ceil(decimate.get()));
+    let mut out = Vec::with_capacity(planes.frames().get().div_ceil(decimate.get()));
     step_vectorscope(&mut VectorscopeState::new(), planes, decimate, &mut out);
     out
 }

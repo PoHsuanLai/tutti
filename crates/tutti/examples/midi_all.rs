@@ -178,7 +178,7 @@ fn run() -> Result<Outcome, Box<dyn std::error::Error>> {
                 other => events.push(format!("{other:?}")),
             }
         }
-        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut block, ChannelLayout::STEREO).unwrap());
         peak = block.iter().fold(peak, |p, x| p.max(x.abs()));
     }
 

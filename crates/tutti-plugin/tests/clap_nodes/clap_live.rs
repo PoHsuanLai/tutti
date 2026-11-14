@@ -28,13 +28,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use tutti_buffers::InterleavedMut;
 use tutti_engine::Engine;
 use tutti_graph::NodeKey;
 use tutti_graph::{Cx, Editor, Io, Node, Prepare, Shape, Status, Unforkable};
 use tutti_graph::{Edge, InPort, OutPort, Source};
 use tutti_plugin_ipc::RING_SLOTS;
 use tutti_transport::Transport;
-use tutti_types::{ChannelLayout, InterleavedMut};
+use tutti_types::ChannelLayout;
 use tutti_types::{SampleRate, Samples, Tail};
 
 /// What the probe declares and delays by (`REPORTED_LATENCY_SAMPLES`).
@@ -186,7 +187,7 @@ fn run_live(rate: f64, quantum: usize, blocks: usize, burst_at: Option<usize>) -
     let (mut silent, mut wrong) = (Vec::new(), Vec::new());
     let mut next = Instant::now();
     for b in 0..warm_up + blocks {
-        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::MONO));
+        engine.process(&mut InterleavedMut::new(&mut buf, ChannelLayout::MONO).unwrap());
         ed.collect();
         if b >= warm_up {
             let first = (b * quantum) as u64;

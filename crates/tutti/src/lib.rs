@@ -41,8 +41,10 @@
 //! let engine = Engine::new(&transport, &mut editor, executor).expect("within the limits");
 //!
 //! // One interleaved stereo block, rendered on "the audio thread".
+//! // The view checks once that the buffer is whole stereo frames.
 //! let mut out = vec![0.0f32; 256 * 2];
-//! engine.process(&mut InterleavedMut::new(&mut out, ChannelLayout::STEREO));
+//! let mut block = InterleavedMut::new(&mut out, ChannelLayout::STEREO).expect("whole frames");
+//! engine.process(&mut block);
 //! assert!(out.iter().any(|&s| s != 0.0));
 //! ```
 //!
@@ -203,8 +205,13 @@ pub mod tempo {
 pub use tutti_metering as metering;
 
 /// The shared vocabulary (`tutti-types`): unit newtypes, channel layouts,
-/// buffer views, the I/O edge traits.
+/// the I/O edge traits.
 pub use tutti_types as types;
+
+/// Audio in memory (`tutti-buffers`): the sample formats, the mono,
+/// interleaved and planar views over them, the conversions between formats and
+/// layouts, and the channel `Fold`.
+pub use tutti_buffers as buffers;
 
 /// Real-time-safe shared-memory primitives for the audio thread (`tutti-rt`):
 /// the publish cell (`ArcLend`), the capped `RtVec`, the sequence lock and the
@@ -403,13 +410,13 @@ pub use tutti_transport::{
 };
 
 // Units, channels, buffers, the edge traits and the musical meter.
+pub use tutti_buffers::{Interleaved, InterleavedMut, StereoPlanes};
 pub use tutti_types::{
     Amplitude, At, BarNumber, Beat, BeatDuration, Bpm, Cents, CentsSpan, ChannelLayout,
-    ChannelTopology, Db, Depth, FiniteSource, Frame, Hz, Interleaved, InterleavedMut, Latency,
-    LoopRange, LoopRangeError, MaxBlock, Meter, MeterMap, Moment, Note, NoteValue, Param,
-    ParamAddr, PhaseIncrement, PitchClass, Pull, Q, SamplePosition, SampleRate, Samples, Seconds,
-    Semitones, Sink, SinkFailed, Source, Speaker, StereoPlanes, Stop, Tail, TimeSignature,
-    UnitAddr, UnitParam, Velocity,
+    ChannelTopology, Db, Depth, FiniteSource, Frame, Hz, Latency, LoopRange, LoopRangeError,
+    MaxBlock, Meter, MeterMap, Moment, Note, NoteValue, Param, ParamAddr, PhaseIncrement,
+    PitchClass, Pull, Q, SamplePosition, SampleRate, Samples, Seconds, Semitones, Sink, SinkFailed,
+    Source, Speaker, Stop, Tail, TimeSignature, UnitAddr, UnitParam, Velocity,
 };
 pub use tutti_ump::{CCNumber, MidiChannel, MidiGroup};
 

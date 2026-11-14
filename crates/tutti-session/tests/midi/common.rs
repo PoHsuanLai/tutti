@@ -3,12 +3,13 @@
 
 use std::sync::{Arc, Mutex};
 
+use tutti_buffers::InterleavedMut;
 use tutti_fixtures::midi::{note_off, note_on};
 use tutti_graph::{Cx, EventKind, IntoNode, Io, Node, NodeKey, NodeParts, Prepare, Shape, Status};
 use tutti_midi_runtime::TimedMidiEvent;
 use tutti_session::{Session, SessionNode};
 use tutti_transport::MotionEvent;
-use tutti_types::{Beat, BeatDuration, ChannelLayout, InterleavedMut};
+use tutti_types::{Beat, BeatDuration, ChannelLayout};
 use tutti_ump::{MidiChannel, MidiGroup, Ump};
 
 /// The mezzo-forte default: MIDI 2.0's center velocity.
@@ -62,7 +63,7 @@ pub fn tap(s: &mut Session) -> (NodeKey, Seen) {
 pub fn blocks(s: &Session, n: usize) {
     let mut buf = vec![0.0f32; 512 * 2];
     for _ in 0..n {
-        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO));
+        s.render(&mut InterleavedMut::new(&mut buf, ChannelLayout::STEREO).unwrap());
     }
 }
 

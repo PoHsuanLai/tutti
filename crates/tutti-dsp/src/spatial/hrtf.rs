@@ -28,7 +28,8 @@
 
 use std::sync::Arc;
 
-use tutti_types::{ChannelLayout, Direction, Fold, Mix, Radians, SampleRate};
+use tutti_buffers::Fold;
+use tutti_types::{ChannelLayout, Direction, Mix, Radians, SampleRate};
 
 mod sphere;
 

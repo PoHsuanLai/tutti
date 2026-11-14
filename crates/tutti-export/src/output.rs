@@ -8,10 +8,11 @@
 
 use std::path::{Path, PathBuf};
 
+use tutti_buffers::FoldError;
 use tutti_codec::Format;
 use tutti_dsp::DitherShape;
 use tutti_graph::TapReader;
-use tutti_types::{ChannelLayout, ChannelTopology, FoldError};
+use tutti_types::{ChannelLayout, ChannelTopology};
 
 use crate::Resample;
 use crate::normalize::Normalize;

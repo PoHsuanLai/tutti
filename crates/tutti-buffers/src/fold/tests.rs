@@ -159,10 +159,10 @@ fn width_oracle(f: &[f32], dst: usize) -> Vec<f32> {
     }
 }
 
-/// The pairs whose output differs from what the width folds wrote, by
-/// decision (design 013, "Channel placement"): a mono feeds the centre or the
-/// front pair, a quad's rears are no longer the centre and LFE, and a wider
-/// surround is placed by position rather than by its first channels.
+/// The pairs whose output differs from what the width folds wrote: a mono
+/// feeds the centre or the front pair, a quad's rears are no longer the centre
+/// and LFE, and a wider surround is placed by position rather than by its first
+/// channels.
 const PLACED_BY_POSITION: [(u16, u16); 13] = [
     (1, 4),
     (1, 6),
@@ -681,7 +681,7 @@ fn planar_is_the_frame_fold() {
             let mut device = vec![f32::NAN; dw * frames];
             f.planar_to_interleaved(
                 |k| &planes[k][..],
-                InterleavedMut::new(&mut device, d.layout()),
+                InterleavedMut::new(&mut device, d.layout()).unwrap(),
             );
             for (i, fr) in data.chunks_exact(sw).enumerate() {
                 f.frame(fr, &mut out);
@@ -704,7 +704,7 @@ fn the_device_fold_checks_widths() {
     let mut dst = [0.0f32; 12];
     f.planar_to_interleaved(
         |k| &planes[k][..],
-        InterleavedMut::new(&mut dst, ChannelLayout::from(3u16)),
+        InterleavedMut::new(&mut dst, ChannelLayout::from(3u16)).unwrap(),
     );
 }
 

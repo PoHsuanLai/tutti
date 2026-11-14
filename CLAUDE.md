@@ -36,13 +36,13 @@ std only. A rule the compiler already enforces is not a gate.
 - **Setup:** `git submodule update --init --recursive` (the VST3 SDK under
   `vendor/vst3-sdk/`; the gate asserts SHAs). Linux needs ALSA headers (`libasound2-dev
   pkg-config`).
-- **Review:** every PR is reviewed by someone other than its author against
-  CONTRIBUTING.md's checklist before it is queued, and the review is recorded in the
-  description's "Review" section.
 - **Windows:** `cargo xtask check-windows` lints for MSVC from Linux; CI's `clippy
   (windows)` lints natively, and no CI job runs tests on Windows. A vst3 SDK enum constant
   is `c_uint` on unix and `c_int` on Windows: cast it with `helpers::sdk_enum_i32`. Read
   the engineering notes before touching `tutti-plugin-ipc`'s transport or plugin loading.
+- **Review:** every PR is reviewed by someone other than its author against
+  CONTRIBUTING.md's checklist before it is queued; the review is recorded in its
+  description.
 
 ## Testing
 

@@ -7,9 +7,7 @@
 use tutti_graph::{Cx, Io, Node, Prepare, Shape, Status, Unforkable};
 use tutti_nodes::BusStripNode;
 use tutti_session::{OutPort, Root, Session, SessionBuilder};
-use tutti_types::{
-    BusTopology, ChannelLayout, ChannelTopology, InterleavedMut, MaxBlock, SampleRate, Samples,
-};
+use tutti_types::{BusTopology, ChannelLayout, ChannelTopology, InterleavedMut, MaxBlock, Samples};
 
 /// Constant `values` on its output channels, declaring `out` as its bus.
 struct Src {
@@ -33,11 +31,9 @@ impl Node for Src {
 
 fn offline(builder: SessionBuilder, device: u16) -> Session {
     builder
-        .build_offline(
-            SampleRate::SR_48K,
-            ChannelLayout::from(device),
-            MaxBlock::of(Samples(64)),
-        )
+        .outputs(ChannelLayout::from(device))
+        .max_block(MaxBlock::of(Samples(64)))
+        .build()
         .expect("builds")
 }
 
